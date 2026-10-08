@@ -552,27 +552,71 @@ def run_funding_capture_engine():
 
             add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent}")
 
-            # --- CONTINUOUS SCANNING & DYNAMIC RE-ARMING WHILE ARMED ---
+            # --- 5-MINUTE INTERVAL SCAN & FUNDING UPDATE WHILE ARMED ---
             better_opp = None
+            abort_current = False
+            last_scan_time = 0
+            SCAN_INTERVAL = 300  # 5 minutes (300 seconds)
+
             while True:
                 now_ms = get_synced_time_ms()
                 diff = t_entry - now_ms
                 
-                if diff <= 5000:  # Entry time se 5 second pehle scanning lock ho jayegi
+                if diff <= 5000:  # Entry time se 5 second pehle final lock
                     break
 
-                scanned_opp = scan_best_funding_opportunity()
-                if scanned_opp and scanned_opp['symbol'] != symbol:
-                    if scanned_opp['funding_rate'] < current_opportunity['funding_rate']:
-                        add_ui_log(f"🔥 Better priority coin found! Switching: {symbol} ({rate_percent}) -> {scanned_opp['symbol']} ({scanned_opp['funding_rate']*100:+.4f}%)")
-                        better_opp = scanned_opp
-                        break
+                current_time = time.time()
                 
-                time.sleep(3.0)
+                # Har 5 minutes me yeh block chalega
+                if current_time - last_scan_time >= SCAN_INTERVAL:
+                    last_scan_time = current_time
+                    
+                    try:
+                        # 1. Current armed coin ki live funding rate fetch karein
+                        tickers_check = binance_public_get("/fapi/v1/premiumIndex")
+                        if isinstance(tickers_check, list):
+                            coin_still_valid = False
+                            latest_current_rate = 0.0
+                            for t in tickers_check:
+                                if t.get("symbol") == symbol:
+                                    latest_current_rate = float(t.get("lastFundingRate", 0.0))
+                                    coin_still_valid = True
+                                    break
+                            
+                            # Log me saaf dikhega ki 5 minute scan ke baad abhi funding kitni hai
+                            add_ui_log(f"🔍 [5-Min Scan] {symbol} Current Funding Rate: {latest_current_rate*100:+.4f}%")
+                            
+                            # Check karein ki rate threshold se bekar toh nahi ho gayi (e.g., > -0.4%)
+                            if coin_still_valid and latest_current_rate > MIN_FUNDING_RATE_THRESHOLD:
+                                add_ui_log(f"⚠️ WARNING: {symbol} rate worsened to {latest_current_rate*100:+.4f}%! Aborting trade...")
+                                abort_current = True
+                                break
+                            
+                            # Current opportunity ki funding rate ko live update karein
+                            current_opportunity['funding_rate'] = latest_current_rate
+
+                        # 2. Market me koi doosra behtar coin hai ya nahi check karein
+                        scanned_opp = scan_best_funding_opportunity()
+                        if scanned_opp and scanned_opp['symbol'] != symbol:
+                            if scanned_opp['funding_rate'] < current_opportunity['funding_rate']:
+                                add_ui_log(f"🔥 Better priority coin found during 5-min scan! Switching: {symbol} -> {scanned_opp['symbol']} ({scanned_opp['funding_rate']*100:+.4f}%)")
+                                better_opp = scanned_opp
+                                break
+                                
+                    except Exception as e:
+                        add_ui_log(f"⚠️ Error during 5-min funding scan: {e}")
+
+                time.sleep(1.0)
+
+            if abort_current:
+                add_ui_log("🔄 Trade aborted due to weakened funding rate. Resuming normal scanning...")
+                current_opportunity = None
+                time.sleep(5)
+                continue
 
             if better_opp:
                 current_opportunity = better_opp
-                continue  # Naye behtar coin ke sath dobara loop start hoga
+                continue
             # ------------------------------------------------------------
 
             now_ms = get_synced_time_ms()
