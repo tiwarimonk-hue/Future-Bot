@@ -18,8 +18,8 @@ load_dotenv()
 # ==========================================
 # 1. API KEYS & CONFIGURATION
 # ==========================================
-API_KEY = os.environ.get('BINANCE_API_KEY', '').strip()
-API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
+API_KEY = os.environ.get('BINANCE_API_KEY', '')
+API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 # HTTP Session setup with persistent connection headers
@@ -166,7 +166,8 @@ def cleanup_orphan_positions():
                     add_ui_log(f"⚠️ Found active orphan position: {sym} (Amt: {amt}). Closing immediately...")
                     side = "SELL" if amt > 0 else "BUY"
                     res = place_market_order(sym, side, abs(amt), reduce_only=True)
-                    add_ui_log(f"🧹 Cleanup order sent for {sym}. Response: {res.get('status', 'ERR')}")
+                    status_val = res.get('status', 'ERR') if isinstance(res, dict) else 'ERR'
+                    add_ui_log(f"🧹 Cleanup order sent for {sym}. Response: {status_val}")
         else:
             add_ui_log("✅ No open positions found on startup.")
     except Exception as e:
@@ -187,7 +188,7 @@ def place_market_order(symbol, side, quantity, reduce_only=False):
     return binance_signed_request("POST", "/fapi/v1/order", params)
 
 # ==========================================
-# 6. WEB DASHBOARD SERVER
+# 6. WEB DASHBOARD SERVER & KEEP-ALIVE PING
 # ==========================================
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -312,8 +313,23 @@ def run_web_server():
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
+# Self-Ping Keep-Alive Thread (Prevents Sleep Mode on Cloud/Render)
+def self_ping_keep_alive():
+    time.sleep(10)
+    port = int(os.environ.get("PORT", 10000))
+    ping_url = f"http://127.0.0.1:{port}/api/status"
+    add_ui_log(f"🔄 Self-ping keep-alive thread initialized.")
+    while True:
+        try:
+            time.sleep(300)  # Har 5 minutes me khud ko ping karega
+            requests.get(ping_url, timeout=5)
+        except Exception:
+            pass
+
+threading.Thread(target=self_ping_keep_alive, daemon=True).start()
+
 # ==========================================
-# 7. WEBSOCKET PIPELINE (LIVE MARK PRICE)
+# 7. WEBSOCKET PIPELINE (LIVE MARK PRICE & PING-PONG)
 # ==========================================
 ws_ready = False
 
@@ -363,6 +379,7 @@ def connect_websocket():
                 on_close=on_ws_close,
                 on_error=on_ws_error
             )
+            # Built-in WebSocket Ping-Pong keep alive mechanism
             ws.run_forever(ping_interval=15, ping_timeout=10)
         except Exception as e:
             add_ui_log(f"WebSocket Exception: {e}")
@@ -517,9 +534,9 @@ def run_funding_capture_engine():
                 dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
                 dashboard_data['action_direction'] = "LONG CAPTURE ($5 MARGIN)"
 
-            t_entry = settle_epoch + 950      # T + 950ms Execution
-            t_exit = settle_epoch + 8000      # T + 8000ms Hard Exit
-            t_emergency = settle_epoch + 15000 # T + 15000ms Emergency Hard Exit
+            t_entry = settle_epoch + 950
+            t_exit = settle_epoch + 8000
+            t_emergency = settle_epoch + 15000
 
             entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
             exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
@@ -546,15 +563,17 @@ def run_funding_capture_engine():
 
             entry_res = place_market_order(symbol, "BUY", calc_qty)
             entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {entry_res.get('status', 'ERR')}")
+            entry_status = entry_res.get('status', 'ERR') if isinstance(entry_res, dict) else 'ERR'
+            add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {entry_status}")
 
             precision_wait_until(t_exit)
 
             exit_res = place_market_order(symbol, "SELL", calc_qty, reduce_only=True)
             exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            add_ui_log(f"🏁 SELL Executed for {symbol} at {exit_time_str} | Status: {exit_res.get('status', 'ERR')}")
+            exit_status = exit_res.get('status', 'ERR') if isinstance(exit_res, dict) else 'ERR'
+            add_ui_log(f"🏁 SELL Executed for {symbol} at {exit_time_str} | Status: {exit_status}")
 
-            if exit_res.get('status') != 'FILLED':
+            if exit_status != 'FILLED':
                 add_ui_log("⚠️ Exit order not immediately confirmed. Checking position status...")
                 precision_wait_until(t_emergency)
                 positions = binance_signed_request("GET", "/fapi/v2/positionRisk")
@@ -565,7 +584,7 @@ def run_funding_capture_engine():
                             add_ui_log(f"🚨 EMERGENCY: Position still open! Forcing emergency close for {symbol}...")
                             place_market_order(symbol, "SELL", rem_amt, reduce_only=True)
 
-            status_text = "SUCCESS" if entry_res.get('status') == 'FILLED' else "FAILED"
+            status_text = "SUCCESS" if entry_status == 'FILLED' else "FAILED"
             status_class = "status-profit" if status_text == "SUCCESS" else "status-cancel"
 
             add_ledger_entry({
