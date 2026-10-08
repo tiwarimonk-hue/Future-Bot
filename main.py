@@ -18,8 +18,8 @@ load_dotenv()
 # ==========================================
 # 1. API KEYS & CONFIGURATION
 # ==========================================
-API_KEY = os.environ.get('BINANCE_API_KEY', '')
-API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
+API_KEY = os.environ.get('BINANCE_API_KEY', '').strip()
+API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 # HTTP Session setup with persistent connection headers
@@ -149,7 +149,7 @@ def precision_wait_until(target_time_ms):
         elif diff > 2:
             time.sleep(0.0005)
         else:
-            time.sleep(0.0001)  # High precision wait without 100% CPU lockup
+            time.sleep(0.0001)
 
 # ==========================================
 # 4. STARTUP CHECK & ORPHAN POSITION CLEANUP
@@ -403,7 +403,6 @@ def scan_best_funding_opportunity():
             continue
 
         time_diff = next_time_ms - now_ms
-        # Filter for upcoming windows within 8 hours and rate <= -0.4%
         if 0 < time_diff <= 8 * 3600 * 1000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
             candidates.append({
                 "symbol": sym,
@@ -416,7 +415,6 @@ def scan_best_funding_opportunity():
     if not candidates:
         return None
 
-    # PRIORITY RULE: Pick the one with the earliest settlement time (closest next_funding_time)
     best = min(candidates, key=lambda x: x['next_funding_time'])
     
     if best['time_diff'] <= 1.5 * 3600 * 1000:
@@ -503,7 +501,7 @@ def run_funding_capture_engine():
                     dashboard_data['funding_rate'] = "0.00%"
                     dashboard_data['action_direction'] = "--"
                     dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
-                time.sleep(300)  # Dynamic check every 5 minutes when no target is found
+                time.sleep(300)
                 continue
 
             symbol = opportunity['symbol']
@@ -535,34 +533,27 @@ def run_funding_capture_engine():
 
             now_ms = get_synced_time_ms()
             
-            # Anti-Glitch Check: If entry time is too close or already passed, skip immediately instead of late entry
             if t_entry - now_ms < 500:
                 add_ui_log("⏰ Entry window too close or missed. Skipping to avoid late execution...")
                 time.sleep(5)
                 continue
 
-            # Step 1: Configure Leverage & Quantity
             calc_qty, lev = set_leverage_and_get_qty(symbol, opportunity['last_price'], ENTRY_MARGIN_USD)
             add_ui_log(f"⚙ Configured {symbol}: Leverage {lev}x | Quantity: {calc_qty}")
 
-            # Step 2: Precision Wait until Entry Target (T + 950ms)
             add_ui_log(f"⏳ Waiting for precision entry target: {entry_ist} IST")
             precision_wait_until(t_entry)
 
-            # Step 3: Execute BUY Order
             entry_res = place_market_order(symbol, "BUY", calc_qty)
             entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {entry_res.get('status', 'ERR')}")
 
-            # Step 4: Precision Wait until Exit Target (T + 8000ms)
             precision_wait_until(t_exit)
 
-            # Step 5: Execute SELL (ReduceOnly) Close Order
             exit_res = place_market_order(symbol, "SELL", calc_qty, reduce_only=True)
             exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             add_ui_log(f"🏁 SELL Executed for {symbol} at {exit_time_str} | Status: {exit_res.get('status', 'ERR')}")
 
-            # Step 5.1: Emergency Hard Exit Check (T + 15s safeguard)
             if exit_res.get('status') != 'FILLED':
                 add_ui_log("⚠️ Exit order not immediately confirmed. Checking position status...")
                 precision_wait_until(t_emergency)
@@ -574,7 +565,6 @@ def run_funding_capture_engine():
                             add_ui_log(f"🚨 EMERGENCY: Position still open! Forcing emergency close for {symbol}...")
                             place_market_order(symbol, "SELL", rem_amt, reduce_only=True)
 
-            # Step 6: Log trade to Ledger
             status_text = "SUCCESS" if entry_res.get('status') == 'FILLED' else "FAILED"
             status_class = "status-profit" if status_text == "SUCCESS" else "status-cancel"
 
