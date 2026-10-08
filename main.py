@@ -343,16 +343,17 @@ def on_ws_open(ws):
 def on_ws_message(ws, message):
     try:
         data = json.loads(message)
-        if isinstance(data, list):
-            with data_lock:
-                current_target = dashboard_data.get('target_symbol', '')
-                clean_target = current_target.split(' ')[0].strip()
-                if clean_target and not clean_target.startswith("Scanning"):
-                    for item in data:
-                        if item.get('s') == clean_target:
-                            rate = float(item.get('r', 0.0))
-                            dashboard_data['funding_rate'] = f"{rate * 100:+.4f}%"
-                            break
+        items = data if isinstance(data, list) else [data]
+        with data_lock:
+            current_target = dashboard_data.get('target_symbol', '')
+            clean_target = current_target.split(' ')[0].strip()
+            if clean_target and not clean_target.startswith("Scanning"):
+                for item in items:
+                    sym = item.get('s') or item.get('symbol')
+                    if sym == clean_target:
+                        rate = float(item.get('r') or item.get('fundingRate', 0.0))
+                        dashboard_data['funding_rate'] = f"{rate * 100:+.4f}%"
+                        break
     except Exception:
         pass
 
@@ -495,6 +496,8 @@ def run_funding_capture_engine():
     add_ui_log("Binance Dynamic Engine Active. Performing Startup Cleanup...")
     cleanup_orphan_positions()
 
+    current_opportunity = None
+
     while True:
         try:
             ws_check_count = 0
@@ -510,23 +513,24 @@ def run_funding_capture_engine():
             with data_lock:
                 dashboard_data['futures_balance'] = bal_str
 
-            opportunity = scan_best_funding_opportunity()
+            if not current_opportunity:
+                current_opportunity = scan_best_funding_opportunity()
+                if not current_opportunity:
+                    with data_lock:
+                        dashboard_data['target_symbol'] = "Scanning..."
+                        dashboard_data['funding_rate'] = "0.00%"
+                        dashboard_data['action_direction'] = "--"
+                        dashboard_data['status'] = "SCANNING: No coin <= -0.4% found. Next scan in 5m..."
+                    add_ui_log("🔍 No coin found matching threshold. Waiting 5 minutes for next scan...")
+                    time.sleep(300)
+                    continue
 
-            if not opportunity:
-                with data_lock:
-                    dashboard_data['target_symbol'] = "Scanning..."
-                    dashboard_data['funding_rate'] = "0.00%"
-                    dashboard_data['action_direction'] = "--"
-                    dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
-                time.sleep(300)
-                continue
-
-            symbol = opportunity['symbol']
-            rate = opportunity['funding_rate']
-            settle_epoch = opportunity['next_funding_time']
+            symbol = current_opportunity['symbol']
+            rate = current_opportunity['funding_rate']
+            settle_epoch = current_opportunity['next_funding_time']
             settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
             rate_percent = f"{rate * 100:+.4f}%"
-            window_type = opportunity['window_type']
+            window_type = current_opportunity['window_type']
 
             with data_lock:
                 dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
@@ -548,23 +552,63 @@ def run_funding_capture_engine():
 
             add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent}")
 
+            # --- CONTINUOUS SCANNING & DYNAMIC RE-ARMING WHILE ARMED ---
+            better_opp = None
+            while True:
+                now_ms = get_synced_time_ms()
+                diff = t_entry - now_ms
+                
+                if diff <= 5000:  # Entry time se 5 second pehle scanning lock ho jayegi
+                    break
+
+                scanned_opp = scan_best_funding_opportunity()
+                if scanned_opp and scanned_opp['symbol'] != symbol:
+                    if scanned_opp['funding_rate'] < current_opportunity['funding_rate']:
+                        add_ui_log(f"🔥 Better priority coin found! Switching: {symbol} ({rate_percent}) -> {scanned_opp['symbol']} ({scanned_opp['funding_rate']*100:+.4f}%)")
+                        better_opp = scanned_opp
+                        break
+                
+                time.sleep(3.0)
+
+            if better_opp:
+                current_opportunity = better_opp
+                continue  # Naye behtar coin ke sath dobara loop start hoga
+            # ------------------------------------------------------------
+
             now_ms = get_synced_time_ms()
-            
             if t_entry - now_ms < 500:
                 add_ui_log("⏰ Entry window too close or missed. Skipping to avoid late execution...")
+                current_opportunity = None
                 time.sleep(5)
                 continue
 
-            calc_qty, lev = set_leverage_and_get_qty(symbol, opportunity['last_price'], ENTRY_MARGIN_USD)
+            calc_qty, lev = set_leverage_and_get_qty(symbol, current_opportunity['last_price'], ENTRY_MARGIN_USD)
             add_ui_log(f"⚙ Configured {symbol}: Leverage {lev}x | Quantity: {calc_qty}")
 
             add_ui_log(f"⏳ Waiting for precision entry target: {entry_ist} IST")
             precision_wait_until(t_entry)
 
+            # --- ENTRY ORDER EXECUTION & ERROR SAFETY CHECK ---
             entry_res = place_market_order(symbol, "BUY", calc_qty)
             entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            entry_status = entry_res.get('status', 'ERR') if isinstance(entry_res, dict) else 'ERR'
-            add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {entry_status}")
+            
+            if isinstance(entry_res, dict):
+                entry_status = entry_res.get('status', 'ERR')
+                error_msg = entry_res.get('msg', '')
+            else:
+                entry_status = 'ERR'
+                error_msg = str(entry_res)
+
+            add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {entry_status} {error_msg}")
+
+            if entry_status != 'FILLED':
+                add_ui_log(f"⚠️ CRITICAL: Entry order failed or not filled! Aborting cycle...")
+                with data_lock:
+                    dashboard_data['status'] = f"ENTRY FAILED: {entry_status}"
+                current_opportunity = None
+                time.sleep(10)
+                continue
+            # --------------------------------------------------
 
             precision_wait_until(t_exit)
 
@@ -597,10 +641,12 @@ def run_funding_capture_engine():
             })
 
             add_ui_log("✅ Cycle finished successfully. Resuming scan...")
+            current_opportunity = None
             time.sleep(10)
 
         except Exception as e:
             add_ui_log(f"Engine Exception: {e}")
+            current_opportunity = None
             time.sleep(5)
 
 if __name__ == "__main__":
