@@ -518,7 +518,6 @@ def run_funding_capture_engine():
         try:
             positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_qty = 0.0
-            step_size = 1.0
             if isinstance(positions, list):
                 for p in positions:
                     if p.get("symbol") == symbol:
@@ -526,33 +525,16 @@ def run_funding_capture_engine():
                         break
 
             if pos_qty > 0:
-                try:
-                    info = binance_public_get("/fapi/v1/exchangeInfo")
-                    for s in info.get("symbols", []):
-                        if s.get("symbol") == symbol:
-                            for f in s.get("filters", []):
-                                if f.get("filterType") == "LOT_SIZE":
-                                    step_size = float(f.get("stepSize", "1"))
-                                    break
-                            break
-                except Exception:
-                    pass
-
-                step_str = f"{step_size:.8f}".rstrip("0")
-                qty_decimals = len(step_str.split(".")[1]) if "." in step_str else 0
-                calc_exit_qty = math.floor(pos_qty / step_size) * step_size
-                exit_qty_formatted = f"{calc_exit_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_calc_qty if 'calc_calc_qty' in locals() else calc_exit_qty))
-
                 exit_res = binance_signed_request("POST", "/fapi/v1/order", {
                     "symbol": symbol,
                     "side": "SELL",
                     "type": "MARKET",
-                    "quantity": exit_qty_formatted,
+                    "quantity": str(pos_qty),
                     "reduceOnly": "true"
                 })
                 add_ui_log(f"⏰ SELL Order Response for {symbol}: {exit_res}")
                 if isinstance(exit_res, dict) and "orderId" in exit_res:
-                    add_ui_log(f"✅ HARD EXIT EXECUTED SUCCESSFUL: {exit_qty_formatted} {symbol} at {exit_time_str}")
+                    add_ui_log(f"✅ HARD EXIT EXECUTED SUCCESSFUL: {pos_qty} {symbol} at {exit_time_str}")
                     status_text = "HARD EXIT (T+8s)"
                     status_class = "status-profit"
                 else:
