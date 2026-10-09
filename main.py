@@ -345,11 +345,9 @@ def on_ws_message(ws, message):
     except Exception:
         return
     
-    # Handle combined stream or direct stream data
     stream_data = data.get("data", data)
     event_type = stream_data.get("e", "")
 
-    # Funding rate stream
     if event_type == "fundingRate":
         sym = stream_data.get("s")
         rate = float(stream_data.get("r", 0))
@@ -362,7 +360,6 @@ def on_ws_message(ws, message):
                 live_market_data[sym]["fundingRate"] = rate
                 live_market_data[sym]["nextFundingTime"] = next_time
 
-    # Ticker price stream
     elif event_type == "24hrTicker" or "c" in stream_data:
         sym = stream_data.get("s")
         price = float(stream_data.get("c", stream_data.get("p", 0)))
@@ -377,18 +374,7 @@ def on_ws_open(ws):
     ws_ready = True
     with data_lock:
         dashboard_data['status'] = "WS STREAM CONNECTED (LIVE)"
-    add_ui_log("WebSocket Connection Opened. Subscribing to Live Market Streams...")
-    
-    # Subscribe to all market funding rates and tickers via Binance combined streams
-    sub_payload = {
-        "method": "SUBSCRIBE",
-        "params": [
-            "!fundingRate@arr",
-            "!ticker@arr"
-        ],
-        "id": 1
-    }
-    ws.send(json.dumps(sub_payload))
+    add_ui_log("WebSocket Connection Opened & Streaming Live Data...")
 
 def on_ws_close(ws, code, msg):
     global ws_ready
@@ -415,8 +401,8 @@ def connect_websocket():
     global ws_client
     while True:
         try:
-            # Using Binance combined stream endpoint
-            ws_url = "wss://fstream.binance.com/stream"
+            # FIX: Combined streams passed directly in URL query string to prevent disconnection
+            ws_url = "wss://fstream.binance.com/stream?streams=!fundingRate@arr/!ticker@arr"
             ws_client = websocket.WebSocketApp(
                 ws_url,
                 on_open=on_ws_open,
@@ -576,18 +562,15 @@ def run_funding_capture_engine():
 
         add_ui_log(f"🔒 COIN LOCKED: {symbol} | Rate: {rate_percent} | Settlement: {settle_dt.strftime('%H:%M:%S IST')}")
 
-        # COIN LOCK LOOP (No REST polling needed)
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_rescan:
                 break
             time.sleep(5.0)
 
-        # T - 65 SECONDS PRE-ENTRY CHECK
         precision_wait_until(t_rescan)
         add_ui_log(f"⚡ T-65s Pre-Entry Check for locked coin {symbol}...")
         
-        # T + 950 MS ENTRY EXECUTION
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
@@ -605,7 +588,6 @@ def run_funding_capture_engine():
         except Exception as e:
             add_ui_log(f"Entry execution failed: {e}")
 
-        # T + 8000 MS HARD EXIT EXECUTION
         precision_wait_until(t_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
