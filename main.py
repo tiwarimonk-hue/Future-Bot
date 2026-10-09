@@ -2,13 +2,10 @@ import time
 import threading
 import logging
 import os
-import asyncio
-import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from flask import Flask, render_template, jsonify, request
 import ccxt
-import websockets
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -40,8 +37,11 @@ class BinanceFundingBot:
         self.exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': secret_key,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'swap', 'adjustForTimeDifference': True}
+            'enableRateLimit': True, # Prevents IP ban / 418 errors
+            'options': {
+                'defaultType': 'swap',
+                'adjustForTimeDifference': True
+            }
         })
         if testnet:
             self.exchange.set_sandbox_mode(True)
@@ -85,7 +85,7 @@ class BinanceFundingBot:
                     max_lev = leverage_brackets[0]['brackets'][0]['initialLeverage'] if leverage_brackets else 20
                     leverage = min(25, max_lev) # Max 25x capped
                     
-                    self.exchange.fapiPrivate_post_leverage({'symbol': symbol.replace('/', ''), 'leverage': leverage})
+                    self.exchange.fapiPrivate_post_leverage({'symbol': symbol.replace('/', '').replace(':USDT', ''), 'leverage': leverage})
                     
                     mark_price = float(self.exchange.fetch_ticker(symbol)['last'])
                     target_notional = 1.0 * leverage # $1 Margin * Leverage
@@ -127,68 +127,60 @@ class BinanceFundingBot:
                     
             time.sleep(0.005)
 
-    async def ws_funding_scanner(self):
-        """Binance WebSocket Continuous Stream (Zero Rate Limit / No IP Ban)"""
-        uri = "wss://fstream.binance.com/ws/!continuousKline_1h@arr" # or fallback to premium index stream
-        # Using continuous futures mark price stream which includes funding rate
-        uri_mark = "wss://fstream.binance.com/ws/!markPrice@arr"
-        
-        log_message("Connecting to Binance WebSocket Stream for real-time scanning...")
-        while self.running:
-            try:
-                async with websockets.connect(uri_mark) as websocket:
-                    log_message("WebSocket connected successfully!")
-                    while self.running:
-                        message = await websocket.recv()
-                        data = json.loads(message)
-                        
-                        scanned = []
-                        for item in data:
-                            symbol_raw = item.get('s', '')
-                            # Convert BTCUSDT to BTC/USDT format for CCXT compatibility
-                            if not symbol_raw.endswith('USDT'):
-                                continue
-                            symbol = symbol_raw[:-4] + '/USDT'
-                            
-                            funding_rate = float(item.get('r', 0)) # funding rate
-                            next_funding_time = int(item.get('T', 0)) # next funding time
-                            mark_price = float(item.get('p', 0))
-                            rate_pct = funding_rate * 100
-                            
-                            if rate_pct <= -0.4:
-                                scanned.append({
-                                    "symbol": symbol,
-                                    "funding_rate": rate_pct,
-                                    "next_funding_time": next_funding_time,
-                                    "mark_price": mark_price,
-                                    "time_str": datetime.fromtimestamp(next_funding_time/1000, timezone.utc).strftime('%H:%M:%S UTC')
-                                })
-                        
-                        scanned.sort(key=lambda x: x['next_funding_time'])
-                        bot_state["scanned_coins"] = scanned
-                        bot_state["armed_coins"] = scanned
-                        
-                        if scanned:
-                            top_coin = scanned[0]
-                            # Spawn trade thread if not already running for this target
-                            if not bot_state["live_target"] or bot_state["live_target"]["symbol"] != top_coin["symbol"]:
-                                log_message(f"WebSocket Armed Top Coin: {top_coin['symbol']} ({top_coin['funding_rate']:.3f}%)")
-                                threading.Thread(target=self.execute_arbitrage_trade, args=(top_coin,)).start()
-                        
-                        await asyncio.sleep(1)
-            except Exception as e:
-                log_message(f"WebSocket disconnected: {e}. Reconnecting in 5 seconds...")
-                await asyncio.sleep(5)
-
-    def start_websocket_loop(self):
-        self.sync_time()
-        asyncio.run(self.ws_funding_scanner())
+    def scan_markets(self):
+        try:
+            self.exchange.load_markets()
+            funding_data = self.exchange.fetch_funding_rates()
+            scanned = []
+            
+            for symbol, data in funding_data.items():
+                funding_rate = float(data.get('fundingRate') or 0)
+                next_funding_time = int(data.get('fundingTimestamp') or data.get('info', {}).get('nextFundingTime', 0))
+                rate_pct = funding_rate * 100
+                
+                # Threshold: -0.4% or more negative
+                if rate_pct <= -0.4:
+                    scanned.append({
+                        "symbol": symbol,
+                        "funding_rate": rate_pct,
+                        "next_funding_time": next_funding_time,
+                        "time_str": datetime.fromtimestamp(next_funding_time/1000, timezone.utc).strftime('%H:%M:%S UTC') if next_funding_time else "N/A"
+                    })
+            
+            # Sort by nearest settlement time (1h, 4h, 8h priority)
+            scanned.sort(key=lambda x: x['next_funding_time'] if x['next_funding_time'] else float('inf'))
+            bot_state["scanned_coins"] = scanned
+            bot_state["armed_coins"] = scanned
+            
+            if scanned:
+                top_coin = scanned[0]
+                log_message(f"Armed Top Coin: {top_coin['symbol']} ({top_coin['funding_rate']:.3f}%)")
+                if not bot_state["live_target"] or bot_state["live_target"]["symbol"] != top_coin["symbol"]:
+                    threading.Thread(target=self.execute_arbitrage_trade, args=(top_coin,)).start()
+            else:
+                log_message("Scanning... No coins found <= -0.4%.")
+                
+        except Exception as e:
+            log_message(f"Scan error: {e}")
 
     def bot_loop(self):
         self.running = True
         bot_state["status"] = "RUNNING"
-        log_message("Binance Dynamic WSS Funding Engine started.")
-        self.start_websocket_loop()
+        log_message("Binance Dynamic Funding Engine started.")
+        
+        while self.running:
+            try:
+                self.sync_time()
+                self.scan_markets()
+                
+                # Scan every 15 seconds to catch opportunities instantly without IP ban
+                for _ in range(15):
+                    if not self.running:
+                        break
+                    time.sleep(1)
+            except Exception as e:
+                log_message(f"Loop error: {e}")
+                time.sleep(10)
 
 bot_instance = None
 
