@@ -1,6 +1,2 @@
-flask
-ccxt
-requests
-python-dotenv
-websockets
-asyncio
+requests>=2.31.0
+websocket-client>=1.6.0
