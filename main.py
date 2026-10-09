@@ -53,7 +53,7 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-ENTRY_MARGIN_USD = 5.0              # $5 Fixed Margin
+ENTRY_MARGIN_USD = 1.0              # $1 Fixed Margin
 
 clock_offset_ms = 0.0
 
@@ -161,7 +161,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Funding Capture Engine ($5 Margin + Max Leverage)</h1>
+    <h1>⚡ Binance Funding Capture Engine ($1 Margin + Max Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -236,7 +236,7 @@ def self_ping_worker():
             requests.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
         except Exception:
             pass
-        time.sleep(300)  # Har 5 minute mein khud ko ping karega
+        time.sleep(300)
 
 threading.Thread(target=run_web_server, daemon=True).start()
 threading.Thread(target=self_ping_worker, daemon=True).start()
@@ -372,7 +372,7 @@ def scan_best_funding_opportunity():
 
     return None
 
-def set_max_leverage_and_get_qty(symbol, price, margin_usd=5.0):
+def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
     max_leverage = 25
     step_size = 1.0
     min_qty = 1.0
@@ -446,7 +446,7 @@ def run_funding_capture_engine():
             dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
             dashboard_data['funding_rate'] = rate_percent
             dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-            dashboard_data['action_direction'] = "LONG CAPTURE ($5 MARGIN)"
+            dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
 
         t_rescan = settle_epoch - 65000
         t_entry = settle_epoch + 950      # T + 950ms Execution
@@ -530,11 +530,14 @@ def run_funding_capture_engine():
                 "type": "MARKET",
                 "quantity": qty
             })
-            if "orderId" in order_res:
-                add_ui_log(f"🚀 MARKET ENTRY EXECUTED (BUY): {qty} {symbol} ($5 Margin @ {max_lev}x)")
+            # FIX: Check for orderId instead of strict FILLED status for market orders
+            if isinstance(order_res, dict) and "orderId" in order_res:
+                order_status = order_res.get('status', 'UNKNOWN')
+                add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {order_status}")
                 entry_success = True
             else:
-                add_ui_log(f"Entry order rejected: {order_res.get('msg', 'Unknown Error')}")
+                msg = order_res.get('msg', 'Unknown Error') if isinstance(order_res, dict) else str(order_res)
+                add_ui_log(f"❌ Entry order rejected: {msg}")
         except Exception as e:
             add_ui_log(f"Entry execution error: {e}")
 
@@ -544,35 +547,36 @@ def run_funding_capture_engine():
         status_text = "EXIT FAILED"
         status_class = "status-cancel"
 
-        if entry_success:
-            try:
-                positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-                pos_qty = 0.0
-                if isinstance(positions, list):
-                    for p in positions:
-                        if p.get("symbol") == symbol:
-                            pos_qty = abs(float(p.get("positionAmt", 0)))
-                            break
+        try:
+            # FIX: Always check open position risk directly from exchange during exit phase
+            positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+            pos_qty = 0.0
+            if isinstance(positions, list):
+                for p in positions:
+                    if p.get("symbol") == symbol:
+                        pos_qty = abs(float(p.get("positionAmt", 0)))
+                        break
 
-                if pos_qty > 0:
-                    exit_res = binance_signed_request("POST", "/fapi/v1/order", {
-                        "symbol": symbol,
-                        "side": "SELL",
-                        "type": "MARKET",
-                        "quantity": str(pos_qty),
-                        "reduceOnly": "true"
-                    })
+            if pos_qty > 0:
+                exit_res = binance_signed_request("POST", "/fapi/v1/order", {
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "type": "MARKET",
+                    "quantity": str(pos_qty),
+                    "reduceOnly": "true"
+                })
+                if isinstance(exit_res, dict) and "orderId" in exit_res:
                     add_ui_log(f"⏰ HARD EXIT EXECUTED (SELL MARKET): {pos_qty} {symbol} at {exit_time_str}")
                     status_text = "HARD EXIT (T+8s)"
                     status_class = "status-profit"
                 else:
-                    status_text = "NO POSITION OPEN"
-                    status_class = "status-cancel"
-            except Exception as e:
-                add_ui_log(f"Hard Exit Failed: {e}")
-        else:
-            status_text = "ENTRY FAILED"
-            status_class = "status-cancel"
+                    add_ui_log(f"❌ Exit order failed: {exit_res.get('msg', 'Unknown')}")
+            else:
+                add_ui_log(f"⚠️ No active position found for {symbol} to exit.")
+                status_text = "NO POSITION"
+                status_class = "status-cancel"
+        except Exception as e:
+            add_ui_log(f"Hard Exit Execution Error: {e}")
 
         add_ledger_entry({
             "coin": f"{symbol} ({window_type})",
