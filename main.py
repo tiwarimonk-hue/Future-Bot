@@ -73,37 +73,48 @@ class BinanceHTTP:
         return query_string + f"&signature={signature}"
 
     def get_server_time(self):
-        resp = self.session.get(f"{self.base_url}/fapi/v1/time")
+        resp = self.session.get(f"{self.base_url}/fapi/v1/time", timeout=10)
         data = resp.json()
         server_time_ms = data.get("serverTime", int(time.time() * 1000))
-        # Structuring like Bybit response so sync_bybit_clock works seamlessly
         return {"result": {"timeNano": int(server_time_ms * 1e6)}}
 
     def get_tickers(self, category="linear"):
-        prem_resp = self.session.get(f"{self.base_url}/fapi/v1/premiumIndex").json()
-        price_resp = self.session.get(f"{self.base_url}/fapi/v1/ticker/price").json()
-        price_map = {item['symbol']: float(item['price']) for item in price_resp}
-        
-        result_list = []
-        if isinstance(prem_resp, list):
-            for item in prem_resp:
-                sym = item.get("symbol")
-                if not sym:
-                    continue
-                result_list.append({
-                    "symbol": sym,
-                    "fundingRate": item.get("lastFundingRate", "0"),
-                    "nextFundingTime": item.get("nextFundingTime", 0),
-                    "lastPrice": price_map.get(sym, 0.0)
-                })
-        return {"result": {"list": result_list}}
+        try:
+            resp = self.session.get(f"{self.base_url}/fapi/v1/premiumIndex", timeout=10)
+            if resp.status_code != 200:
+                add_ui_log(f"⚠ Binance PremiumIndex HTTP Error {resp.status_code}: {resp.text}")
+                return {"result": {"list": []}}
+            
+            prem_resp = resp.json()
+            
+            price_resp = self.session.get(f"{self.base_url}/fapi/v1/ticker/price", timeout=10).json()
+            price_map = {item['symbol']: float(item['price']) for item in price_resp if 'symbol' in item and 'price' in item}
+            
+            result_list = []
+            if isinstance(prem_resp, list):
+                for item in prem_resp:
+                    sym = item.get("symbol")
+                    if not sym:
+                        continue
+                    result_list.append({
+                        "symbol": sym,
+                        "fundingRate": item.get("lastFundingRate", "0"),
+                        "nextFundingTime": item.get("nextFundingTime", 0),
+                        "lastPrice": price_map.get(sym, 0.0)
+                    })
+            else:
+                add_ui_log(f"⚠ Unexpected premiumIndex format: {prem_resp}")
+            return {"result": {"list": result_list}}
+        except Exception as e:
+            add_ui_log(f"⚠ get_tickers exception: {e}")
+            return {"result": {"list": []}}
 
     def get_instruments_info(self, category="linear", symbol=None):
-        exchange_info = self.session.get(f"{self.base_url}/fapi/v1/exchangeInfo").json()
+        exchange_info = self.session.get(f"{self.base_url}/fapi/v1/exchangeInfo", timeout=10).json()
         symbols_info = exchange_info.get("symbols", [])
         
         try:
-            brackets = self.session.get(f"{self.base_url}/fapi/v1/leverageBracket").json()
+            brackets = self.session.get(f"{self.base_url}/fapi/v1/leverageBracket", timeout=10).json()
             bracket_map = {b['symbol']: b['brackets'][0]['initialLeverage'] for b in brackets if b.get('brackets')}
         except Exception:
             bracket_map = {}
@@ -139,13 +150,13 @@ class BinanceHTTP:
             "leverage": int(float(buyLeverage))
         }
         query = self._sign(params)
-        resp = self.session.post(f"{self.base_url}/fapi/v1/leverage?{query}")
+        resp = self.session.post(f"{self.base_url}/fapi/v1/leverage?{query}", timeout=10)
         return resp.json()
 
     def cancel_all_orders(self, category="linear", symbol=""):
         params = {"symbol": symbol}
         query = self._sign(params)
-        resp = self.session.delete(f"{self.base_url}/fapi/v1/allOpenOrders?{query}")
+        resp = self.session.delete(f"{self.base_url}/fapi/v1/allOpenOrders?{query}", timeout=10)
         return resp.json()
 
     def place_order(self, category="linear", symbol="", side="", orderType="", qty="", reduceOnly=False, positionIdx=0):
@@ -158,7 +169,7 @@ class BinanceHTTP:
         if reduceOnly:
             params["reduceOnly"] = "true"
         query = self._sign(params)
-        resp = self.session.post(f"{self.base_url}/fapi/v1/order?{query}")
+        resp = self.session.post(f"{self.base_url}/fapi/v1/order?{query}", timeout=10)
         res_data = resp.json()
         if "code" in res_data and res_data["code"] != 200 and res_data["code"] != 0:
             raise Exception(res_data.get("msg", "Binance Order Error"))
@@ -167,7 +178,7 @@ class BinanceHTTP:
     def get_positions(self, category="linear", symbol=""):
         params = {"symbol": symbol}
         query = self._sign(params)
-        resp = self.session.get(f"{self.base_url}/fapi/v2/positionRisk?{query}")
+        resp = self.session.get(f"{self.base_url}/fapi/v2/positionRisk?{query}", timeout=10)
         data = resp.json()
         positions = []
         if isinstance(data, list):
@@ -193,8 +204,8 @@ def sync_bybit_clock(http_client):
         
         with data_lock:
             dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"⚠ Clock sync failed: {e}")
 
 def get_synced_time_ms():
     return (time.time() * 1000) + clock_offset_ms
@@ -409,8 +420,13 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 
 def scan_best_funding_opportunity(http_client):
     try:
-        tickers = http_client.get_tickers(category="linear")["result"]["list"]
-    except Exception:
+        tickers_resp = http_client.get_tickers(category="linear")
+        tickers = tickers_resp["result"]["list"]
+    except Exception as e:
+        add_ui_log(f"⚠ Scan error fetching tickers: {e}")
+        return None
+
+    if not tickers:
         return None
 
     now_ms = int(get_synced_time_ms())
