@@ -53,7 +53,7 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-ENTRY_MARGIN_USD = 1.0              # $1 Fixed Margin
+ENTRY_MARGIN_USD = 5.0              # $5 Fixed Margin
 
 clock_offset_ms = 0.0
 
@@ -111,7 +111,7 @@ def precision_wait_until(target_time_ms):
             time.sleep(0.0005)
 
 # ==========================================
-# 3. WEB DASHBOARD
+# 3. WEB DASHBOARD & SELF-PING KEEPALIVE
 # ==========================================
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -161,7 +161,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Funding Capture Engine ($1 Margin + Max Leverage)</h1>
+    <h1>⚡ Binance Funding Capture Engine ($5 Margin + Max Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -228,7 +228,18 @@ def run_web_server():
     server = HTTPServer(('0.0.0.0', port), FundingDashboardHandler)
     server.serve_forever()
 
+def self_ping_worker():
+    port = int(os.environ.get("PORT", 10000))
+    time.sleep(5)
+    while True:
+        try:
+            requests.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
+        except Exception:
+            pass
+        time.sleep(300)  # Har 5 minute mein khud ko ping karega
+
 threading.Thread(target=run_web_server, daemon=True).start()
+threading.Thread(target=self_ping_worker, daemon=True).start()
 
 # ==========================================
 # 4. WEBSOCKET PIPELINE
@@ -361,7 +372,7 @@ def scan_best_funding_opportunity():
 
     return None
 
-def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
+def set_max_leverage_and_get_qty(symbol, price, margin_usd=5.0):
     max_leverage = 25
     step_size = 1.0
     min_qty = 1.0
@@ -435,7 +446,7 @@ def run_funding_capture_engine():
             dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
             dashboard_data['funding_rate'] = rate_percent
             dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-            dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
+            dashboard_data['action_direction'] = "LONG CAPTURE ($5 MARGIN)"
 
         t_rescan = settle_epoch - 65000
         t_entry = settle_epoch + 950      # T + 950ms Execution
@@ -520,7 +531,7 @@ def run_funding_capture_engine():
                 "quantity": qty
             })
             if "orderId" in order_res:
-                add_ui_log(f"🚀 MARKET ENTRY EXECUTED (BUY): {qty} {symbol} ($1 Margin @ {max_lev}x)")
+                add_ui_log(f"🚀 MARKET ENTRY EXECUTED (BUY): {qty} {symbol} ($5 Margin @ {max_lev}x)")
                 entry_success = True
             else:
                 add_ui_log(f"Entry order rejected: {order_res.get('msg', 'Unknown Error')}")
