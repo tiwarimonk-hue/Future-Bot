@@ -31,7 +31,7 @@ http_session.headers.update({
 })
 
 MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% or more negative
-ENTRY_MARGIN_USD = 5.0              # $5 Margin
+ENTRY_MARGIN_USD = 1.0              # $1 Margin
 
 # ==========================================
 # 2. TIMEZONE & DASHBOARD TELEMETRY STATE
@@ -241,7 +241,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Dynamic Engine ($5 Margin + Max 25x Leverage)</h1>
+    <h1>⚡ Binance Dynamic Engine ($1 Margin + Max 25x Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -380,7 +380,6 @@ def connect_websocket():
                 on_close=on_ws_close,
                 on_error=on_ws_error
             )
-            # Built-in WebSocket Ping-Pong keep alive mechanism
             ws.run_forever(ping_interval=15, ping_timeout=10)
         except Exception as e:
             add_ui_log(f"WebSocket Exception: {e}")
@@ -444,7 +443,7 @@ def scan_best_funding_opportunity():
 
     return best
 
-def set_leverage_and_get_qty(symbol, price, margin_usd=5.0):
+def set_leverage_and_get_qty(symbol, price, margin_usd=1.0):
     max_leverage = 25
     step_size = 1.0
     min_qty = 1.0
@@ -536,7 +535,7 @@ def run_funding_capture_engine():
                 dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
                 dashboard_data['funding_rate'] = rate_percent
                 dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-                dashboard_data['action_direction'] = "LONG CAPTURE ($5 MARGIN)"
+                dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
 
             t_entry = settle_epoch + 950
             t_exit = settle_epoch + 8000
@@ -556,23 +555,21 @@ def run_funding_capture_engine():
             better_opp = None
             abort_current = False
             last_scan_time = 0
-            SCAN_INTERVAL = 300  # 5 minutes (300 seconds)
+            SCAN_INTERVAL = 300  # 5 minutes
 
             while True:
                 now_ms = get_synced_time_ms()
                 diff = t_entry - now_ms
                 
-                if diff <= 5000:  # Entry time se 5 second pehle final lock
+                if diff <= 5000:
                     break
 
                 current_time = time.time()
                 
-                # Har 5 minutes me yeh block chalega
                 if current_time - last_scan_time >= SCAN_INTERVAL:
                     last_scan_time = current_time
                     
                     try:
-                        # 1. Current armed coin ki live funding rate fetch karein
                         tickers_check = binance_public_get("/fapi/v1/premiumIndex")
                         if isinstance(tickers_check, list):
                             coin_still_valid = False
@@ -583,19 +580,19 @@ def run_funding_capture_engine():
                                     coin_still_valid = True
                                     break
                             
-                            # Log me saaf dikhega ki 5 minute scan ke baad abhi funding kitni hai
                             add_ui_log(f"🔍 [5-Min Scan] {symbol} Current Funding Rate: {latest_current_rate*100:+.4f}%")
                             
-                            # Check karein ki rate threshold se bekar toh nahi ho gayi (e.g., > -0.4%)
                             if coin_still_valid and latest_current_rate > MIN_FUNDING_RATE_THRESHOLD:
                                 add_ui_log(f"⚠️ WARNING: {symbol} rate worsened to {latest_current_rate*100:+.4f}%! Aborting trade...")
                                 abort_current = True
                                 break
                             
-                            # Current opportunity ki funding rate ko live update karein
+                            # Dashboard par live funding rate update karne ke liye
+                            rate_percent = f"{latest_current_rate * 100:+.4f}%"
                             current_opportunity['funding_rate'] = latest_current_rate
+                            with data_lock:
+                                dashboard_data['funding_rate'] = rate_percent
 
-                        # 2. Market me koi doosra behtar coin hai ya nahi check karein
                         scanned_opp = scan_best_funding_opportunity()
                         if scanned_opp and scanned_opp['symbol'] != symbol:
                             if scanned_opp['funding_rate'] < current_opportunity['funding_rate']:
@@ -617,7 +614,6 @@ def run_funding_capture_engine():
             if better_opp:
                 current_opportunity = better_opp
                 continue
-            # ------------------------------------------------------------
 
             now_ms = get_synced_time_ms()
             if t_entry - now_ms < 500:
@@ -632,7 +628,7 @@ def run_funding_capture_engine():
             add_ui_log(f"⏳ Waiting for precision entry target: {entry_ist} IST")
             precision_wait_until(t_entry)
 
-            # --- ENTRY ORDER EXECUTION & ERROR SAFETY CHECK ---
+            # --- ENTRY ORDER EXECUTION ---
             entry_res = place_market_order(symbol, "BUY", calc_qty)
             entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             
@@ -652,27 +648,42 @@ def run_funding_capture_engine():
                 current_opportunity = None
                 time.sleep(10)
                 continue
-            # --------------------------------------------------
 
+            # --- HARD EXIT EXECUTION AT T + 8s WITH FALLBACK ---
             precision_wait_until(t_exit)
 
+            add_ui_log(f"🏁 Executing Hard Exit (SELL) for {symbol} at T + 8s...")
             exit_res = place_market_order(symbol, "SELL", calc_qty, reduce_only=True)
             exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            exit_status = exit_res.get('status', 'ERR') if isinstance(exit_res, dict) else 'ERR'
-            add_ui_log(f"🏁 SELL Executed for {symbol} at {exit_time_str} | Status: {exit_status}")
 
-            if exit_status != 'FILLED':
-                add_ui_log("⚠️ Exit order not immediately confirmed. Checking position status...")
+            exit_success = False
+            if isinstance(exit_res, dict):
+                if exit_res.get('status') == 'FILLED':
+                    exit_success = True
+                elif 'code' in exit_res:
+                    add_ui_log(f"⚠️ Hard Exit ReduceOnly rejected: {exit_res.get('msg')}. Trying normal market exit...")
+                    exit_res = place_market_order(symbol, "SELL", calc_qty, reduce_only=False)
+                    if isinstance(exit_res, dict) and exit_res.get('status') == 'FILLED':
+                        exit_success = True
+
+            # --- EMERGENCY CHECK (T + 15s) IF STILL NOT CLOSED ---
+            if not exit_success:
+                add_ui_log("⚠️ Exit order not immediately confirmed. Checking actual position status...")
                 precision_wait_until(t_emergency)
                 positions = binance_signed_request("GET", "/fapi/v2/positionRisk")
                 if isinstance(positions, list):
                     for pos in positions:
-                        if pos.get('symbol') == symbol and float(pos.get('positionAmt', 0)) != 0:
-                            rem_amt = abs(float(pos.get('positionAmt')))
-                            add_ui_log(f"🚨 EMERGENCY: Position still open! Forcing emergency close for {symbol}...")
-                            place_market_order(symbol, "SELL", rem_amt, reduce_only=True)
+                        if pos.get('symbol') == symbol:
+                            amt = float(pos.get('positionAmt', 0))
+                            if amt != 0:
+                                rem_amt = abs(amt)
+                                side = "SELL" if amt > 0 else "BUY"
+                                add_ui_log(f"🚨 EMERGENCY: Position still open ({amt}). Forcing direct market close...")
+                                emergency_res = place_market_order(symbol, side, rem_amt, reduce_only=False)
+                                add_ui_log(f"Emergency close response: {emergency_res}")
+                                exit_success = True
 
-            status_text = "SUCCESS" if entry_status == 'FILLED' else "FAILED"
+            status_text = "SUCCESS" if exit_success else "FAILED"
             status_class = "status-profit" if status_text == "SUCCESS" else "status-cancel"
 
             add_ledger_entry({
@@ -684,7 +695,7 @@ def run_funding_capture_engine():
                 "status_class": status_class
             })
 
-            add_ui_log("✅ Cycle finished successfully. Resuming scan...")
+            add_ui_log(f"✅ Cycle finished with status: {status_text}. Resuming scan...")
             current_opportunity = None
             time.sleep(10)
 
