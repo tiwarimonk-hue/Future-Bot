@@ -321,7 +321,7 @@ def self_ping_keep_alive():
     add_ui_log(f"🔄 Self-ping keep-alive thread initialized.")
     while True:
         try:
-            time.sleep(300)  # Har 5 minutes me khud ko ping karega
+            time.sleep(300)
             requests.get(ping_url, timeout=5)
         except Exception:
             pass
@@ -492,7 +492,9 @@ def set_leverage_and_get_qty(symbol, price, margin_usd=1.0):
 # 9. MAIN EXECUTION ENGINE LOOP
 # ==========================================
 def run_funding_capture_engine():
-    add_ui_log("Binance Dynamic Engine Active. Performing Startup Cleanup...")
+    add_ui_log("Binance Dynamic Engine Active. Syncing clock with Binance...")
+    sync_binance_clock()  # FIX APPLIED HERE: Sync clock before making signed calls
+    add_ui_log("Performing Startup Cleanup...")
     cleanup_orphan_positions()
 
     current_opportunity = None
@@ -570,7 +572,6 @@ def run_funding_capture_engine():
                     last_scan_time = current_time
                     
                     try:
-                        # 1. Live balance update during armed state
                         bal_str = get_futures_usdt_balance()
                         with data_lock:
                             dashboard_data['futures_balance'] = bal_str
@@ -592,7 +593,6 @@ def run_funding_capture_engine():
                                 abort_current = True
                                 break
                             
-                            # Update live funding rate in dashboard & opportunity data
                             rate_percent = f"{latest_current_rate * 100:+.4f}%"
                             current_opportunity['funding_rate'] = latest_current_rate
                             with data_lock:
@@ -627,7 +627,6 @@ def run_funding_capture_engine():
                 time.sleep(5)
                 continue
 
-            # Refresh rate right before entry execution to lock latest scanned rate
             rate = current_opportunity['funding_rate']
             rate_percent = f"{rate * 100:+.4f}%"
 
