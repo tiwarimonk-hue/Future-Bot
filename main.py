@@ -46,7 +46,8 @@ API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-MIN_FUNDING_RATE_THRESHOLD = -0.004
+# Threshold updated to -0.1% (-0.001)
+MIN_FUNDING_RATE_THRESHOLD = -0.001
 ENTRY_MARGIN_USD = 1.0
 
 clock_offset_ms = 0.0
@@ -393,7 +394,7 @@ def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
     return qty_formatted, max_leverage
 
 def run_funding_capture_engine():
-    add_ui_log("Binance Dynamic Engine Active (Threshold: -0.4%). Waiting for WS...")
+    add_ui_log("Binance Dynamic Engine Active (Threshold: -0.1%). Waiting for WS...")
 
     while not ws_ready:
         time.sleep(0.1)
@@ -407,7 +408,7 @@ def run_funding_capture_engine():
                 dashboard_data['target_symbol'] = "Scanning..."
                 dashboard_data['funding_rate'] = "0.00%"
                 dashboard_data['action_direction'] = "--"
-                dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
+                dashboard_data['status'] = "SCANNING: No coin <= -0.1% found"
             time.sleep(3)
             continue
 
