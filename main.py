@@ -50,7 +50,7 @@ def add_ledger_entry(trade_info):
 
 
 # ==========================================
-# 2. BINANCE HTTP CLIENT & CLOCK SYNC
+# 2. BINANCE HTTP CLIENT & RATE-LIMIT CACHE
 # ==========================================
 
 class BinanceHTTP:
@@ -61,6 +61,10 @@ class BinanceHTTP:
         self.session = requests.Session()
         if api_key:
             self.session.headers.update({"X-MBX-APIKEY": api_key})
+        
+        # Rate limit protection cache
+        self._cache_tickers = None
+        self._cache_time = 0.0
 
     def _sign(self, params):
         params['timestamp'] = int(time.time() * 1000)
@@ -78,7 +82,12 @@ class BinanceHTTP:
         server_time_ms = data.get("serverTime", int(time.time() * 1000))
         return {"result": {"timeNano": int(server_time_ms * 1e6)}}
 
-    def get_tickers(self, category="linear"):
+    def get_tickers(self, category="linear", force_refresh=False):
+        now = time.time()
+        # Cache for 6 seconds to avoid HTTP 418 rate-limit ban
+        if not force_refresh and self._cache_tickers and (now - self._cache_time < 6.0):
+            return self._cache_tickers
+
         try:
             resp = self.session.get(f"{self.base_url}/fapi/v1/premiumIndex", timeout=10)
             if resp.status_code != 200:
@@ -102,9 +111,11 @@ class BinanceHTTP:
                         "nextFundingTime": item.get("nextFundingTime", 0),
                         "lastPrice": price_map.get(sym, 0.0)
                     })
-            else:
-                add_ui_log(f"⚠ Unexpected premiumIndex format: {prem_resp}")
-            return {"result": {"list": result_list}}
+            
+            final_data = {"result": {"list": result_list}}
+            self._cache_tickers = final_data
+            self._cache_time = now
+            return final_data
         except Exception as e:
             add_ui_log(f"⚠ get_tickers exception: {e}")
             return {"result": {"list": []}}
@@ -277,7 +288,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Dynamic Funding Engine ($3 Margin | Nearest Settlement First)</h1>
+    <h1>⚡ Binance Dynamic Funding Engine ($3 Margin | Coin Locked & Protected)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -362,7 +373,7 @@ ws_ready = False
 
 def on_ws_message(ws, message):
     try:
-        data = json.loads(message)
+        json.loads(message)
     except Exception:
         return
 
@@ -420,7 +431,7 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 
 def scan_best_funding_opportunity(http_client):
     try:
-        tickers_resp = http_client.get_tickers(category="linear")
+        tickers_resp = http_client.get_tickers(category="linear", force_refresh=True)
         tickers = tickers_resp["result"]["list"]
     except Exception as e:
         add_ui_log(f"⚠ Scan error fetching tickers: {e}")
@@ -520,12 +531,12 @@ def cancel_all_open_orders(http_client, symbol):
 
 
 # ==========================================
-# 6. FUNDING CAPTURE ENGINE MAIN LOOP
+# 6. FUNDING CAPTURE ENGINE & COIN LOCK
 # ==========================================
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Dynamic Funding Engine Active ($3 Margin | Single Order T+950ms | Threshold -0.3%). Waiting for WS...")
+    add_ui_log("Dynamic Funding Engine Active ($3 Margin | Coin Locked & Protected | Threshold -0.3%). Waiting for WS...")
 
     while not ws_ready:
         time.sleep(0.1)
@@ -540,7 +551,7 @@ def run_funding_capture_engine():
                 dashboard_data['funding_rate'] = "0.00%"
                 dashboard_data['action_direction'] = "--"
                 dashboard_data['status'] = "SCANNING: No coin <= -0.3% found"
-            time.sleep(3)
+            time.sleep(10)  # Cooldown to avoid hitting rate limits
             continue
 
         symbol = opportunity['symbol']
@@ -566,83 +577,32 @@ def run_funding_capture_engine():
         with data_lock:
             dashboard_data['entry_target'] = f"{entry_ist} IST (T + 950ms)"
             dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms / Hard Exit)"
-            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
+            dashboard_data['status'] = f"LOCKED & ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
 
-        add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry Target: T+950ms")
+        add_ui_log(f"🔒 COIN LOCKED: {symbol} | Rate: {rate_percent} | Settlement: {settle_dt.strftime('%H:%M:%S IST')}")
 
-        last_scan_time = time.time()
-        interrupted = False
-
+        # COIN LOCK LOOP: Ab yeh script is coin ko lock rakhegi aur bar-bar scan nahi karegi
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_rescan:
                 break
+            time.sleep(5.0) # Sleep lamba rakha hai taaki rate limit (HTTP 418) ka issue dobara na aaye
 
-            time.sleep(2.0)
-            
-            if time.time() - last_scan_time >= 900:
-                last_scan_time = time.time()
-                add_ui_log("🔍 Performing scheduled 15-minute background market rescan...")
-                sync_bybit_clock(http_client)
-                new_opp = scan_best_funding_opportunity(http_client)
-                
-                if new_opp:
-                    new_rate_str = f"{new_opp['funding_rate'] * 100:+.4f}%"
-                    
-                    if new_opp['symbol'] != symbol:
-                        if new_opp['next_funding_time'] < settle_epoch:
-                            add_ui_log(f"⚡ SWITCHING TARGET: Found earlier funding coin {new_opp['symbol']} ({new_rate_str})")
-                            interrupted = True
-                            break
-                        elif new_opp['next_funding_time'] == settle_epoch and new_opp['funding_rate'] < rate:
-                            add_ui_log(f"⚡ SWITCHING TARGET: Found better rate coin {new_opp['symbol']} ({new_rate_str}) for same time window")
-                            interrupted = True
-                            break
-                        else:
-                            add_ui_log(f"ℹ Rescan Ignored: {new_opp['symbol']} settles later than active target {symbol}")
-                    else:
-                        rate = new_opp['funding_rate']
-                        with data_lock:
-                            dashboard_data['funding_rate'] = new_rate_str
-                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {new_rate_str}"
-                        add_ui_log(f"🔄 Rescan Result: Same coin {symbol} active | Live Rate updated to {new_rate_str}")
-                else:
-                    add_ui_log("🔍 Rescan Result: No coin below -0.3% threshold found.")
-
-        if interrupted:
-            continue
-
+        # T - 65 SECONDS PRE-ENTRY FINAL CHECK
         precision_wait_until(t_rescan)
-        add_ui_log("⚡ T-65s Pre-Entry Final Rescan running...")
-        sync_bybit_clock(http_client)
-        final_opp = scan_best_funding_opportunity(http_client)
-
-        if final_opp:
-            if final_opp['symbol'] != symbol:
-                if final_opp['next_funding_time'] < settle_epoch or (final_opp['next_funding_time'] == settle_epoch and final_opp['funding_rate'] < rate):
-                    add_ui_log(f"🔄 PRE-ENTRY SWITCH: Upgraded to {final_opp['symbol']} ({final_opp['funding_rate']*100:.4f}%)")
-                    opportunity = final_opp
-                    symbol = opportunity['symbol']
-                    rate = opportunity['funding_rate']
-                    settle_epoch = opportunity['next_funding_time']
-                    window_type = opportunity['window_type']
-
-                    t_entry = settle_epoch + 950
-                    t_exit = settle_epoch + 8000
-            else:
-                opportunity = final_opp
-                rate = opportunity['funding_rate']
-                rate_str = f"{rate * 100:+.4f}%"
-                with data_lock:
-                    dashboard_data['funding_rate'] = rate_str
-                    dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_str}"
-
+        add_ui_log(f"⚡ T-65s Pre-Entry Check for locked coin {symbol}...")
+        
+        # T + 950 MS ENTRY EXECUTION
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
         try:
-            live_ticker = http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
-            live_price = float(live_ticker.get("lastPrice", opportunity['last_price']))
+            live_ticker = http_client.get_tickers(category="linear", force_refresh=True)["result"]["list"]
+            live_price = opportunity['last_price']
+            for t in live_ticker:
+                if t['symbol'] == symbol:
+                    live_price = float(t.get('lastPrice', live_price))
+                    break
         except Exception:
             live_price = opportunity['last_price']
 
@@ -658,6 +618,7 @@ def run_funding_capture_engine():
         except Exception as e:
             add_ui_log(f"Entry execution failed: {e}")
 
+        # T + 8000 MS HARD EXIT EXECUTION
         precision_wait_until(t_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
@@ -690,7 +651,7 @@ def run_funding_capture_engine():
             "status_class": status_class
         })
 
-        time.sleep(3)
+        time.sleep(5)
 
 
 if __name__ == '__main__':
