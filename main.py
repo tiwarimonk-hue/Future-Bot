@@ -53,7 +53,7 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-ENTRY_MARGIN_USD = 5.0              # $5 Fixed Margin
+ENTRY_MARGIN_USD = 1.0              # $1 Fixed Margin
 
 clock_offset_ms = 0.0
 
@@ -161,7 +161,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Funding Capture Engine ($5 Margin + Max Leverage)</h1>
+    <h1>⚡ Binance Funding Capture Engine ($1 Margin + Max Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -287,9 +287,22 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 # ==========================================
 # 5. MARKET SCANNER & CALCULATIONS
 # ==========================================
+def get_funding_intervals():
+    intervals = {}
+    try:
+        info = binance_public_get("/fapi/v1/exchangeInfo")
+        for s in info.get("symbols", []):
+            sym = s.get("symbol")
+            fi = s.get("fundingIntervalHours", 8)
+            intervals[sym] = int(fi)
+    except Exception:
+        pass
+    return intervals
+
 def scan_best_funding_opportunity():
     try:
         tickers = binance_public_get("/fapi/v1/premiumIndex")
+        intervals = get_funding_intervals()
     except Exception:
         return None
 
@@ -313,15 +326,17 @@ def scan_best_funding_opportunity():
 
         time_diff = next_time_ms - now_ms
         if 0 < time_diff <= 8 * 3600 * 1000:
+            interval = intervals.get(sym, 8)
             coin_data = {
                 "symbol": sym,
                 "funding_rate": rate,
                 "next_funding_time": next_time_ms,
-                "last_price": mark_price
+                "last_price": mark_price,
+                "interval": interval
             }
-            if time_diff <= 1.5 * 3600 * 1000:
+            if interval == 1 or time_diff <= 1.5 * 3600 * 1000:
                 candidates_1h.append(coin_data)
-            elif time_diff <= 4.5 * 3600 * 1000:
+            elif interval == 4 or time_diff <= 4.5 * 3600 * 1000:
                 candidates_4h.append(coin_data)
             else:
                 candidates_8h.append(coin_data)
@@ -346,28 +361,25 @@ def scan_best_funding_opportunity():
 
     return None
 
-def set_max_leverage_and_get_qty(symbol, price, margin_usd=5.0):
-    max_leverage = 10
+def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
+    max_leverage = 25
     step_size = 1.0
     min_qty = 1.0
 
-    # 1. Fetch Max Leverage Bracket
     try:
         brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
         if isinstance(brackets, list) and len(brackets) > 0:
             b_list = brackets[0].get("brackets", [])
             if b_list:
-                max_leverage = max([b.get("initialLeverage", 10) for b in b_list])
+                max_leverage = max([b.get("initialLeverage", 25) for b in b_list])
     except Exception:
         pass
 
-    # 2. Set Max Leverage
     try:
         binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": int(max_leverage)})
     except Exception:
         pass
 
-    # 3. Fetch Symbol Precision Rules
     try:
         info = binance_public_get("/fapi/v1/exchangeInfo")
         for s in info.get("symbols", []):
@@ -423,7 +435,7 @@ def run_funding_capture_engine():
             dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
             dashboard_data['funding_rate'] = rate_percent
             dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-            dashboard_data['action_direction'] = "LONG CAPTURE ($5 MARGIN)"
+            dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
 
         t_rescan = settle_epoch - 65000
         t_entry = settle_epoch + 950      # T + 950ms Execution
@@ -439,7 +451,6 @@ def run_funding_capture_engine():
 
         add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+950ms")
 
-        # BACKGROUND 15-MIN RE-SCANNING LOOP UNTIL T-65s
         last_scan_time = time.time()
         interrupted = False
 
@@ -474,7 +485,6 @@ def run_funding_capture_engine():
         if interrupted:
             continue
 
-        # T - 65 SECONDS PRE-ENTRY FINAL RESCAN
         precision_wait_until(t_rescan)
         add_ui_log("⚡ T-65s Pre-Entry Final Rescan running...")
         sync_binance_clock()
@@ -490,9 +500,6 @@ def run_funding_capture_engine():
                 opportunity = final_opp
                 rate = opportunity['funding_rate']
 
-        # ==========================================
-        # EXECUTION PHASE: T + 950ms ENTRY
-        # ==========================================
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
@@ -513,16 +520,13 @@ def run_funding_capture_engine():
                 "quantity": qty
             })
             if "orderId" in order_res:
-                add_ui_log(f"🚀 MARKET ENTRY EXECUTED (BUY): {qty} {symbol} ($5 Margin @ {max_lev}x)")
+                add_ui_log(f"🚀 MARKET ENTRY EXECUTED (BUY): {qty} {symbol} ($1 Margin @ {max_lev}x)")
                 entry_success = True
             else:
                 add_ui_log(f"Entry order rejected: {order_res.get('msg', 'Unknown Error')}")
         except Exception as e:
             add_ui_log(f"Entry execution error: {e}")
 
-        # ==========================================
-        # EXECUTION PHASE: T + 8000ms HARD EXIT
-        # ==========================================
         precision_wait_until(t_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
@@ -531,7 +535,6 @@ def run_funding_capture_engine():
 
         if entry_success:
             try:
-                # Check current position size
                 positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
                 pos_qty = 0.0
                 if isinstance(positions, list):
@@ -573,4 +576,3 @@ def run_funding_capture_engine():
 
 if __name__ == '__main__':
     run_funding_capture_engine()
-
