@@ -8,7 +8,6 @@ import math
 import threading
 import urllib.parse
 import requests
-import websocket
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -24,7 +23,7 @@ dashboard_data = {
     "target_symbol": "Scanning Market...",
     "funding_rate": "0.00%",
     "action_direction": "--",
-    "status": "Initializing WebSocket Stream Scanner...",
+    "status": "Initializing Stable Market Scanner...",
     "target_settlement": "-- IST",
     "entry_target": "-- IST (T + 950ms)",
     "exit_target": "-- IST (T + 8000ms / Hard Exit)",
@@ -50,14 +49,7 @@ def add_ledger_entry(trade_info):
 
 
 # ==========================================
-# 2. LIVE MEMORY CACHE (FED BY WEBSOCKET)
-# ==========================================
-live_market_data = {}
-live_prices = {}
-
-
-# ==========================================
-# 3. BINANCE HTTP CLIENT (ONLY FOR TRADING)
+# 2. BINANCE HTTP CLIENT (SAFE RATE LIMIT)
 # ==========================================
 
 class BinanceHTTP:
@@ -88,7 +80,30 @@ class BinanceHTTP:
         except Exception:
             return {"result": {"timeNano": int(time.time() * 1000 * 1e6)}}
 
-    def get_instruments_info(self, category="linear", symbol=None):
+    def get_tickers(self):
+        try:
+            prem_resp = self.session.get(f"{self.base_url}/fapi/v1/premiumIndex", timeout=10).json()
+            price_resp = self.session.get(f"{self.base_url}/fapi/v1/ticker/price", timeout=10).json()
+            price_map = {item['symbol']: float(item['price']) for item in price_resp if 'symbol' in item and 'price' in item}
+            
+            result_list = []
+            if isinstance(prem_resp, list):
+                for item in prem_resp:
+                    sym = item.get("symbol")
+                    if not sym:
+                        continue
+                    result_list.append({
+                        "symbol": sym,
+                        "fundingRate": item.get("lastFundingRate", "0"),
+                        "nextFundingTime": item.get("nextFundingTime", 0),
+                        "lastPrice": price_map.get(sym, 0.0)
+                    })
+            return {"result": {"list": result_list}}
+        except Exception as e:
+            add_ui_log(f"⚠ Ticker fetch error: {e}")
+            return {"result": {"list": []}}
+
+    def get_instruments_info(self, symbol=None):
         exchange_info = self.session.get(f"{self.base_url}/fapi/v1/exchangeInfo", timeout=10).json()
         symbols_info = exchange_info.get("symbols", [])
         
@@ -123,7 +138,7 @@ class BinanceHTTP:
             })
         return {"result": {"list": list_out}}
 
-    def set_leverage(self, category="linear", symbol="", buyLeverage="", sellLeverage=""):
+    def set_leverage(self, symbol="", buyLeverage=""):
         params = {
             "symbol": symbol,
             "leverage": int(float(buyLeverage))
@@ -132,13 +147,7 @@ class BinanceHTTP:
         resp = self.session.post(f"{self.base_url}/fapi/v1/leverage?{query}", timeout=10)
         return resp.json()
 
-    def cancel_all_orders(self, category="linear", symbol=""):
-        params = {"symbol": symbol}
-        query = self._sign(params)
-        resp = self.session.delete(f"{self.base_url}/fapi/v1/allOpenOrders?{query}", timeout=10)
-        return resp.json()
-
-    def place_order(self, category="linear", symbol="", side="", orderType="", qty="", reduceOnly=False, positionIdx=0):
+    def place_order(self, symbol="", side="", orderType="", qty="", reduceOnly=False):
         params = {
             "symbol": symbol,
             "side": side.upper(),
@@ -154,7 +163,7 @@ class BinanceHTTP:
             raise Exception(res_data.get("msg", "Binance Order Error"))
         return res_data
 
-    def get_positions(self, category="linear", symbol=""):
+    def get_positions(self, symbol=""):
         params = {"symbol": symbol}
         query = self._sign(params)
         resp = self.session.get(f"{self.base_url}/fapi/v2/positionRisk?{query}", timeout=10)
@@ -202,7 +211,7 @@ def precision_wait_until(target_time_ms):
 
 
 # ==========================================
-# 4. WEB DASHBOARD
+# 3. WEB DASHBOARD
 # ==========================================
 
 class FundingDashboardHandler(BaseHTTPRequestHandler):
@@ -229,7 +238,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Binance WebSocket Funding Engine</title>
+<title>Binance Stable Funding Engine</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
 body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
@@ -256,8 +265,8 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance WebSocket Funding Engine ($3 Margin | Zero REST Polling)</h1>
-    <div class="badge" id="ws-status">INITIALIZING</div>
+    <h1>⚡ Binance Stable Funding Engine ($3 Margin | Coin Locked & Protected)</h1>
+    <div class="badge" id="ws-status">ONLINE (STABLE)</div>
   </div>
   <div class="grid">
     <div class="card"><div class="card-title">Live Target Coin</div><div class="card-value" id="coin">-</div></div>
@@ -327,7 +336,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 
 # ==========================================
-# 5. WEBSOCKET REAL-TIME MARKET STREAM
+# 4. MARKET SCANNER & ORDER CALCULATIONS
 # ==========================================
 
 API_KEY = os.environ.get('BINANCE_API_KEY', os.environ.get('BYBIT_API_KEY', 'YOUR_API_KEY_HERE'))
@@ -336,96 +345,13 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET', os.environ.get('BYBIT_API_SECR
 MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold
 INITIAL_ENTRY_MARGIN_USD = 3.0       # $3 Initial Entry Margin
 
-ws_client = None
-ws_ready = False
-
-def on_ws_message(ws, message):
+def scan_best_funding_opportunity(http_client):
     try:
-        data = json.loads(message)
-    except Exception:
-        return
-    
-    stream_data = data.get("data", data)
-    event_type = stream_data.get("e", "")
-
-    if event_type == "fundingRate":
-        sym = stream_data.get("s")
-        rate = float(stream_data.get("r", 0))
-        next_time = int(stream_data.get("T", 0))
-        if sym:
-            with data_lock:
-                if sym not in live_market_data:
-                    live_market_data[sym] = {}
-                live_market_data[sym]["symbol"] = sym
-                live_market_data[sym]["fundingRate"] = rate
-                live_market_data[sym]["nextFundingTime"] = next_time
-
-    elif event_type == "24hrTicker" or "c" in stream_data:
-        sym = stream_data.get("s")
-        price = float(stream_data.get("c", stream_data.get("p", 0)))
-        if sym:
-            with data_lock:
-                live_prices[sym] = price
-                if sym in live_market_data:
-                    live_market_data[sym]["lastPrice"] = price
-
-def on_ws_open(ws):
-    global ws_ready
-    ws_ready = True
-    with data_lock:
-        dashboard_data['status'] = "WS STREAM CONNECTED (LIVE)"
-    add_ui_log("WebSocket Connection Opened & Streaming Live Data...")
-
-def on_ws_close(ws, code, msg):
-    global ws_ready
-    ws_ready = False
-    with data_lock:
-        dashboard_data["status"] = "WS DISCONNECTED"
-    add_ui_log("WebSocket Connection Closed.")
-
-def on_ws_error(ws, error):
-    global ws_ready
-    ws_ready = False
-
-def start_heartbeat(ws):
-    def run():
-        while True:
-            time.sleep(20)
-            try:
-                ws.send(json.dumps({"method": "ping"}))
-            except Exception:
-                break
-    threading.Thread(target=run, daemon=True).start()
-
-def connect_websocket():
-    global ws_client
-    while True:
-        try:
-            # FIX: Combined streams passed directly in URL query string to prevent disconnection
-            ws_url = "wss://fstream.binance.com/stream?streams=!fundingRate@arr/!ticker@arr"
-            ws_client = websocket.WebSocketApp(
-                ws_url,
-                on_open=on_ws_open,
-                on_message=on_ws_message,
-                on_close=on_ws_close,
-                on_error=on_ws_error
-            )
-            start_heartbeat(ws_client)
-            ws_client.run_forever()
-        except Exception:
-            pass
-        time.sleep(2)
-
-threading.Thread(target=connect_websocket, daemon=True).start()
-
-
-# ==========================================
-# 6. MARKET SCANNER (READS FROM WEBSOCKET CACHE)
-# ==========================================
-
-def scan_best_funding_opportunity():
-    with data_lock:
-        tickers = list(live_market_data.values())
+        tickers_resp = http_client.get_tickers()
+        tickers = tickers_resp["result"]["list"]
+    except Exception as e:
+        add_ui_log(f"⚠ Scan error: {e}")
+        return None
 
     if not tickers:
         return None
@@ -437,21 +363,25 @@ def scan_best_funding_opportunity():
         sym = t.get("symbol", "")
         if not sym.endswith("USDT"):
             continue
-        rate = t.get("fundingRate", 0.0)
-        next_time_ms = t.get("nextFundingTime", 0)
-        if not rate or not next_time_ms:
+        raw_rate = t.get("fundingRate", "")
+        raw_next = t.get("nextFundingTime", "")
+        if not raw_rate or not raw_next:
+            continue
+        try:
+            rate = float(raw_rate)
+            next_time_ms = int(raw_next)
+        except ValueError:
             continue
 
         time_diff = next_time_ms - now_ms
 
         if time_diff > 60000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
             diff_hours = round(time_diff / (3600 * 1000), 1)
-            last_p = live_prices.get(sym, t.get("lastPrice", 0.0))
             valid_candidates.append({
                 "symbol": sym,
                 "funding_rate": rate,
                 "next_funding_time": next_time_ms,
-                "last_price": last_p,
+                "last_price": float(t.get("lastPrice", 0)),
                 "window_type": f"{diff_hours}H"
             })
 
@@ -466,7 +396,7 @@ def scan_best_funding_opportunity():
 
 def calculate_qty_for_price(http_client, symbol, price, margin_usd=3.0):
     try:
-        inst_info = http_client.get_instruments_info(category="linear", symbol=symbol)["result"]["list"][0]
+        inst_info = http_client.get_instruments_info(symbol=symbol)["result"]["list"][0]
         max_leverage = float(inst_info.get("leverageFilter", {}).get("maxLeverage", 20))
         price_filter = inst_info.get("priceFilter", {})
         tick_size = float(price_filter.get("tickSize", "0.0001"))
@@ -487,7 +417,7 @@ def calculate_qty_for_price(http_client, symbol, price, margin_usd=3.0):
         applied_leverage = max_leverage
 
     try:
-        http_client.set_leverage(category="linear", symbol=symbol, buyLeverage=str(applied_leverage), sellLeverage=str(applied_leverage))
+        http_client.set_leverage(symbol=symbol, buyLeverage=str(applied_leverage))
     except Exception:
         pass
 
@@ -510,29 +440,27 @@ def calculate_qty_for_price(http_client, symbol, price, margin_usd=3.0):
 
 
 # ==========================================
-# 7. FUNDING CAPTURE ENGINE MAIN LOOP
+# 5. FUNDING CAPTURE ENGINE & COIN LOCK
 # ==========================================
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Dynamic Funding Engine Active ($3 Margin | WebSocket Stream Mode | Threshold -0.3%). Waiting for WS Stream Data...")
+    add_ui_log("Stable Funding Engine Active ($3 Margin | 10s Safe Scan Interval | Threshold -0.3%).")
 
-    while not ws_ready or len(live_market_data) == 0:
-        time.sleep(0.5)
-
-    add_ui_log(f"✅ WebSocket Stream Active! Loaded {len(live_market_data)} symbols into memory.")
+    with data_lock:
+        dashboard_data['status'] = "RUNNING (STABLE)"
 
     while True:
         sync_bybit_clock(http_client)
-        opportunity = scan_best_funding_opportunity()
+        opportunity = scan_best_funding_opportunity(http_client)
 
         if not opportunity:
             with data_lock:
-                dashboard_data['target_symbol'] = "Scanning Live Stream..."
+                dashboard_data['target_symbol'] = "Scanning Market..."
                 dashboard_data['funding_rate'] = "0.00%"
                 dashboard_data['action_direction'] = "--"
                 dashboard_data['status'] = "SCANNING: No coin <= -0.3% found"
-            time.sleep(3)
+            time.sleep(10)  # Safe 10 second delay prevents any HTTP 418 IP ban
             continue
 
         symbol = opportunity['symbol']
@@ -558,23 +486,34 @@ def run_funding_capture_engine():
         with data_lock:
             dashboard_data['entry_target'] = f"{entry_ist} IST (T + 950ms)"
             dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms / Hard Exit)"
-            dashboard_data['status'] = f"LOCKED & ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
+            dashboard_data['status'] = f"COIN LOCKED & ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
 
         add_ui_log(f"🔒 COIN LOCKED: {symbol} | Rate: {rate_percent} | Settlement: {settle_dt.strftime('%H:%M:%S IST')}")
 
+        # COIN LOCK LOOP: Jab tak trade ka time nahi aata, script yahin locked rahegi aur bar-bar scan nahi karegi
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_rescan:
                 break
             time.sleep(5.0)
 
+        # T - 65 SECONDS PRE-ENTRY CHECK
         precision_wait_until(t_rescan)
         add_ui_log(f"⚡ T-65s Pre-Entry Check for locked coin {symbol}...")
         
+        # T + 950 MS ENTRY EXECUTION
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
-        live_price = live_prices.get(symbol, opportunity['last_price'])
+        live_price = opportunity['last_price']
+        try:
+            tickers_resp = http_client.get_tickers()
+            for t in tickers_resp["result"]["list"]:
+                if t['symbol'] == symbol:
+                    live_price = float(t.get('lastPrice', live_price))
+                    break
+        except Exception:
+            pass
 
         initial_qty, leverage, price_decimals, qty_step, min_qty, qty_decimals = calculate_qty_for_price(
             http_client, symbol, live_price, INITIAL_ENTRY_MARGIN_USD
@@ -582,12 +521,13 @@ def run_funding_capture_engine():
         
         entry_success = False
         try:
-            http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
+            http_client.place_order(symbol=symbol, side="Buy", orderType="Market", qty=initial_qty)
             add_ui_log(f"🚀 ENTRY EXECUTED (BUY MARKET): {initial_qty} {symbol} ($3 Margin @ {leverage}x) at {entry_time_str}")
             entry_success = True
         except Exception as e:
             add_ui_log(f"Entry execution failed: {e}")
 
+        # T + 8000 MS HARD EXIT EXECUTION
         precision_wait_until(t_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
@@ -596,12 +536,12 @@ def run_funding_capture_engine():
 
         if entry_success:
             try:
-                pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
+                pos_info = http_client.get_positions(symbol=symbol)["result"]["list"][0]
                 pos_qty = float(pos_info.get("size", 0))
 
                 if pos_qty > 0:
                     formatted_exit_qty = f"{pos_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_qty))
-                    http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=formatted_exit_qty, reduceOnly=True, positionIdx=0)
+                    http_client.place_order(symbol=symbol, side="Sell", orderType="Market", qty=formatted_exit_qty, reduceOnly=True)
                     add_ui_log(f"⏰ HARD EXIT DISPATCHED (SELL MARKET): {formatted_exit_qty} {symbol} at {exit_time_str}")
                     status_text = "CLOSED (T+8s)"
                     status_class = "status-profit"
