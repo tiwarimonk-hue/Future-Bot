@@ -11,9 +11,6 @@ import websocket
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ==========================================
-# 1. TIMEZONE & DASHBOARD TELEMETRY STATE
-# ==========================================
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
@@ -45,15 +42,12 @@ def add_ledger_entry(trade_info):
         if len(dashboard_data['ledger']) > 20:
             dashboard_data['ledger'].pop()
 
-# ==========================================
-# 2. BINANCE API & CLOCK SYNCHRONIZATION
-# ==========================================
 API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-ENTRY_MARGIN_USD = 1.0              # $1 Fixed Margin
+MIN_FUNDING_RATE_THRESHOLD = -0.004
+ENTRY_MARGIN_USD = 1.0
 
 clock_offset_ms = 0.0
 
@@ -85,12 +79,10 @@ def sync_binance_clock():
         t_send = time.time() * 1000
         res = binance_public_get("/fapi/v1/time")
         t_recv = time.time() * 1000
-
         server_time = float(res['serverTime'])
         rtt = t_recv - t_send
         estimated_server_time = server_time + (rtt / 2.0)
         clock_offset_ms = estimated_server_time - t_recv
-        
         with data_lock:
             dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
     except Exception:
@@ -110,9 +102,6 @@ def precision_wait_until(target_time_ms):
         elif diff > 2:
             time.sleep(0.0005)
 
-# ==========================================
-# 3. WEB DASHBOARD & SELF-PING KEEPALIVE
-# ==========================================
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/status':
@@ -172,14 +161,12 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
     <div class="card"><div class="card-title">Exit Target</div><div class="card-value" id="exit" style="color:#f6465d; font-size:14px;">-</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
   </div>
-  
   <div class="section-card">
     <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">📋 Execution Ledger</div>
     <div class="ledger-container" id="ledger-box">
       <div style="color: #848e9c; text-align: center; padding: 20px;">No trades executed yet.</div>
     </div>
   </div>
-
   <div class="section-card">
     <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">🖥 System Logs</div>
     <div id="log-box"></div>
@@ -197,11 +184,9 @@ async function updateDashboard() {
     document.getElementById('entry').innerText = data.entry_target;
     document.getElementById('exit').innerText = data.exit_target;
     document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
-    
     const logBox = document.getElementById('log-box');
     logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
     logBox.scrollTop = logBox.scrollHeight;
-
     const ledgerBox = document.getElementById('ledger-box');
     if (data.ledger && data.ledger.length > 0) {
       ledgerBox.innerHTML = data.ledger.map(item => `
@@ -241,9 +226,6 @@ def self_ping_worker():
 threading.Thread(target=run_web_server, daemon=True).start()
 threading.Thread(target=self_ping_worker, daemon=True).start()
 
-# ==========================================
-# 4. WEBSOCKET PIPELINE
-# ==========================================
 ws_ready = False
 
 def on_ws_open(ws):
@@ -295,9 +277,6 @@ def connect_websocket():
 
 threading.Thread(target=connect_websocket, daemon=True).start()
 
-# ==========================================
-# 5. MARKET SCANNER & CALCULATIONS
-# ==========================================
 def get_funding_intervals():
     intervals = {}
     try:
@@ -413,9 +392,6 @@ def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
 
     return qty_formatted, max_leverage
 
-# ==========================================
-# 6. ENGINE MAIN LOOP
-# ==========================================
 def run_funding_capture_engine():
     add_ui_log("Binance Dynamic Engine Active (Threshold: -0.4%). Waiting for WS...")
 
@@ -449,8 +425,8 @@ def run_funding_capture_engine():
             dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
 
         t_rescan = settle_epoch - 65000
-        t_entry = settle_epoch + 950      # T + 950ms Execution
-        t_exit = settle_epoch + 8000      # T + 8000ms Hard Exit
+        t_entry = settle_epoch + 950
+        t_exit = settle_epoch + 8000
 
         entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
         exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
@@ -522,7 +498,6 @@ def run_funding_capture_engine():
             time.sleep(5)
             continue
 
-        entry_success = False
         try:
             order_res = binance_signed_request("POST", "/fapi/v1/order", {
                 "symbol": symbol,
@@ -530,14 +505,7 @@ def run_funding_capture_engine():
                 "type": "MARKET",
                 "quantity": qty
             })
-            # FIX: Check for orderId instead of strict FILLED status for market orders
-            if isinstance(order_res, dict) and "orderId" in order_res:
-                order_status = order_res.get('status', 'UNKNOWN')
-                add_ui_log(f"🚀 BUY Executed for {symbol} at {entry_time_str} | Status: {order_status}")
-                entry_success = True
-            else:
-                msg = order_res.get('msg', 'Unknown Error') if isinstance(order_res, dict) else str(order_res)
-                add_ui_log(f"❌ Entry order rejected: {msg}")
+            add_ui_log(f"🚀 BUY Order Response for {symbol}: {order_res}")
         except Exception as e:
             add_ui_log(f"Entry execution error: {e}")
 
@@ -548,9 +516,9 @@ def run_funding_capture_engine():
         status_class = "status-cancel"
 
         try:
-            # FIX: Always check open position risk directly from exchange during exit phase
             positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_qty = 0.0
+            step_size = 1.0
             if isinstance(positions, list):
                 for p in positions:
                     if p.get("symbol") == symbol:
@@ -558,21 +526,39 @@ def run_funding_capture_engine():
                         break
 
             if pos_qty > 0:
+                try:
+                    info = binance_public_get("/fapi/v1/exchangeInfo")
+                    for s in info.get("symbols", []):
+                        if s.get("symbol") == symbol:
+                            for f in s.get("filters", []):
+                                if f.get("filterType") == "LOT_SIZE":
+                                    step_size = float(f.get("stepSize", "1"))
+                                    break
+                            break
+                except Exception:
+                    pass
+
+                step_str = f"{step_size:.8f}".rstrip("0")
+                qty_decimals = len(step_str.split(".")[1]) if "." in step_str else 0
+                calc_exit_qty = math.floor(pos_qty / step_size) * step_size
+                exit_qty_formatted = f"{calc_exit_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_calc_qty if 'calc_calc_qty' in locals() else calc_exit_qty))
+
                 exit_res = binance_signed_request("POST", "/fapi/v1/order", {
                     "symbol": symbol,
                     "side": "SELL",
                     "type": "MARKET",
-                    "quantity": str(pos_qty),
+                    "quantity": exit_qty_formatted,
                     "reduceOnly": "true"
                 })
+                add_ui_log(f"⏰ SELL Order Response for {symbol}: {exit_res}")
                 if isinstance(exit_res, dict) and "orderId" in exit_res:
-                    add_ui_log(f"⏰ HARD EXIT EXECUTED (SELL MARKET): {pos_qty} {symbol} at {exit_time_str}")
+                    add_ui_log(f"✅ HARD EXIT EXECUTED SUCCESSFUL: {exit_qty_formatted} {symbol} at {exit_time_str}")
                     status_text = "HARD EXIT (T+8s)"
                     status_class = "status-profit"
                 else:
-                    add_ui_log(f"❌ Exit order failed: {exit_res.get('msg', 'Unknown')}")
+                    add_ui_log(f"❌ Exit order rejected: {exit_res}")
             else:
-                add_ui_log(f"⚠️ No active position found for {symbol} to exit.")
+                add_ui_log(f"⚠️ Warning: pos_qty is 0.")
                 status_text = "NO POSITION"
                 status_class = "status-cancel"
         except Exception as e:
