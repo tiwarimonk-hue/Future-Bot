@@ -1,239 +1,576 @@
-import time
-import threading
-import logging
 import os
-from datetime import datetime, timezone
-from decimal import Decimal
-from flask import Flask, render_template, jsonify, request
-import ccxt
+import time
+import json
+import hmac
+import hashlib
+import math
+import threading
+import urllib.parse
+import requests
+import websocket
+from datetime import datetime, timezone, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+# ==========================================
+# 1. TIMEZONE & DASHBOARD TELEMETRY STATE
+# ==========================================
+IST = timezone(timedelta(hours=5, minutes=30))
+data_lock = threading.Lock()
 
-bot_state = {
-    "status": "STOPPED",
-    "api_configured": False,
-    "time_offset": 0,
-    "clock_drift": 0,
-    "scanned_coins": [],
-    "armed_coins": [],
-    "live_target": None,
-    "entry_time_str": "--",
-    "exit_time_str": "--",
+dashboard_data = {
+    "target_symbol": "Scanning Market...",
+    "funding_rate": "0.00%",
+    "action_direction": "--",
+    "status": "Initializing Binance Dynamic Engine...",
+    "target_settlement": "-- IST",
+    "entry_target": "-- IST (T + 950ms)",
+    "exit_target": "-- IST (T + 8000ms)",
+    "clock_offset_ms": 0.0,
     "logs": [],
-    "trades": []
+    "ledger": []
 }
 
-def log_message(msg):
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    formatted = f"[{timestamp}] {msg}"
-    logging.info(msg)
-    bot_state["logs"].insert(0, formatted)
-    if len(bot_state["logs"]) > 100:
-        bot_state["logs"].pop()
+def add_ui_log(message):
+    timestamp = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+    line = f'[{timestamp}] {message}'
+    print(line)
+    with data_lock:
+        dashboard_data['logs'].append(line)
+        if len(dashboard_data['logs']) > 70:
+            dashboard_data['logs'].pop(0)
 
-class BinanceFundingBot:
-    def __init__(self, api_key, secret_key, testnet=False):
-        self.exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'enableRateLimit': True, # Prevents IP ban / 418 errors
-            'options': {
-                'defaultType': 'swap',
-                'adjustForTimeDifference': True
-            }
-        })
-        if testnet:
-            self.exchange.set_sandbox_mode(True)
-        self.running = False
+def add_ledger_entry(trade_info):
+    with data_lock:
+        dashboard_data['ledger'].insert(0, trade_info)
+        if len(dashboard_data['ledger']) > 20:
+            dashboard_data['ledger'].pop()
 
-    def sync_time(self):
-        try:
-            server_time = self.exchange.fetch_time()
-            local_time = int(time.time() * 1000)
-            bot_state["time_offset"] = server_time - local_time
-            bot_state["clock_drift"] = round(abs(bot_state["time_offset"]), 1)
-        except Exception as e:
-            log_message(f"Time sync error: {e}")
+# ==========================================
+# 2. BINANCE API & CLOCK SYNCHRONIZATION
+# ==========================================
+API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
+API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
+BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-    def get_precision_filtered_qty(self, symbol, price, notional_target):
-        market = self.exchange.market(symbol)
-        step_size = Decimal(str(market['limits']['amount']['min'] or market['info']['filters'][1]['stepSize']))
-        raw_qty = Decimal(str(notional_target)) / Decimal(str(price))
-        qty = (raw_qty // step_size) * step_size
-        return float(f"{qty:.8f}")
+MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
+ENTRY_MARGIN_USD = 5.0              # $5 Fixed Margin
 
-    def execute_arbitrage_trade(self, coin):
-        symbol = coin['symbol']
-        next_funding = coin['next_funding_time']
-        bot_state["live_target"] = coin
+clock_offset_ms = 0.0
+
+def binance_public_get(endpoint, params=None):
+    url = f"{BINANCE_FUTURES_URL}{endpoint}"
+    resp = requests.get(url, params=params, timeout=5)
+    return resp.json()
+
+def binance_signed_request(method, endpoint, params=None):
+    if params is None:
+        params = {}
+    params['timestamp'] = int(get_synced_time_ms())
+    query_string = urllib.parse.urlencode(params)
+    signature = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+    full_url = f"{BINANCE_FUTURES_URL}{endpoint}?{query_string}&signature={signature}"
+    headers = {"X-MBX-APIKEY": API_KEY}
+    
+    if method == "GET":
+        resp = requests.get(full_url, headers=headers, timeout=5)
+    elif method == "POST":
+        resp = requests.post(full_url, headers=headers, timeout=5)
+    elif method == "DELETE":
+        resp = requests.delete(full_url, headers=headers, timeout=5)
+    return resp.json()
+
+def sync_binance_clock():
+    global clock_offset_ms
+    try:
+        t_send = time.time() * 1000
+        res = binance_public_get("/fapi/v1/time")
+        t_recv = time.time() * 1000
+
+        server_time = float(res['serverTime'])
+        rtt = t_recv - t_send
+        estimated_server_time = server_time + (rtt / 2.0)
+        clock_offset_ms = estimated_server_time - t_recv
         
-        entry_ts = next_funding + 900
-        exit_ts = next_funding + 8000
-        bot_state["entry_time_str"] = datetime.fromtimestamp(entry_ts/1000, timezone.utc).strftime('%H:%M:%S.900 UTC')
-        bot_state["exit_time_str"] = datetime.fromtimestamp(exit_ts/1000, timezone.utc).strftime('%H:%M:%S.000 UTC')
-        
-        log_message(f"Target Locked: {symbol} | Funding: {coin['funding_rate']:.3f}% | Next: {coin['time_str']}")
-        
-        while self.running:
-            current_time = int(time.time() * 1000) + bot_state["time_offset"]
-            
-            # Precise Entry at T + 900ms
-            if current_time >= next_funding + 900 and current_time < next_funding + 2000:
-                try:
-                    leverage_brackets = self.exchange.fetch_leverage_brackets(symbol)
-                    max_lev = leverage_brackets[0]['brackets'][0]['initialLeverage'] if leverage_brackets else 20
-                    leverage = min(25, max_lev) # Max 25x capped
-                    
-                    self.exchange.fapiPrivate_post_leverage({'symbol': symbol.replace('/', '').replace(':USDT', ''), 'leverage': leverage})
-                    
-                    mark_price = float(self.exchange.fetch_ticker(symbol)['last'])
-                    target_notional = 1.0 * leverage # $1 Margin * Leverage
-                    qty = self.get_precision_filtered_qty(symbol, mark_price, target_notional)
-                    
-                    log_message(f"[{symbol}] ENTRY at T+900ms | Qty: {qty} | Lev: {leverage}x | Price: {mark_price}")
-                    
-                    self.exchange.create_market_buy_order(symbol, qty)
-                    bot_state["trades"].insert(0, {
-                        "symbol": symbol,
-                        "type": "ENTRY",
-                        "time": datetime.now().strftime('%H:%M:%S.%f')[:-3],
-                        "price": mark_price,
-                        "qty": qty
-                    })
-                    
-                    # Hard Exit at T + 8000ms
-                    target_exit_time = next_funding + 8000
-                    while int(time.time() * 1000) + bot_state["time_offset"] < target_exit_time:
-                        time.sleep(0.005)
-                        
-                    exit_price = float(self.exchange.fetch_ticker(symbol)['last'])
-                    self.exchange.create_market_sell_order(symbol, qty)
-                    
-                    log_message(f"[{symbol}] HARD EXIT at T+8000ms | Exit Price: {exit_price}")
-                    bot_state["trades"].insert(0, {
-                        "symbol": symbol,
-                        "type": "EXIT",
-                        "time": datetime.now().strftime('%H:%M:%S.%f')[:-3],
-                        "price": exit_price,
-                        "qty": qty
-                    })
-                    bot_state["live_target"] = None
-                    break
-                except Exception as e:
-                    log_message(f"Trade execution error for {symbol}: {e}")
-                    bot_state["live_target"] = None
-                    break
-                    
-            time.sleep(0.005)
+        with data_lock:
+            dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
+    except Exception:
+        pass
 
-    def scan_markets(self):
-        try:
-            self.exchange.load_markets()
-            funding_data = self.exchange.fetch_funding_rates()
-            scanned = []
-            
-            for symbol, data in funding_data.items():
-                funding_rate = float(data.get('fundingRate') or 0)
-                next_funding_time = int(data.get('fundingTimestamp') or data.get('info', {}).get('nextFundingTime', 0))
-                rate_pct = funding_rate * 100
-                
-                # Threshold: -0.4% or more negative
-                if rate_pct <= -0.4:
-                    scanned.append({
-                        "symbol": symbol,
-                        "funding_rate": rate_pct,
-                        "next_funding_time": next_funding_time,
-                        "time_str": datetime.fromtimestamp(next_funding_time/1000, timezone.utc).strftime('%H:%M:%S UTC') if next_funding_time else "N/A"
-                    })
-            
-            # Sort by nearest settlement time (1h, 4h, 8h priority)
-            scanned.sort(key=lambda x: x['next_funding_time'] if x['next_funding_time'] else float('inf'))
-            bot_state["scanned_coins"] = scanned
-            bot_state["armed_coins"] = scanned
-            
-            if scanned:
-                top_coin = scanned[0]
-                log_message(f"Armed Top Coin: {top_coin['symbol']} ({top_coin['funding_rate']:.3f}%)")
-                if not bot_state["live_target"] or bot_state["live_target"]["symbol"] != top_coin["symbol"]:
-                    threading.Thread(target=self.execute_arbitrage_trade, args=(top_coin,)).start()
-            else:
-                log_message("Scanning... No coins found <= -0.4%.")
-                
-        except Exception as e:
-            log_message(f"Scan error: {e}")
+def get_synced_time_ms():
+    return (time.time() * 1000) + clock_offset_ms
 
-    def bot_loop(self):
-        self.running = True
-        bot_state["status"] = "RUNNING"
-        log_message("Binance Dynamic Funding Engine started.")
+def precision_wait_until(target_time_ms):
+    while True:
+        now = get_synced_time_ms()
+        diff = target_time_ms - now
+        if diff <= 0:
+            break
+        elif diff > 10:
+            time.sleep(0.002)
+        elif diff > 2:
+            time.sleep(0.0005)
+
+# ==========================================
+# 3. WEB DASHBOARD
+# ==========================================
+class FundingDashboardHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/status':
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            with data_lock:
+                payload = json.dumps(dashboard_data).encode('utf-8')
+            self.wfile.write(payload)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
         
-        while self.running:
+        html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Binance Funding Capture Engine</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
+.container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 16px; }
+.header { background: #1e2329; padding: 18px 24px; border-radius: 12px; border: 1px solid #2b313a; display: flex; justify-content: space-between; align-items: center; }
+.header h1 { font-size: 18px; color: #f0b90b; }
+.badge { background: rgba(14, 203, 129, 0.15); color: #0ecb81; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.card { background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; }
+.card-title { font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 6px; }
+.card-value { font-size: 18px; font-weight: 700; color: #f0b90b; }
+.section-card { background: #1e2329; padding: 18px; border-radius: 12px; border: 1px solid #2b313a; }
+#log-box { background: #0b0e11; border: 1px solid #2b313a; border-radius: 8px; padding: 14px; height: 220px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; color: #0ecb81; line-height: 1.5; }
+.ledger-container { max-height: 350px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.ledger-item { background: #181c22; border: 1px solid #2b313a; border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.ledger-info { display: flex; flex-direction: column; gap: 4px; }
+.coin-name { font-weight: 700; color: #f0b90b; font-size: 14px; }
+.rate-tag { color: #0ecb81; font-weight: 600; }
+.ledger-status { font-weight: 600; padding: 4px 10px; border-radius: 6px; font-size: 12px; text-align: right; }
+.status-profit { background: rgba(14, 203, 129, 0.15); color: #0ecb81; }
+.status-cancel { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>⚡ Binance Funding Capture Engine ($5 Margin + Max Leverage)</h1>
+    <div class="badge" id="ws-status">INITIALIZING</div>
+  </div>
+  <div class="grid">
+    <div class="card"><div class="card-title">Live Target Coin</div><div class="card-value" id="coin">-</div></div>
+    <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color:#0ecb81;">-</div></div>
+    <div class="card"><div class="card-title">Direction</div><div class="card-value" id="direction" style="color:#f0b90b;">--</div></div>
+    <div class="card"><div class="card-title">Entry Target</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:14px;">-</div></div>
+    <div class="card"><div class="card-title">Exit Target</div><div class="card-value" id="exit" style="color:#f6465d; font-size:14px;">-</div></div>
+    <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
+  </div>
+  
+  <div class="section-card">
+    <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">📋 Execution Ledger</div>
+    <div class="ledger-container" id="ledger-box">
+      <div style="color: #848e9c; text-align: center; padding: 20px;">No trades executed yet.</div>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">🖥 System Logs</div>
+    <div id="log-box"></div>
+  </div>
+</div>
+<script>
+async function updateDashboard() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    document.getElementById('ws-status').innerText = data.status;
+    document.getElementById('coin').innerText = data.target_symbol;
+    document.getElementById('rate').innerText = data.funding_rate;
+    document.getElementById('direction').innerText = data.action_direction;
+    document.getElementById('entry').innerText = data.entry_target;
+    document.getElementById('exit').innerText = data.exit_target;
+    document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
+    
+    const logBox = document.getElementById('log-box');
+    logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
+    logBox.scrollTop = logBox.scrollHeight;
+
+    const ledgerBox = document.getElementById('ledger-box');
+    if (data.ledger && data.ledger.length > 0) {
+      ledgerBox.innerHTML = data.ledger.map(item => `
+        <div class="ledger-item">
+          <div class="ledger-info">
+            <div class="coin-name">${item.coin} <span class="rate-tag">(${item.rate})</span></div>
+            <div style="color: #848e9c; font-size: 11px;">Entry Executed: ${item.entry_time} | Exit Closed: ${item.exit_time}</div>
+          </div>
+          <div class="ledger-status ${item.status_class}">${item.status_text}</div>
+        </div>
+      `).join('');
+    }
+  } catch (e) {}
+}
+setInterval(updateDashboard, 1000);
+updateDashboard();
+</script>
+</body>
+</html>"""
+        self.wfile.write(html_content.encode("utf-8"))
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), FundingDashboardHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_web_server, daemon=True).start()
+
+# ==========================================
+# 4. WEBSOCKET PIPELINE
+# ==========================================
+ws_ready = False
+
+def on_ws_open(ws):
+    global ws_ready
+    ws_ready = True
+    with data_lock:
+        dashboard_data['status'] = "BINANCE WS LIVE"
+    add_ui_log("Binance WebSocket Pipeline Connected & Active")
+
+def on_ws_message(ws, message):
+    pass
+
+def on_ws_close(ws, code, msg):
+    global ws_ready
+    ws_ready = False
+    with data_lock:
+        dashboard_data["status"] = "WS DISCONNECTED"
+
+def on_ws_error(ws, error):
+    global ws_ready
+    ws_ready = False
+
+def start_heartbeat(ws):
+    def run():
+        while True:
+            time.sleep(15)
             try:
-                self.sync_time()
-                self.scan_markets()
-                
-                # Scan every 15 seconds to catch opportunities instantly without IP ban
-                for _ in range(15):
-                    if not self.running:
+                ws.send(json.dumps({"method": "PING"}))
+            except Exception:
+                break
+    threading.Thread(target=run, daemon=True).start()
+
+def connect_websocket():
+    while True:
+        try:
+            ws_url = "wss://fstream.binance.com/ws"
+            ws = websocket.WebSocketApp(
+                ws_url,
+                on_open=on_ws_open,
+                on_message=on_ws_message,
+                on_close=on_ws_close,
+                on_error=on_ws_error
+            )
+            start_heartbeat(ws)
+            ws.run_forever()
+        except Exception:
+            pass
+        time.sleep(2)
+
+threading.Thread(target=connect_websocket, daemon=True).start()
+
+# ==========================================
+# 5. MARKET SCANNER & CALCULATIONS
+# ==========================================
+def scan_best_funding_opportunity():
+    try:
+        tickers = binance_public_get("/fapi/v1/premiumIndex")
+    except Exception:
+        return None
+
+    now_ms = int(get_synced_time_ms())
+    candidates_1h, candidates_4h, candidates_8h = [], [], []
+
+    for t in tickers:
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT"):
+            continue
+        raw_rate = t.get("lastFundingRate", "")
+        raw_next = t.get("nextFundingTime", "")
+        if not raw_rate or not raw_next:
+            continue
+        try:
+            rate = float(raw_rate)
+            next_time_ms = int(raw_next)
+            mark_price = float(t.get("markPrice", 0))
+        except ValueError:
+            continue
+
+        time_diff = next_time_ms - now_ms
+        if 0 < time_diff <= 8 * 3600 * 1000:
+            coin_data = {
+                "symbol": sym,
+                "funding_rate": rate,
+                "next_funding_time": next_time_ms,
+                "last_price": mark_price
+            }
+            if time_diff <= 1.5 * 3600 * 1000:
+                candidates_1h.append(coin_data)
+            elif time_diff <= 4.5 * 3600 * 1000:
+                candidates_4h.append(coin_data)
+            else:
+                candidates_8h.append(coin_data)
+
+    valid_1h = [c for c in candidates_1h if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD]
+    if valid_1h:
+        best = min(valid_1h, key=lambda x: x['funding_rate'])
+        best['window_type'] = '1H'
+        return best
+
+    valid_4h = [c for c in candidates_4h if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD]
+    if valid_4h:
+        best = min(valid_4h, key=lambda x: x['funding_rate'])
+        best['window_type'] = '4H'
+        return best
+
+    valid_8h = [c for c in candidates_8h if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD]
+    if valid_8h:
+        best = min(valid_8h, key=lambda x: x['funding_rate'])
+        best['window_type'] = '8H'
+        return best
+
+    return None
+
+def set_max_leverage_and_get_qty(symbol, price, margin_usd=5.0):
+    max_leverage = 10
+    step_size = 1.0
+    min_qty = 1.0
+
+    # 1. Fetch Max Leverage Bracket
+    try:
+        brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
+        if isinstance(brackets, list) and len(brackets) > 0:
+            b_list = brackets[0].get("brackets", [])
+            if b_list:
+                max_leverage = max([b.get("initialLeverage", 10) for b in b_list])
+    except Exception:
+        pass
+
+    # 2. Set Max Leverage
+    try:
+        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": int(max_leverage)})
+    except Exception:
+        pass
+
+    # 3. Fetch Symbol Precision Rules
+    try:
+        info = binance_public_get("/fapi/v1/exchangeInfo")
+        for s in info.get("symbols", []):
+            if s.get("symbol") == symbol:
+                for f in s.get("filters", []):
+                    if f.get("filterType") == "LOT_SIZE":
+                        step_size = float(f.get("stepSize", "1"))
+                        min_qty = float(f.get("minQty", "1"))
                         break
-                    time.sleep(1)
+                break
+    except Exception:
+        pass
+
+    step_str = f"{step_size:.8f}".rstrip("0")
+    qty_decimals = len(step_str.split(".")[1]) if "." in step_str else 0
+
+    notional = margin_usd * max_leverage
+    calc_qty = max(min_qty, math.floor((notional / price) / step_size) * step_size)
+    qty_formatted = f"{calc_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_qty))
+
+    return qty_formatted, max_leverage
+
+# ==========================================
+# 6. ENGINE MAIN LOOP
+# ==========================================
+def run_funding_capture_engine():
+    add_ui_log("Binance Dynamic Engine Active (Threshold: -0.4%). Waiting for WS...")
+
+    while not ws_ready:
+        time.sleep(0.1)
+
+    while True:
+        sync_binance_clock()
+        opportunity = scan_best_funding_opportunity()
+
+        if not opportunity:
+            with data_lock:
+                dashboard_data['target_symbol'] = "Scanning..."
+                dashboard_data['funding_rate'] = "0.00%"
+                dashboard_data['action_direction'] = "--"
+                dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
+            time.sleep(3)
+            continue
+
+        symbol = opportunity['symbol']
+        rate = opportunity['funding_rate']
+        settle_epoch = opportunity['next_funding_time']
+        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+        rate_percent = f"{rate * 100:+.4f}%"
+        window_type = opportunity['window_type']
+
+        with data_lock:
+            dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
+            dashboard_data['funding_rate'] = rate_percent
+            dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
+            dashboard_data['action_direction'] = "LONG CAPTURE ($5 MARGIN)"
+
+        t_rescan = settle_epoch - 65000
+        t_entry = settle_epoch + 950      # T + 950ms Execution
+        t_exit = settle_epoch + 8000      # T + 8000ms Hard Exit
+
+        entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+        exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+
+        with data_lock:
+            dashboard_data['entry_target'] = f"{entry_ist} IST (T + 950ms)"
+            dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms)"
+            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
+
+        add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+950ms")
+
+        # BACKGROUND 15-MIN RE-SCANNING LOOP UNTIL T-65s
+        last_scan_time = time.time()
+        interrupted = False
+
+        while True:
+            now_ms = get_synced_time_ms()
+            if now_ms >= t_rescan:
+                break
+
+            time.sleep(2.0)
+
+            if time.time() - last_scan_time >= 900:
+                last_scan_time = time.time()
+                add_ui_log("🔍 Scheduled 15-minute background market rescan...")
+                sync_binance_clock()
+                new_opp = scan_best_funding_opportunity()
+
+                if new_opp:
+                    new_rate_str = f"{new_opp['funding_rate'] * 100:+.4f}%"
+                    if new_opp['symbol'] != symbol:
+                        new_win = new_opp['window_type']
+                        if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
+                            add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_rate_str})")
+                            interrupted = True
+                            break
+                    else:
+                        rate = new_opp['funding_rate']
+                        with data_lock:
+                            dashboard_data['funding_rate'] = new_rate_str
+                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {new_rate_str}"
+                        add_ui_log(f"🔄 Rescan Result: Same coin {symbol} active | Live Rate: {new_rate_str}")
+
+        if interrupted:
+            continue
+
+        # T - 65 SECONDS PRE-ENTRY FINAL RESCAN
+        precision_wait_until(t_rescan)
+        add_ui_log("⚡ T-65s Pre-Entry Final Rescan running...")
+        sync_binance_clock()
+        final_opp = scan_best_funding_opportunity()
+
+        if final_opp:
+            if final_opp['symbol'] != symbol and final_opp['funding_rate'] < rate:
+                add_ui_log(f"🔄 PRE-ENTRY SWITCH: Upgraded to {final_opp['symbol']} ({final_opp['funding_rate']*100:.4f}%)")
+                opportunity = final_opp
+                symbol = opportunity['symbol']
+                rate = opportunity['funding_rate']
+            elif final_opp['symbol'] == symbol:
+                opportunity = final_opp
+                rate = opportunity['funding_rate']
+
+        # ==========================================
+        # EXECUTION PHASE: T + 950ms ENTRY
+        # ==========================================
+        precision_wait_until(t_entry)
+        entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+
+        try:
+            live_price = opportunity['last_price']
+            qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
+        except Exception as e:
+            add_ui_log(f"Order prep failed: {e}")
+            time.sleep(5)
+            continue
+
+        entry_success = False
+        try:
+            order_res = binance_signed_request("POST", "/fapi/v1/order", {
+                "symbol": symbol,
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": qty
+            })
+            if "orderId" in order_res:
+                add_ui_log(f"🚀 MARKET ENTRY EXECUTED (BUY): {qty} {symbol} ($5 Margin @ {max_lev}x)")
+                entry_success = True
+            else:
+                add_ui_log(f"Entry order rejected: {order_res.get('msg', 'Unknown Error')}")
+        except Exception as e:
+            add_ui_log(f"Entry execution error: {e}")
+
+        # ==========================================
+        # EXECUTION PHASE: T + 8000ms HARD EXIT
+        # ==========================================
+        precision_wait_until(t_exit)
+        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+
+        status_text = "EXIT FAILED"
+        status_class = "status-cancel"
+
+        if entry_success:
+            try:
+                # Check current position size
+                positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+                pos_qty = 0.0
+                if isinstance(positions, list):
+                    for p in positions:
+                        if p.get("symbol") == symbol:
+                            pos_qty = abs(float(p.get("positionAmt", 0)))
+                            break
+
+                if pos_qty > 0:
+                    exit_res = binance_signed_request("POST", "/fapi/v1/order", {
+                        "symbol": symbol,
+                        "side": "SELL",
+                        "type": "MARKET",
+                        "quantity": str(pos_qty),
+                        "reduceOnly": "true"
+                    })
+                    add_ui_log(f"⏰ HARD EXIT EXECUTED (SELL MARKET): {pos_qty} {symbol} at {exit_time_str}")
+                    status_text = "HARD EXIT (T+8s)"
+                    status_class = "status-profit"
+                else:
+                    status_text = "NO POSITION OPEN"
+                    status_class = "status-cancel"
             except Exception as e:
-                log_message(f"Loop error: {e}")
-                time.sleep(10)
+                add_ui_log(f"Hard Exit Failed: {e}")
+        else:
+            status_text = "ENTRY FAILED"
+            status_class = "status-cancel"
 
-bot_instance = None
+        add_ledger_entry({
+            "coin": f"{symbol} ({window_type})",
+            "rate": f"{rate * 100:+.4f}%",
+            "entry_time": entry_time_str,
+            "exit_time": exit_time_str,
+            "status_text": status_text,
+            "status_class": status_class
+        })
 
-def auto_start_from_env():
-    global bot_instance
-    api_key = os.environ.get('BINANCE_API_KEY', '')
-    secret_key = os.environ.get('BINANCE_SECRET_KEY', '')
-    if api_key and secret_key:
-        bot_state["api_configured"] = True
-        bot_instance = BinanceFundingBot(api_key, secret_key)
-        t = threading.Thread(target=bot_instance.bot_loop)
-        t.daemon = True
-        t.start()
-        log_message("Auto-started bot via Environment Variables.")
-
-auto_start_from_env()
-
-@app.route('/')
-def index():
-    return render_template('index.html', state=bot_state)
-
-@app.route('/api/status')
-def api_status():
-    return jsonify(bot_state)
-
-@app.route('/api/start', methods=['POST'])
-def api_start():
-    global bot_instance
-    data = request.json or {}
-    api_key = data.get('api_key') or os.environ.get('BINANCE_API_KEY')
-    secret_key = data.get('secret_key') or os.environ.get('BINANCE_SECRET_KEY')
-    
-    if not api_key or not secret_key:
-        return jsonify({"status": "error", "message": "API Key required!"}), 400
-        
-    bot_instance = BinanceFundingBot(api_key, secret_key)
-    bot_state["api_configured"] = True
-    
-    if bot_state["status"] != "RUNNING":
-        t = threading.Thread(target=bot_instance.bot_loop)
-        t.daemon = True
-        t.start()
-    
-    return jsonify({"status": "success", "message": "Bot started!"})
-
-@app.route('/api/stop', methods=['POST'])
-def api_stop():
-    global bot_instance
-    if bot_instance:
-        bot_instance.running = False
-    bot_state["status"] = "STOPPED"
-    log_message("Bot stopped.")
-    return jsonify({"status": "success", "message": "Bot stopped."})
+        time.sleep(3)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    run_funding_capture_engine()
+
