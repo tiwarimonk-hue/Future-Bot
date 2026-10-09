@@ -570,6 +570,11 @@ def run_funding_capture_engine():
                     last_scan_time = current_time
                     
                     try:
+                        # 1. Live balance update during armed state
+                        bal_str = get_futures_usdt_balance()
+                        with data_lock:
+                            dashboard_data['futures_balance'] = bal_str
+
                         tickers_check = binance_public_get("/fapi/v1/premiumIndex")
                         if isinstance(tickers_check, list):
                             coin_still_valid = False
@@ -587,7 +592,7 @@ def run_funding_capture_engine():
                                 abort_current = True
                                 break
                             
-                            # Dashboard par live funding rate update karne ke liye
+                            # Update live funding rate in dashboard & opportunity data
                             rate_percent = f"{latest_current_rate * 100:+.4f}%"
                             current_opportunity['funding_rate'] = latest_current_rate
                             with data_lock:
@@ -621,6 +626,10 @@ def run_funding_capture_engine():
                 current_opportunity = None
                 time.sleep(5)
                 continue
+
+            # Refresh rate right before entry execution to lock latest scanned rate
+            rate = current_opportunity['funding_rate']
+            rate_percent = f"{rate * 100:+.4f}%"
 
             calc_qty, lev = set_leverage_and_get_qty(symbol, current_opportunity['last_price'], ENTRY_MARGIN_USD)
             add_ui_log(f"⚙ Configured {symbol}: Leverage {lev}x | Quantity: {calc_qty}")
