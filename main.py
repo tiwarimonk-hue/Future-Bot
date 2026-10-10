@@ -11,6 +11,13 @@ import websocket
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+# Local development ke liye .env support
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
@@ -42,10 +49,11 @@ def add_ledger_entry(trade_info):
         if len(dashboard_data['ledger']) > 20:
             dashboard_data['ledger'].pop()
 
-API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
-API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
+API_KEY = os.environ.get('BINANCE_API_KEY')
+API_SECRET = os.environ.get('BINANCE_API_SECRET')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
+# Threshold set to -0.4% (-0.004)
 MIN_FUNDING_RATE_THRESHOLD = -0.004
 ENTRY_MARGIN_USD = 2.0
 
@@ -150,7 +158,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Funding Capture Engine ($2 Margin + Max Leverage)</h1>
+    <h1>⚡ Binance Funding Capture Engine ($2 Margin + Max 25x Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -221,7 +229,7 @@ def self_ping_worker():
             requests.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
         except Exception:
             pass
-        time.sleep(300)
+        time.sleep(60)
 
 threading.Thread(target=run_web_server, daemon=True).start()
 threading.Thread(target=self_ping_worker, daemon=True).start()
@@ -352,24 +360,25 @@ def scan_best_funding_opportunity():
     return None
 
 def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
-    max_leverage = 25
-    step_size = 1.0
-    min_qty = 1.0
+    target_leverage = 25
 
     try:
         brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
         if isinstance(brackets, list) and len(brackets) > 0:
             b_list = brackets[0].get("brackets", [])
             if b_list:
-                max_leverage = max([b.get("initialLeverage", 25) for b in b_list])
+                exch_max = max([b.get("initialLeverage", 25) for b in b_list])
+                target_leverage = min(int(exch_max), 25)
     except Exception:
-        pass
+        target_leverage = 25
 
     try:
-        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": int(max_leverage)})
+        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": target_leverage})
     except Exception:
         pass
 
+    step_size = 1.0
+    min_qty = 1.0
     try:
         info = binance_public_get("/fapi/v1/exchangeInfo")
         for s in info.get("symbols", []):
@@ -386,14 +395,14 @@ def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
     step_str = f"{step_size:.8f}".rstrip("0")
     qty_decimals = len(step_str.split(".")[1]) if "." in step_str else 0
 
-    notional = margin_usd * max_leverage
+    notional = margin_usd * target_leverage
     calc_qty = max(min_qty, math.floor((notional / price) / step_size) * step_size)
     qty_formatted = f"{calc_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_qty))
 
-    return qty_formatted, max_leverage
+    return qty_formatted, target_leverage
 
 def run_funding_capture_engine():
-    add_ui_log("Binance Dynamic Engine Active (Threshold: -0.4%). Waiting for WS...")
+    add_ui_log("Binance Dynamic Engine Active (Threshold: -0.4%, Max Leverage: 25x). Waiting for WS...")
 
     while not ws_ready:
         time.sleep(0.1)
@@ -446,7 +455,24 @@ def run_funding_capture_engine():
             if now_ms >= t_rescan:
                 break
 
-            time.sleep(2.0)
+            try:
+                live_info = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
+                if isinstance(live_info, dict) and "lastFundingRate" in live_info:
+                    current_rate = float(live_info["lastFundingRate"])
+                    current_rate_percent = f"{current_rate * 100:+.4f}%"
+                    
+                    with data_lock:
+                        dashboard_data['funding_rate'] = current_rate_percent
+                        dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Live Rate: {current_rate_percent}"
+                    
+                    if current_rate > MIN_FUNDING_RATE_THRESHOLD:
+                        add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} dropped to {current_rate_percent} (above threshold -0.4%). Disarming & scanning...")
+                        interrupted = True
+                        break
+            except Exception:
+                pass
+
+            time.sleep(3.0)
 
             if time.time() - last_scan_time >= 900:
                 last_scan_time = time.time()
@@ -487,23 +513,28 @@ def run_funding_capture_engine():
                 opportunity = final_opp
                 rate = opportunity['funding_rate']
 
-        prepped_qty = "1"
+        # ⚡ OPTIMIZATION FIX: PRE-PREPARE ORDER BEFORE SLEEPING
+        qty = "0"
         try:
             live_price = opportunity['last_price']
-            prepped_qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
-            add_ui_log(f"⚡ Pre-configured leverage and order qty ({prepped_qty}) for {symbol}")
+            qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
+            add_ui_log(f"⚡ Order Pre-Prepared: {symbol} | Qty: {qty} | Lev: {max_lev}x")
         except Exception as e:
-            add_ui_log(f"Order prep warning: {e}")
+            add_ui_log(f"Order prep failed: {e}")
+            time.sleep(5)
+            continue
 
+        # Wait exactly till target time
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
+        # 🚀 IMMEDIATE ZERO-DELAY DIRECT ORDER FIRE
         try:
             order_res = binance_signed_request("POST", "/fapi/v1/order", {
                 "symbol": symbol,
                 "side": "BUY",
                 "type": "MARKET",
-                "quantity": prepped_qty
+                "quantity": qty
             })
             add_ui_log(f"🚀 BUY Order Response for {symbol}: {order_res}")
         except Exception as e:
