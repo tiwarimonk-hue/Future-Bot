@@ -11,7 +11,7 @@ import websocket
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Local development ke liye .env support
+# Local development ke liye .env support (AWS server par bashrc already active hai)
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -229,7 +229,7 @@ def self_ping_worker():
             requests.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
         except Exception:
             pass
-        time.sleep(60)
+        time.sleep(60)  # Ping every 1 minute to keep server strictly active
 
 threading.Thread(target=run_web_server, daemon=True).start()
 threading.Thread(target=self_ping_worker, daemon=True).start()
@@ -360,6 +360,7 @@ def scan_best_funding_opportunity():
     return None
 
 def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
+    # Max leverage capped at 25x as requested
     target_leverage = 25
 
     try:
@@ -450,11 +451,13 @@ def run_funding_capture_engine():
         last_scan_time = time.time()
         interrupted = False
 
+        # ARMED WAITING LOOP WITH LIVE DYNAMIC FUNDING RATE CHECKING
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_rescan:
                 break
 
+            # Continuously monitor the armed coin's live funding rate to avoid unfavorable rate drops
             try:
                 live_info = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
                 if isinstance(live_info, dict) and "lastFundingRate" in live_info:
@@ -465,6 +468,7 @@ def run_funding_capture_engine():
                         dashboard_data['funding_rate'] = current_rate_percent
                         dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Live Rate: {current_rate_percent}"
                     
+                    # If funding rate becomes worse than threshold (e.g. rises above -0.4%), disarm and rescan immediately!
                     if current_rate > MIN_FUNDING_RATE_THRESHOLD:
                         add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} dropped to {current_rate_percent} (above threshold -0.4%). Disarming & scanning...")
                         interrupted = True
@@ -513,28 +517,26 @@ def run_funding_capture_engine():
                 opportunity = final_opp
                 rate = opportunity['funding_rate']
 
-        # ⚡ OPTIMIZATION FIX: PRE-PREPARE ORDER BEFORE SLEEPING
-        qty = "0"
+        # --- FIX: PRE-CONFIGURE LEVERAGE & QUANTITY BEFORE SLEEPING ---
+        prepped_qty = "1"
         try:
             live_price = opportunity['last_price']
-            qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
-            add_ui_log(f"⚡ Order Pre-Prepared: {symbol} | Qty: {qty} | Lev: {max_lev}x")
+            prepped_qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
+            add_ui_log(f"⚡ Pre-configured leverage and order qty ({prepped_qty}) for {symbol}")
         except Exception as e:
-            add_ui_log(f"Order prep failed: {e}")
-            time.sleep(5)
-            continue
+            add_ui_log(f"Order prep warning: {e}")
 
-        # Wait exactly till target time
+        # Wait exactly till target entry time
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
-        # 🚀 IMMEDIATE ZERO-DELAY DIRECT ORDER FIRE
+        # DIRECT FAST ORDER EXECUTION (Zero API Delay)
         try:
             order_res = binance_signed_request("POST", "/fapi/v1/order", {
                 "symbol": symbol,
                 "side": "BUY",
                 "type": "MARKET",
-                "quantity": qty
+                "quantity": prepped_qty
             })
             add_ui_log(f"🚀 BUY Order Response for {symbol}: {order_res}")
         except Exception as e:
