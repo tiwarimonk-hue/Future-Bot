@@ -100,7 +100,7 @@ class BinanceFastLaneWS:
             if execution_type == "TRADE" and last_filled_qty > 0:
                 self.last_fill_times[sym] = recv_time
                 self.last_fill_types[sym] = order_type
-                self.log_fn(f"🟢 EXECUTION CONFIRMED [{recv_time}] [{order_type} ({side.upper())}] on {sym} | Qty: {last_filled_qty} @ {last_filled_price}")
+                self.log_fn(f"🟢 EXECUTION CONFIRMED [{recv_time}] [{order_type} ({side.upper()})] on {sym} | Qty: {last_filled_qty} @ {last_filled_price}")
                 if side == "buy":
                     self.long_filled_symbols.add(sym)
                     self.filled_quantities[sym] = self.filled_quantities.get(sym, 0.0) + last_filled_qty
