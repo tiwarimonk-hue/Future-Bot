@@ -7,7 +7,6 @@ import math
 import uuid
 import threading
 import urllib.parse
-import gc
 import requests
 import websocket
 from datetime import datetime, timezone, timedelta
@@ -65,25 +64,36 @@ clock_offset_ms = 0.0
 
 def binance_public_get(endpoint, params=None):
     url = f"{BINANCE_FUTURES_URL}{endpoint}"
-    resp = session.get(url, params=params, timeout=5)
-    return resp.json()
+    try:
+        resp = session.get(url, params=params, timeout=5)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {}
 
 def binance_signed_request(method, endpoint, params=None):
     if params is None:
         params = {}
-    params['timestamp'] = int(get_synced_time_ms())
-    query_string = urllib.parse.urlencode(params)
-    signature = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
-    full_url = f"{BINANCE_FUTURES_URL}{endpoint}?{query_string}&signature={signature}"
-    headers = {"X-MBX-APIKEY": API_KEY}
-    
-    if method == "GET":
-        resp = session.get(full_url, headers=headers, timeout=5)
-    elif method == "POST":
-        resp = session.post(full_url, headers=headers, timeout=5)
-    elif method == "DELETE":
-        resp = session.delete(full_url, headers=headers, timeout=5)
-    return resp.json()
+    try:
+        params['timestamp'] = int(get_synced_time_ms())
+        query_string = urllib.parse.urlencode(params)
+        signature = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        full_url = f"{BINANCE_FUTURES_URL}{endpoint}?{query_string}&signature={signature}"
+        headers = {"X-MBX-APIKEY": API_KEY}
+        
+        if method == "GET":
+            resp = session.get(full_url, headers=headers, timeout=5)
+        elif method == "POST":
+            resp = session.post(full_url, headers=headers, timeout=5)
+        elif method == "DELETE":
+            resp = session.delete(full_url, headers=headers, timeout=5)
+        
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {}
 
 def sync_binance_clock():
     global clock_offset_ms
@@ -91,12 +101,13 @@ def sync_binance_clock():
         t_send = time.time() * 1000
         res = binance_public_get("/fapi/v1/time")
         t_recv = time.time() * 1000
-        server_time = float(res['serverTime'])
-        rtt = t_recv - t_send
-        estimated_server_time = server_time + (rtt / 2.0)
-        clock_offset_ms = estimated_server_time - t_recv
-        with data_lock:
-            dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
+        if res and 'serverTime' in res:
+            server_time = float(res['serverTime'])
+            rtt = t_recv - t_send
+            estimated_server_time = server_time + (rtt / 2.0)
+            clock_offset_ms = estimated_server_time - t_recv
+            with data_lock:
+                dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
     except Exception:
         pass
 
@@ -218,7 +229,7 @@ def send_ws_fapi_order(symbol, side, quantity, reduce_only=False):
         raise Exception("WS Order Timeout")
 
 # ==========================================
-# DASHBOARD WEB SERVER
+# DASHBOARD WEB SERVER & ANTI-SLEEP WORKER
 # ==========================================
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -344,6 +355,7 @@ def self_ping_worker():
             pass
         time.sleep(60)
 
+# Start Web Server and Anti-Sleep Self-Ping in Background Threads
 threading.Thread(target=run_web_server, daemon=True).start()
 threading.Thread(target=self_ping_worker, daemon=True).start()
 
@@ -362,6 +374,8 @@ def get_funding_intervals():
 def scan_best_funding_opportunity():
     try:
         tickers = binance_public_get("/fapi/v1/premiumIndex")
+        if not isinstance(tickers, list):
+            return None
         intervals = get_funding_intervals()
     except Exception:
         return None
@@ -504,293 +518,270 @@ def delayed_post_settlement_watchdog(symbol, settle_epoch):
 def run_funding_capture_engine():
     add_ui_log("Binance WS-FAPI Engine Active. Waiting for WS-FAPI connection...")
 
+    # Startup Timeout Check
+    start_wait = time.time()
     while not ws_fapi_ready:
+        if time.time() - start_wait > 25:
+            add_ui_log("⚠️ WS-FAPI startup timeout. Proceeding with REST fallback support...")
+            break
         time.sleep(0.1)
 
+    # Top-level infinite loop wrapped with global exception catcher to ensure 24/7 uptime
     while True:
-        sync_binance_clock()
-        opportunity = scan_best_funding_opportunity()
+        try:
+            sync_binance_clock()
+            opportunity = scan_best_funding_opportunity()
 
-        if not opportunity:
+            if not opportunity:
+                with data_lock:
+                    dashboard_data['target_symbol'] = "Scanning..."
+                    dashboard_data['funding_rate'] = "0.00%"
+                    dashboard_data['action_direction'] = "--"
+                    dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
+                time.sleep(3)
+                continue
+
+            symbol = opportunity['symbol']
+            rate = opportunity['funding_rate']
+            settle_epoch = opportunity['next_funding_time']
+            settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+            rate_percent = f"{rate * 100:+.4f}%"
+            window_type = opportunity['window_type']
+
             with data_lock:
-                dashboard_data['target_symbol'] = "Scanning..."
-                dashboard_data['funding_rate'] = "0.00%"
-                dashboard_data['action_direction'] = "--"
-                dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
-            time.sleep(3)
-            continue
+                dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
+                dashboard_data['funding_rate'] = rate_percent
+                dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
+                dashboard_data['action_direction'] = "LONG CAPTURE ($2 MARGIN)"
 
-        symbol = opportunity['symbol']
-        rate = opportunity['funding_rate']
-        settle_epoch = opportunity['next_funding_time']
-        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-        rate_percent = f"{rate * 100:+.4f}%"
-        window_type = opportunity['window_type']
+            t_rescan_15s = settle_epoch - 15000
+            t_recheck = settle_epoch - 2000
+            t_entry = settle_epoch + 900
+            t_exit = settle_epoch + 8000
+            t_emergency_sweep = settle_epoch + 10000
 
-        with data_lock:
-            dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
-            dashboard_data['funding_rate'] = rate_percent
-            dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-            dashboard_data['action_direction'] = "LONG CAPTURE ($2 MARGIN)"
+            entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+            exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
 
-        # Advanced Timeline Offsets (PDF Procedure)
-        t_rescan_15s = settle_epoch - 15000
-        t_gc_purge = settle_epoch - 5000
-        t_recheck = settle_epoch - 2000
-        t_entry = settle_epoch + 900
-        t_exit = settle_epoch + 8000
-        t_emergency_sweep = settle_epoch + 10000
+            with data_lock:
+                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 900ms)"
+                dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms)"
+                dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
 
-        entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-        exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+900ms")
 
-        with data_lock:
-            dashboard_data['entry_target'] = f"{entry_ist} IST (T + 900ms)"
-            dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms)"
-            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
+            last_scan_time = time.time()
+            interrupted = False
 
-        add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+900ms")
+            while True:
+                now_ms = get_synced_time_ms()
+                if now_ms >= t_rescan_15s:
+                    break
 
-        last_scan_time = time.time()
-        interrupted = False
-
-        while True:
-            now_ms = get_synced_time_ms()
-            if now_ms >= t_rescan_15s:
-                break
-
-            try:
-                live_info = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
-                if isinstance(live_info, dict) and "lastFundingRate" in live_info:
-                    current_rate = float(live_info["lastFundingRate"])
-                    current_rate_percent = f"{current_rate * 100:+.4f}%"
-                    
-                    with data_lock:
-                        dashboard_data['funding_rate'] = current_rate_percent
-                        dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Live Rate: {current_rate_percent}"
-                    
-                    if current_rate > MIN_FUNDING_RATE_THRESHOLD:
-                        add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} rose to {current_rate_percent}. Rescanning...")
-                        interrupted = True
-                        break
-            except Exception:
-                pass
-
-            time.sleep(3.0)
-
-            if time.time() - last_scan_time >= 900:
-                last_scan_time = time.time()
-                add_ui_log("🔍 Scheduled 15-minute background market rescan...")
-                sync_binance_clock()
-                new_opp = scan_best_funding_opportunity()
-
-                if new_opp:
-                    new_rate_str = f"{new_opp['funding_rate'] * 100:+.4f}%"
-                    if new_opp['symbol'] != symbol:
-                        new_win = new_opp['window_type']
-                        if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
-                            add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_rate_str})")
+                try:
+                    live_info = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
+                    if isinstance(live_info, dict) and "lastFundingRate" in live_info:
+                        current_rate = float(live_info["lastFundingRate"])
+                        current_rate_percent = f"{current_rate * 100:+.4f}%"
+                        
+                        with data_lock:
+                            dashboard_data['funding_rate'] = current_rate_percent
+                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Live Rate: {current_rate_percent}"
+                        
+                        if current_rate > MIN_FUNDING_RATE_THRESHOLD:
+                            add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} rose to {current_rate_percent}. Rescanning...")
                             interrupted = True
                             break
-                    else:
-                        rate = new_opp['funding_rate']
-                        with data_lock:
-                            dashboard_data['funding_rate'] = new_rate_str
-                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {new_rate_str}"
-
-        if interrupted:
-            continue
-
-        # --- PHASE 1: T-15s Fresh Scan & Hot Swap ---
-        precision_wait_until(t_rescan_15s)
-        add_ui_log("⚡ [T-15s FRESH SCAN] Re-evaluating market for best funding coin...")
-        sync_binance_clock()
-        try:
-            tickers_res = binance_public_get("/fapi/v1/premiumIndex")
-            if isinstance(tickers_res, list):
-                for t in tickers_res:
-                    if t.get("symbol") == opportunity['symbol']:
-                        opportunity['last_price'] = float(t.get("markPrice", opportunity['last_price']))
-                        break
-        except Exception:
-            pass
-
-        # --- PHASE 2: T-5s GC Purge & Pause ---
-        precision_wait_until(t_gc_purge)
-        try:
-            gc.collect()
-            gc.disable()
-            add_ui_log("🧹 [GC] Garbage collector cleaned and disabled at T-5s. CPU dedicated for execution.")
-        except Exception:
-            pass
-
-        # --- PHASE 3: T-2s Final Rate Re-Check ---
-        precision_wait_until(t_recheck)
-        fresh_rate_ok = True
-        try:
-            r_check = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
-            if isinstance(r_check, dict) and "lastFundingRate" in r_check:
-                fresh_rate = float(r_check["lastFundingRate"])
-                fresh_mark = float(r_check.get("markPrice", opportunity['last_price']))
-                if fresh_rate > MIN_FUNDING_RATE_THRESHOLD:
-                    add_ui_log(f"⚠️ [PRE-ENTRY HARD ABORT] Live rate dropped to {fresh_rate*100:+.4f}%. Cancelling entry!")
-                    fresh_rate_ok = False
-                else:
-                    rate = fresh_rate
-                    if fresh_mark > 0:
-                        opportunity['last_price'] = fresh_mark
-                    add_ui_log(f"✅ [PRE-ENTRY VERIFIED] Live Rate: {rate*100:+.4f}% | Mark Price: {opportunity['last_price']} USDT")
-        except Exception as e:
-            add_ui_log(f"Pre-Entry Re-check warning: {e}. Keeping existing values.")
-
-        if not fresh_rate_ok:
-            try:
-                gc.enable()
-            except Exception:
-                pass
-            continue
-
-        prepped_qty = "1"
-        try:
-            live_price = opportunity['last_price']
-            prepped_qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
-            add_ui_log(f"⚡ Pre-configured leverage and order qty ({prepped_qty}) for {symbol}")
-        except Exception as e:
-            add_ui_log(f"Order prep warning: {e}")
-
-        # --- PHASE 4: T+900ms Market Buy Entry Execution (WS-FAPI + REST Fallback) ---
-        precision_wait_until(t_entry)
-        order_accepted = False
-
-        try:
-            order_res = send_ws_fapi_order(symbol, "BUY", prepped_qty, reduce_only=False)
-            if order_res and ("orderId" in order_res or order_res.get("status") == 200):
-                order_accepted = True
-                add_ui_log(f"🚀 [MARKET BUY ATTEMPT #1 (WebSocket)] Success for {symbol} | Response: {order_res}")
-        except Exception as ws_err:
-            add_ui_log(f"⚠️ [WS Order Failed] ({ws_err}), falling back to REST API...")
-
-        if not order_accepted:
-            try:
-                order_res = binance_signed_request("POST", "/fapi/v1/order", {
-                    "symbol": symbol, "side": "BUY", "type": "MARKET", "quantity": prepped_qty
-                })
-                if order_res and "orderId" in order_res:
-                    order_accepted = True
-                    add_ui_log(f"🚀 [MARKET BUY ATTEMPT #2 (REST API)] Success for {symbol} | Response: {order_res}")
-                else:
-                    add_ui_log(f"❌ [REST API REJECTED] Binance rejected: {order_res}")
-            except Exception as e:
-                add_ui_log(f"Entry execution error: {e}")
-
-        if not order_accepted:
-            add_ui_log("❌ [ENTRY ABORT] Market Buy could not be confirmed in both attempts. Aborting trade safely.")
-            try:
-                gc.enable()
-            except Exception:
-                pass
-            continue
-
-        # --- PHASE 5: T+8s Scheduled Market Exit ---
-        precision_wait_until(t_exit)
-        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-
-        status_text = "EXIT FAILED"
-        status_class = "status-cancel"
-
-        try:
-            positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-            pos_qty = 0.0
-            if isinstance(positions, list):
-                for p in positions:
-                    if p.get("symbol") == symbol:
-                        pos_qty = abs(float(p.get("positionAmt", 0)))
-                        break
-
-            if pos_qty > 0:
-                exit_success = False
-                try:
-                    exit_res = send_ws_fapi_order(symbol, "SELL", str(pos_qty), reduce_only=True)
-                    if exit_res and ("orderId" in exit_res or exit_res.get("status") == 200):
-                        exit_success = True
-                        add_ui_log(f"⏰ [WS EXIT SUCCESS] Closed {pos_qty} {symbol} at {exit_time_str}")
-                except Exception as ws_err:
-                    add_ui_log(f"⚠️ [WS Exit Failed] ({ws_err}), falling back to REST...")
-
-                if not exit_success:
-                    try:
-                        exit_res = binance_signed_request("POST", "/fapi/v1/order", {
-                            "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(pos_qty), "reduceOnly": "true"
-                        })
-                        if exit_res and "orderId" in exit_res:
-                            exit_success = True
-                            add_ui_log(f"⏰ [REST EXIT SUCCESS] Closed {pos_qty} {symbol} at {exit_time_str}")
-                        else:
-                            add_ui_log(f"❌ Exit order rejected: {exit_res}")
-                    except Exception as e:
-                        add_ui_log(f"REST exit error: {e}")
-
-                if exit_success:
-                    status_text = "HARD EXIT (T+8s)"
-                    status_class = "status-profit"
-            else:
-                add_ui_log("⚠️ Warning: pos_qty is 0.")
-                status_text = "NO POSITION"
-                status_class = "status-cancel"
-        except Exception as e:
-            add_ui_log(f"Hard Exit Execution Error: {e}")
-
-        # --- PHASE 6: Emergency Hard Sweep & Safety Net at T+10s ---
-        try:
-            precision_wait_until(t_emergency_sweep)
-            binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
-            final_pos_check = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-            final_pos = 0.0
-            if isinstance(final_pos_check, list):
-                for p in final_pos_check:
-                    if p.get("symbol") == symbol:
-                        final_pos = abs(float(p.get("positionAmt", 0)))
-                        break
-            
-            if final_pos > 0:
-                add_ui_log(f"🚨 [100% SAFETY NET T+10s] Remnant position found ({final_pos} {symbol}). Hard market closing...")
-                try:
-                    send_ws_fapi_order(symbol, "SELL", str(final_pos), reduce_only=True)
                 except Exception:
-                    binance_signed_request("POST", "/fapi/v1/order", {
-                        "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(final_pos), "reduceOnly": "true"
+                    pass
+
+                time.sleep(3.0)
+
+                if time.time() - last_scan_time >= 900:
+                    last_scan_time = time.time()
+                    add_ui_log("🔍 Scheduled 15-minute background market rescan...")
+                    sync_binance_clock()
+                    new_opp = scan_best_funding_opportunity()
+
+                    if new_opp:
+                        new_rate_str = f"{new_opp['funding_rate'] * 100:+.4f}%"
+                        if new_opp['symbol'] != symbol:
+                            new_win = new_opp['window_type']
+                            if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
+                                add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_rate_str})")
+                                interrupted = True
+                                break
+                        else:
+                            rate = new_opp['funding_rate']
+                            with data_lock:
+                                dashboard_data['funding_rate'] = new_rate_str
+                                dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {new_rate_str}"
+
+            if interrupted:
+                continue
+
+            # --- PHASE 1: T-15s Fresh Scan & Hot Swap ---
+            precision_wait_until(t_rescan_15s)
+            add_ui_log("⚡ [T-15s FRESH SCAN] Re-evaluating market for best funding coin...")
+            sync_binance_clock()
+            try:
+                tickers_res = binance_public_get("/fapi/v1/premiumIndex")
+                if isinstance(tickers_res, list):
+                    for t in tickers_res:
+                        if t.get("symbol") == opportunity['symbol']:
+                            opportunity['last_price'] = float(t.get("markPrice", opportunity['last_price']))
+                            break
+            except Exception:
+                pass
+
+            # --- PHASE 2: T-2s Final Rate Re-Check ---
+            precision_wait_until(t_recheck)
+            fresh_rate_ok = True
+            try:
+                r_check = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
+                if isinstance(r_check, dict) and "lastFundingRate" in r_check:
+                    fresh_rate = float(r_check["lastFundingRate"])
+                    fresh_mark = float(r_check.get("markPrice", opportunity['last_price']))
+                    if fresh_rate > MIN_FUNDING_RATE_THRESHOLD:
+                        add_ui_log(f"⚠️ [PRE-ENTRY HARD ABORT] Live rate dropped to {fresh_rate*100:+.4f}%. Cancelling entry!")
+                        fresh_rate_ok = False
+                    else:
+                        rate = fresh_rate
+                        if fresh_mark > 0:
+                            opportunity['last_price'] = fresh_mark
+                        add_ui_log(f"✅ [PRE-ENTRY VERIFIED] Live Rate: {rate*100:+.4f}% | Mark Price: {opportunity['last_price']} USDT")
+            except Exception as e:
+                add_ui_log(f"Pre-Entry Re-check warning: {e}. Keeping existing values.")
+
+            if not fresh_rate_ok:
+                continue
+
+            prepped_qty = "1"
+            try:
+                live_price = opportunity['last_price']
+                prepped_qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
+                add_ui_log(f"⚡ Pre-configured leverage and order qty ({prepped_qty}) for {symbol}")
+            except Exception as e:
+                add_ui_log(f"Order prep warning: {e}")
+
+            # --- PHASE 3: T+900ms Market Buy Entry Execution ---
+            precision_wait_until(t_entry)
+            order_accepted = False
+
+            try:
+                order_res = send_ws_fapi_order(symbol, "BUY", prepped_qty, reduce_only=False)
+                if order_res and ("orderId" in order_res or order_res.get("status") == 200):
+                    order_accepted = True
+                    add_ui_log(f"🚀 [MARKET BUY ATTEMPT #1 (WebSocket)] Success for {symbol}")
+            except Exception as ws_err:
+                add_ui_log(f"⚠️ [WS Order Failed] ({ws_err}), falling back to REST API...")
+
+            if not order_accepted:
+                try:
+                    order_res = binance_signed_request("POST", "/fapi/v1/order", {
+                        "symbol": symbol, "side": "BUY", "type": "MARKET", "quantity": prepped_qty
                     })
-                add_ui_log(f"✅ [SAFETY NET] Remnant position successfully flattened.")
-            else:
-                add_ui_log("✅ [Safety Net T+10s] Position verified at 0 (100% Flat).")
-        except Exception as e:
-            add_ui_log(f"Safety net warning: {e}")
+                    if order_res and "orderId" in order_res:
+                        order_accepted = True
+                        add_ui_log(f"🚀 [MARKET BUY ATTEMPT #2 (REST API)] Success for {symbol}")
+                except Exception as e:
+                    add_ui_log(f"Entry execution error: {e}")
 
-        # Launch Background Watchdogs for 1-min and 2-min checks
-        threading.Thread(
-            target=delayed_post_settlement_watchdog,
-            args=(symbol, settle_epoch),
-            daemon=True
-        ).start()
+            if not order_accepted:
+                add_ui_log("❌ [ENTRY ABORT] Market Buy could not be confirmed. Aborting trade safely.")
+                continue
 
-        # Re-enable GC and clean memory
-        try:
-            gc.enable()
-            gc.collect()
-            add_ui_log("♻️ Garbage collector re-enabled and RAM flushed for next cycle.")
-        except Exception:
-            pass
+            # --- PHASE 4: T+8s Scheduled Market Exit ---
+            precision_wait_until(t_exit)
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
-        add_ledger_entry({
-            "coin": f"{symbol} ({window_type})",
-            "rate": f"{rate * 100:+.4f}%",
-            "entry_time": entry_time_str,
-            "exit_time": exit_time_str,
-            "status_text": status_text,
-            "status_class": status_class
-        })
+            status_text = "EXIT FAILED"
+            status_class = "status-cancel"
 
-        time.sleep(3)
+            try:
+                positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+                pos_qty = 0.0
+                if isinstance(positions, list):
+                    for p in positions:
+                        if p.get("symbol") == symbol:
+                            pos_qty = abs(float(p.get("positionAmt", 0)))
+                            break
+
+                if pos_qty > 0:
+                    exit_success = False
+                    try:
+                        exit_res = send_ws_fapi_order(symbol, "SELL", str(pos_qty), reduce_only=True)
+                        if exit_res and ("orderId" in exit_res or exit_res.get("status") == 200):
+                            exit_success = True
+                            add_ui_log(f"⏰ [WS EXIT SUCCESS] Closed {pos_qty} {symbol} at {exit_time_str}")
+                    except Exception as ws_err:
+                        add_ui_log(f"⚠️ [WS Exit Failed] ({ws_err}), falling back to REST...")
+
+                    if not exit_success:
+                        try:
+                            exit_res = binance_signed_request("POST", "/fapi/v1/order", {
+                                "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(pos_qty), "reduceOnly": "true"
+                            })
+                            if exit_res and "orderId" in exit_res:
+                                exit_success = True
+                                add_ui_log(f"⏰ [REST EXIT SUCCESS] Closed {pos_qty} {symbol} at {exit_time_str}")
+                        except Exception as e:
+                            add_ui_log(f"REST exit error: {e}")
+
+                    if exit_success:
+                        status_text = "HARD EXIT (T+8s)"
+                        status_class = "status-profit"
+                else:
+                    status_text = "NO POSITION"
+                    status_class = "status-cancel"
+            except Exception as e:
+                add_ui_log(f"Hard Exit Execution Error: {e}")
+
+            # --- PHASE 5: Emergency Hard Sweep & Safety Net at T+10s ---
+            try:
+                precision_wait_until(t_emergency_sweep)
+                binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+                final_pos_check = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+                final_pos = 0.0
+                if isinstance(final_pos_check, list):
+                    for p in final_pos_check:
+                        if p.get("symbol") == symbol:
+                            final_pos = abs(float(p.get("positionAmt", 0)))
+                            break
+                
+                if final_pos > 0:
+                    add_ui_log(f"🚨 [100% SAFETY NET T+10s] Remnant position found ({final_pos} {symbol}). Hard market closing...")
+                    try:
+                        send_ws_fapi_order(symbol, "SELL", str(final_pos), reduce_only=True)
+                    except Exception:
+                        binance_signed_request("POST", "/fapi/v1/order", {
+                            "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(final_pos), "reduceOnly": "true"
+                        })
+                    add_ui_log(f"✅ [SAFETY NET] Remnant position successfully flattened.")
+            except Exception as e:
+                add_ui_log(f"Safety net warning: {e}")
+
+            # Launch Background Watchdogs
+            threading.Thread(
+                target=delayed_post_settlement_watchdog,
+                args=(symbol, settle_epoch),
+                daemon=True
+            ).start()
+
+            add_ledger_entry({
+                "coin": f"{symbol} ({window_type})",
+                "rate": f"{rate * 100:+.4f}%",
+                "entry_time": entry_time_str,
+                "exit_time": exit_time_str,
+                "status_text": status_text,
+                "status_class": status_class
+            })
+
+            time.sleep(3)
+
+        except Exception as outer_err:
+            add_ui_log(f"⚠️ Critical Engine Exception Handled: {outer_err}. Restarting loop in 3s...")
+            time.sleep(3)
 
 if __name__ == '__main__':
     run_funding_capture_engine()
