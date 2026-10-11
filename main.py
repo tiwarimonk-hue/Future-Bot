@@ -21,6 +21,9 @@ except ImportError:
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
+# Persistent session for Keep-Alive (Ultra-low latency connection reuse)
+session = requests.Session()
+
 dashboard_data = {
     "target_symbol": "Scanning Market...",
     "funding_rate": "0.00%",
@@ -61,7 +64,7 @@ clock_offset_ms = 0.0
 
 def binance_public_get(endpoint, params=None):
     url = f"{BINANCE_FUTURES_URL}{endpoint}"
-    resp = requests.get(url, params=params, timeout=5)
+    resp = session.get(url, params=params, timeout=5)
     return resp.json()
 
 def binance_signed_request(method, endpoint, params=None):
@@ -74,11 +77,11 @@ def binance_signed_request(method, endpoint, params=None):
     headers = {"X-MBX-APIKEY": API_KEY}
     
     if method == "GET":
-        resp = requests.get(full_url, headers=headers, timeout=5)
+        resp = session.get(full_url, headers=headers, timeout=5)
     elif method == "POST":
-        resp = requests.post(full_url, headers=headers, timeout=5)
+        resp = session.post(full_url, headers=headers, timeout=5)
     elif method == "DELETE":
-        resp = requests.delete(full_url, headers=headers, timeout=5)
+        resp = session.delete(full_url, headers=headers, timeout=5)
     return resp.json()
 
 def sync_binance_clock():
@@ -226,7 +229,7 @@ def self_ping_worker():
     time.sleep(5)
     while True:
         try:
-            requests.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
+            session.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
         except Exception:
             pass
         time.sleep(60)  # Ping every 1 minute to keep server strictly active
