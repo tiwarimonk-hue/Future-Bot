@@ -4,6 +4,7 @@ import json
 import hmac
 import hashlib
 import math
+import uuid
 import threading
 import urllib.parse
 import requests
@@ -11,7 +12,7 @@ import websocket
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Local development ke liye .env support (AWS server par bashrc already active hai)
+# Local development ke liye .env support
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -21,14 +22,14 @@ except ImportError:
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
-# Persistent session for Keep-Alive (Ultra-low latency connection reuse)
+# Persistent session for public/fallback HTTP requests
 session = requests.Session()
 
 dashboard_data = {
     "target_symbol": "Scanning Market...",
     "funding_rate": "0.00%",
     "action_direction": "--",
-    "status": "Initializing Binance Dynamic Engine...",
+    "status": "Initializing Binance WS-FAPI Engine...",
     "target_settlement": "-- IST",
     "entry_target": "-- IST (T + 900ms)",
     "exit_target": "-- IST (T + 8000ms)",
@@ -56,7 +57,6 @@ API_KEY = os.environ.get('BINANCE_API_KEY')
 API_SECRET = os.environ.get('BINANCE_API_SECRET')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Threshold set to -0.4% (-0.004)
 MIN_FUNDING_RATE_THRESHOLD = -0.004
 ENTRY_MARGIN_USD = 2.0
 
@@ -113,7 +113,116 @@ def precision_wait_until(target_time_ms):
         elif diff > 2:
             time.sleep(0.0005)
 
+# ==========================================
+# WEBSOCKET API (WS-FAPI) FOR ULTRA-FAST ORDERS
+# ==========================================
+ws_fapi_client = None
+ws_fapi_ready = False
+ws_pending_requests = {}
+ws_req_lock = threading.Lock()
+
+def on_ws_fapi_message(ws, message):
+    try:
+        data = json.loads(message)
+        req_id = data.get("id")
+        if req_id and req_id in ws_pending_requests:
+            with ws_req_lock:
+                req_info = ws_pending_requests.pop(req_id)
+                req_info["result"] = data
+                req_info["event"].set()
+    except Exception:
+        pass
+
+def on_ws_fapi_open(ws):
+    global ws_fapi_ready
+    ws_fapi_ready = True
+    add_ui_log("⚡ Binance WebSocket API (WS-FAPI) Connected & Ready")
+
+def on_ws_fapi_close(ws, code, msg):
+    global ws_fapi_ready
+    ws_fapi_ready = False
+    add_ui_log("⚠️ Binance WebSocket API Disconnected")
+
+def on_ws_fapi_error(ws, error):
+    global ws_fapi_ready
+    ws_fapi_ready = False
+
+def connect_ws_fapi():
+    global ws_fapi_client
+    while True:
+        try:
+            ws_url = "wss://ws-fapi.binance.com/ws-fapi/v1"
+            ws_fapi_client = websocket.WebSocketApp(
+                ws_url,
+                on_open=on_ws_fapi_open,
+                on_message=on_ws_fapi_message,
+                on_close=on_ws_fapi_close,
+                on_error=on_ws_fapi_error
+            )
+            ws_fapi_client.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception:
+            pass
+        ws_fapi_ready = False
+        time.sleep(2)
+
+threading.Thread(target=connect_ws_fapi, daemon=True).start()
+
+def send_ws_fapi_order(symbol, side, quantity, reduce_only=False):
+    if not ws_fapi_ready or not ws_fapi_client:
+        raise Exception("WS-FAPI not ready")
+    
+    req_id = str(uuid.uuid4())
+    params = {
+        "apiKey": API_KEY,
+        "symbol": symbol,
+        "side": side,
+        "type": "MARKET",
+        "quantity": str(quantity),
+        "timestamp": int(get_synced_time_ms())
+    }
+    if reduce_only:
+        params["reduceOnly"] = "true"
+
+    sorted_params = sorted(params.items())
+    query_string = urllib.parse.urlencode(sorted_params)
+    signature = hmac.new(
+        API_SECRET.encode('utf-8'),
+        query_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    params["signature"] = signature
+
+    payload = {
+        "id": req_id,
+        "method": "order.place",
+        "params": params
+    }
+
+    event = threading.Event()
+    req_info = {"event": event, "result": None}
+    with ws_req_lock:
+        ws_pending_requests[req_id] = req_info
+
+    ws_fapi_client.send(json.dumps(payload))
+    
+    if event.wait(timeout=3.0):
+        res = req_info["result"]
+        if res and "status" in res and res["status"] == 200:
+            return res.get("result", {})
+        else:
+            raise Exception(f"WS Order Error: {res}")
+    else:
+        with ws_req_lock:
+            ws_pending_requests.pop(req_id, None)
+        raise Exception("WS Order Timeout")
+
+# ==========================================
+# DASHBOARD WEB SERVER
+# ==========================================
 class FundingDashboardHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
     def do_GET(self):
         if self.path == '/api/status':
             self.send_response(200)
@@ -134,7 +243,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Binance Funding Capture Engine</title>
+<title>Binance WS-FAPI Funding Engine</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
 body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
@@ -161,7 +270,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Funding Capture Engine ($2 Margin + Max 25x Leverage)</h1>
+    <h1>⚡ Binance WS-FAPI Funding Engine ($2 Margin + Max 25x Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -232,61 +341,10 @@ def self_ping_worker():
             session.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
         except Exception:
             pass
-        time.sleep(60)  # Ping every 1 minute to keep server strictly active
+        time.sleep(60)
 
 threading.Thread(target=run_web_server, daemon=True).start()
 threading.Thread(target=self_ping_worker, daemon=True).start()
-
-ws_ready = False
-
-def on_ws_open(ws):
-    global ws_ready
-    ws_ready = True
-    with data_lock:
-        dashboard_data['status'] = "BINANCE WS LIVE"
-    add_ui_log("Binance WebSocket Pipeline Connected & Active")
-
-def on_ws_message(ws, message):
-    pass
-
-def on_ws_close(ws, code, msg):
-    global ws_ready
-    ws_ready = False
-    with data_lock:
-        dashboard_data["status"] = "WS DISCONNECTED"
-
-def on_ws_error(ws, error):
-    global ws_ready
-    ws_ready = False
-
-def start_heartbeat(ws):
-    def run():
-        while True:
-            time.sleep(15)
-            try:
-                ws.send(json.dumps({"method": "PING"}))
-            except Exception:
-                break
-    threading.Thread(target=run, daemon=True).start()
-
-def connect_websocket():
-    while True:
-        try:
-            ws_url = "wss://fstream.binance.com/ws"
-            ws = websocket.WebSocketApp(
-                ws_url,
-                on_open=on_ws_open,
-                on_message=on_ws_message,
-                on_close=on_ws_close,
-                on_error=on_ws_error
-            )
-            start_heartbeat(ws)
-            ws.run_forever()
-        except Exception:
-            pass
-        time.sleep(2)
-
-threading.Thread(target=connect_websocket, daemon=True).start()
 
 def get_funding_intervals():
     intervals = {}
@@ -363,9 +421,7 @@ def scan_best_funding_opportunity():
     return None
 
 def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
-    # Max leverage capped at 25x as requested
     target_leverage = 25
-
     try:
         brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
         if isinstance(brackets, list) and len(brackets) > 0:
@@ -406,9 +462,9 @@ def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
     return qty_formatted, target_leverage
 
 def run_funding_capture_engine():
-    add_ui_log("Binance Dynamic Engine Active (Threshold: -0.4%, Max Leverage: 25x). Waiting for WS...")
+    add_ui_log("Binance WS-FAPI Engine Active. Waiting for WS-FAPI connection...")
 
-    while not ws_ready:
+    while not ws_fapi_ready:
         time.sleep(0.1)
 
     while True:
@@ -454,13 +510,11 @@ def run_funding_capture_engine():
         last_scan_time = time.time()
         interrupted = False
 
-        # ARMED WAITING LOOP WITH LIVE DYNAMIC FUNDING RATE CHECKING
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_rescan:
                 break
 
-            # Continuously monitor the armed coin's live funding rate to avoid unfavorable rate drops
             try:
                 live_info = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
                 if isinstance(live_info, dict) and "lastFundingRate" in live_info:
@@ -471,9 +525,8 @@ def run_funding_capture_engine():
                         dashboard_data['funding_rate'] = current_rate_percent
                         dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Live Rate: {current_rate_percent}"
                     
-                    # If funding rate becomes worse than threshold (e.g. rises above -0.4%), disarm and rescan immediately!
                     if current_rate > MIN_FUNDING_RATE_THRESHOLD:
-                        add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} dropped to {current_rate_percent} (above threshold -0.4%). Disarming & scanning...")
+                        add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} rose to {current_rate_percent}. Rescanning...")
                         interrupted = True
                         break
             except Exception:
@@ -500,7 +553,6 @@ def run_funding_capture_engine():
                         with data_lock:
                             dashboard_data['funding_rate'] = new_rate_str
                             dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {new_rate_str}"
-                        add_ui_log(f"🔄 Rescan Result: Same coin {symbol} active | Live Rate: {new_rate_str}")
 
         if interrupted:
             continue
@@ -520,7 +572,6 @@ def run_funding_capture_engine():
                 opportunity = final_opp
                 rate = opportunity['funding_rate']
 
-        # --- FIX: PRE-CONFIGURE LEVERAGE & QUANTITY BEFORE SLEEPING ---
         prepped_qty = "1"
         try:
             live_price = opportunity['last_price']
@@ -529,21 +580,22 @@ def run_funding_capture_engine():
         except Exception as e:
             add_ui_log(f"Order prep warning: {e}")
 
-        # Wait exactly till target entry time
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
-        # DIRECT FAST ORDER EXECUTION (Zero API Delay)
+        # --- WEBSOCKET API ORDER EXECUTION (WITH REST FALLBACK) ---
         try:
-            order_res = binance_signed_request("POST", "/fapi/v1/order", {
-                "symbol": symbol,
-                "side": "BUY",
-                "type": "MARKET",
-                "quantity": prepped_qty
-            })
-            add_ui_log(f"🚀 BUY Order Response for {symbol}: {order_res}")
-        except Exception as e:
-            add_ui_log(f"Entry execution error: {e}")
+            order_res = send_ws_fapi_order(symbol, "BUY", prepped_qty, reduce_only=False)
+            add_ui_log(f"🚀 WS-FAPI BUY Order Response for {symbol}: {order_res}")
+        except Exception as ws_err:
+            add_ui_log(f"⚠️ WS Order failed ({ws_err}), falling back to REST...")
+            try:
+                order_res = binance_signed_request("POST", "/fapi/v1/order", {
+                    "symbol": symbol, "side": "BUY", "type": "MARKET", "quantity": prepped_qty
+                })
+                add_ui_log(f"🚀 REST BUY Order Response for {symbol}: {order_res}")
+            except Exception as e:
+                add_ui_log(f"Entry execution error: {e}")
 
         precision_wait_until(t_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
@@ -561,15 +613,17 @@ def run_funding_capture_engine():
                         break
 
             if pos_qty > 0:
-                exit_res = binance_signed_request("POST", "/fapi/v1/order", {
-                    "symbol": symbol,
-                    "side": "SELL",
-                    "type": "MARKET",
-                    "quantity": str(pos_qty),
-                    "reduceOnly": "true"
-                })
-                add_ui_log(f"⏰ SELL Order Response for {symbol}: {exit_res}")
-                if isinstance(exit_res, dict) and "orderId" in exit_res:
+                try:
+                    exit_res = send_ws_fapi_order(symbol, "SELL", str(pos_qty), reduce_only=True)
+                    add_ui_log(f"⏰ WS-FAPI SELL Order Response for {symbol}: {exit_res}")
+                except Exception as ws_err:
+                    add_ui_log(f"⚠️ WS Exit failed ({ws_err}), falling back to REST...")
+                    exit_res = binance_signed_request("POST", "/fapi/v1/order", {
+                        "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(pos_qty), "reduceOnly": "true"
+                    })
+                    add_ui_log(f"⏰ REST SELL Order Response for {symbol}: {exit_res}")
+
+                if isinstance(exit_res, dict) and ("orderId" in exit_res or "orderId" in exit_res.get("result", {})):
                     add_ui_log(f"✅ HARD EXIT EXECUTED SUCCESSFUL: {pos_qty} {symbol} at {exit_time_str}")
                     status_text = "HARD EXIT (T+8s)"
                     status_class = "status-profit"
