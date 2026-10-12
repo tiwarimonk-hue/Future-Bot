@@ -58,7 +58,7 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 MIN_FUNDING_RATE_THRESHOLD = -0.004
-ENTRY_MARGIN_USD = 2.0
+ENTRY_MARGIN_USD = 10.0
 
 clock_offset_ms = 0.0
 
@@ -282,7 +282,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance WS-FAPI Funding Engine ($2 Margin + Max 25x Leverage)</h1>
+    <h1>⚡ Binance WS-FAPI Funding Engine ($10 Margin + Max 25x Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -435,7 +435,7 @@ def scan_best_funding_opportunity():
 
     return None
 
-def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
+def set_max_leverage_and_get_qty(symbol, price, margin_usd=10.0):
     target_leverage = 25
     try:
         brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
@@ -550,7 +550,7 @@ def run_funding_capture_engine():
                 dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
                 dashboard_data['funding_rate'] = rate_percent
                 dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-                dashboard_data['action_direction'] = "LONG CAPTURE ($2 MARGIN)"
+                dashboard_data['action_direction'] = "LONG CAPTURE ($10 MARGIN)"
 
             t_rescan_15s = settle_epoch - 15000
             t_recheck = settle_epoch - 2000
@@ -664,7 +664,7 @@ def run_funding_capture_engine():
 
             # --- PHASE 3: T+900ms Market Buy Entry Execution ---
             precision_wait_until(t_entry)
-            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]  # <--- FIXED HERE
+            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             order_accepted = False
 
             try:
