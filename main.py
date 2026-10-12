@@ -518,7 +518,6 @@ def delayed_post_settlement_watchdog(symbol, settle_epoch):
 def run_funding_capture_engine():
     add_ui_log("Binance WS-FAPI Engine Active. Waiting for WS-FAPI connection...")
 
-    # Startup Timeout Check
     start_wait = time.time()
     while not ws_fapi_ready:
         if time.time() - start_wait > 25:
@@ -526,7 +525,6 @@ def run_funding_capture_engine():
             break
         time.sleep(0.1)
 
-    # Top-level infinite loop wrapped with global exception catcher to ensure 24/7 uptime
     while True:
         try:
             sync_binance_clock()
@@ -666,6 +664,7 @@ def run_funding_capture_engine():
 
             # --- PHASE 3: T+900ms Market Buy Entry Execution ---
             precision_wait_until(t_entry)
+            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]  # <--- FIXED HERE
             order_accepted = False
 
             try:
