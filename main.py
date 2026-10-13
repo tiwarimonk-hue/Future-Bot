@@ -362,37 +362,63 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         coin_last_trade_time[symbol] = time.time()
         
         step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
-        
-        d_entry = Decimal(str(entry_price))
         d_pos_size = Decimal(str(POSITION_SIZE_USD))
-        raw_qty = d_pos_size / d_entry
-        calc_qty = max(min_qty, raw_qty)
-        
-        amount = format_qty(calc_qty, step_size)
-        price = format_price(entry_price, tick_size)
-        
-        action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
-        add_ui_log(f"🟢 {action_name}: {symbol} at {price} (Qty: {amount})")
-        
-        order_res = send_ws_fapi_order(
-            symbol=symbol, side=trade_side, quantity=amount, price=price,
-            order_type="LIMIT", time_in_force="GTC"
-        )
-        
-        order_id = order_res.get("orderId")
         
         filled = False
-        for _ in range(5):
-            time.sleep(1)
-            chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
-            if chk.get("status") == "FILLED":
+        order_id = None
+        fill_price_float = entry_price
+        current_raw_price = entry_price
+        
+        # AGGRESSIVE LIMIT CHASER LOOP (Up to 5 attempts / 5 seconds)
+        for attempt in range(5):
+            d_entry = Decimal(str(current_raw_price))
+            raw_qty = d_pos_size / d_entry
+            calc_qty = max(min_qty, raw_qty)
+            
+            amount = format_qty(calc_qty, step_size)
+            price = format_price(current_raw_price, tick_size)
+            
+            action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
+            add_ui_log(f"🟢 [{symbol}] Limit Attempt {attempt+1}: {action_name} at {price} (Qty: {amount})")
+            
+            try:
+                order_res = send_ws_fapi_order(
+                    symbol=symbol, side=trade_side, quantity=amount, price=price,
+                    order_type="LIMIT", time_in_force="GTC"
+                )
+                order_id = order_res.get("orderId")
+            except Exception as e:
+                add_ui_log(f"[{symbol}] Order Error: {e}")
+                time.sleep(1)
+                continue
+            
+            # Check status for 1 second
+            sub_filled = False
+            for _ in range(1):
+                time.sleep(1)
+                chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+                status = chk.get("status")
+                if status == "FILLED":
+                    sub_filled = True
+                    fill_price_float = float(chk.get("avgPrice", current_raw_price))
+                    break
+                elif status in ["CANCELED", "REJECTED"]:
+                    break
+            
+            if sub_filled:
                 filled = True
                 break
-            elif chk.get("status") in ["CANCELED", "REJECTED"]:
-                break
+            else:
+                # Not filled in 1s, cancel and fetch latest price to chase
+                cancel_all_ws_orders(symbol)
+                ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
+                if ticker and "price" in ticker:
+                    current_raw_price = float(ticker["price"])
+                else:
+                    break
         
         if not filled:
-            add_ui_log(f"[{symbol}] Limit order unfilled. Canceling...")
+            add_ui_log(f"[{symbol}] Limit order not filled in 5s. Canceling trade completely.")
             cancel_all_ws_orders(symbol)
             with data_lock:
                 active_trade_symbols.discard(symbol)
@@ -401,7 +427,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
 
         add_ui_log(f"[{symbol}] Limit Order Filled! Setting 0.3% TP and 0.3% SL.")
         
-        fill_price_float = float(binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}).get("avgPrice", entry_price))
         d_fill = Decimal(str(fill_price_float))
         
         if trade_side == "BUY":
@@ -489,7 +514,6 @@ def dynamic_market_scanner():
                 time.sleep(3)
                 continue
 
-            # Strict check directly from Binance exchange active positions
             current_active_count = get_active_positions_count_from_exchange()
             with data_lock:
                 dashboard_data['active_trades_count'] = current_active_count
@@ -537,7 +561,6 @@ def dynamic_market_scanner():
                         trade_side = "SELL"
 
                     if trade_side:
-                        # Re-verify live count right before triggering
                         latest_count = get_active_positions_count_from_exchange()
                         if latest_count >= MAX_CONCURRENT_TRADES:
                             break
@@ -706,7 +729,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized (1.0% Threshold, Max 3 Trades)!")
+    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized (1.0% Threshold, Max 3 Trades, Limit Chaser)!")
     
     while True:
         time.sleep(1)
