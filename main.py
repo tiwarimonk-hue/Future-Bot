@@ -50,7 +50,7 @@ COIN_CONFIG = {
 }
 active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
 
-# Live tracking stats for dashboard
+# Live tracking stats for dashboard with dedicated liquidation tracking
 dashboard_data = {
     "status": "INITIALIZING...",
     "active_coin": "NONE",
@@ -58,10 +58,10 @@ dashboard_data = {
     "paused_until": 0,
     "clock_offset_ms": 0.0,
     "coin_stats": {
-        'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
-        'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
-        'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
-        'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'}
+        'SOLUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
+        'DOGEUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
+        'XRPUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
+        'BNBUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'}
     },
     "scans": [],
     "logs": []
@@ -79,7 +79,7 @@ def add_ui_log(message):
 def add_scan(message):
     with data_lock:
         dashboard_data['scans'].insert(0, message)
-        if len(dashboard_data['scans']) > 8:
+        if len(dashboard_data['scans']) > 10:
             dashboard_data['scans'].pop()
 
 API_KEY = os.environ.get('BINANCE_API_KEY')
@@ -332,7 +332,6 @@ def execute_trade(symbol, entry_price):
         
         add_ui_log(f"🟢 ENTRY: {symbol} at {price} (Qty: {amount})")
         
-        # Place Limit Buy Order (GTX - Post Only)
         order_res = send_ws_fapi_order(
             symbol=symbol, side="BUY", quantity=amount, price=price,
             order_type="LIMIT", time_in_force="GTX"
@@ -341,7 +340,6 @@ def execute_trade(symbol, entry_price):
         order_id = order_res.get("orderId")
         time.sleep(1)
         
-        # Verify order fill via REST
         check_order = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
         
         if check_order.get("status") == "FILLED":
@@ -354,14 +352,12 @@ def execute_trade(symbol, entry_price):
             tp_price = format_number(tp_raw, tick_size)
             sl_price = format_number(sl_raw, tick_size)
             
-            # Place TP Limit order
             tp_res = send_ws_fapi_order(
                 symbol=symbol, side="SELL", quantity=amount, price=tp_price,
                 order_type="LIMIT", time_in_force="GTX", reduce_only=True
             )
             tp_id = tp_res.get("orderId")
             
-            # Place SL Stop Market order
             send_ws_fapi_order(
                 symbol=symbol, side="SELL", quantity=amount, order_type="STOP_MARKET",
                 reduce_only=True, stop_price=sl_price
@@ -419,7 +415,7 @@ def execute_trade(symbol, entry_price):
         active_trades[symbol] = False
 
 # ==========================================
-# REST API FALLBACK POLLING (Guarantees no $0 / Connecting issue)
+# REST API FALLBACK POLLING (Guarantees live price sync)
 # ==========================================
 def poll_market_rest():
     while True:
@@ -433,8 +429,6 @@ def poll_market_rest():
                         with data_lock:
                             dashboard_data['coin_stats'][raw_sym]['price'] = price
                             dashboard_data['coin_stats'][raw_sym]['time'] = datetime.now(IST).strftime('%H:%M:%S')
-                            if dashboard_data['coin_stats'][raw_sym]['status'] in ['CONNECTING...', 'WAITING']:
-                                dashboard_data['coin_stats'][raw_sym]['status'] = 'SCANNING (Live)'
         except Exception:
             pass
         time.sleep(3)
@@ -459,8 +453,6 @@ def on_public_ws_message(ws, message):
                     with data_lock:
                         dashboard_data['coin_stats'][raw_symbol]['price'] = current_price
                         dashboard_data['coin_stats'][raw_symbol]['time'] = scan_time
-                        if dashboard_data['coin_stats'][raw_symbol]['status'] in ['CONNECTING...', 'WAITING']:
-                            dashboard_data['coin_stats'][raw_symbol]['status'] = 'SCANNING (Live)'
 
             elif event_type == 'forceOrder' and 'o' in data:
                 order_data = data['o']
@@ -494,14 +486,13 @@ def on_public_ws_message(ws, message):
                         status_desc = f"BUY LIQ (${notional:.0f})"
 
                     with data_lock:
-                        dashboard_data['coin_stats'][raw_symbol] = {
-                            'time': scan_time,
-                            'notional': round(notional, 2),
-                            'price': price,
-                            'status': status_desc
-                        }
+                        dashboard_data['coin_stats'][raw_symbol]['time'] = scan_time
+                        dashboard_data['coin_stats'][raw_symbol]['last_liq_time'] = scan_time
+                        dashboard_data['coin_stats'][raw_symbol]['last_liq_side'] = side
+                        dashboard_data['coin_stats'][raw_symbol]['last_liq_notional'] = round(notional, 2)
+                        dashboard_data['coin_stats'][raw_symbol]['status'] = status_desc
                     
-                    add_scan(f"[{scan_time}] {raw_symbol} ({side}) | ${notional:.0f} @ {price} ➔ {status_desc}")
+                    add_scan(f"[{scan_time}] {raw_symbol} ({side}) | Size: ${notional:.0f} @ {price} ➔ {status_desc}")
     except Exception:
         pass
 
@@ -577,8 +568,9 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
         .coins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .coin-box { background-color: #16181c; border-radius: 8px; padding: 8px; border: 1px solid #2b3139; }
         .coin-name { font-size: 12px; font-weight: bold; color: #fcd535; display: flex; justify-content: space-between; }
-        .coin-val { font-size: 14px; color: #eaecef; margin-top: 3px; font-weight: bold; }
-        .coin-status { font-size: 10px; margin-top: 3px; font-weight: bold; }
+        .coin-val { font-size: 13px; color: #eaecef; margin-top: 3px; font-weight: bold; }
+        .liq-box { font-size: 11px; margin-top: 4px; background: #252a34; padding: 4px 6px; border-radius: 4px; border-left: 3px solid #fcd535; }
+        .coin-status { font-size: 10px; margin-top: 4px; font-weight: bold; }
         .ledger { font-size: 12px; max-height: 180px; overflow-y: auto; line-height: 1.5; }
         .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
         ::-webkit-scrollbar { width: 4px; }
@@ -611,12 +603,17 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 let coinsHtml = "";
                 for (let [ticker, info] of Object.entries(data.coin_stats)) {
                     let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
-                    let liqDisplay = info.notional > 0 ? `Liq: $${info.notional}` : "Scanning Liq...";
+                    let liqText = info.last_liq_notional > 0 ? `${info.last_liq_side} Liq: $${info.last_liq_notional}` : "Waiting for Liq...";
+                    let liqColor = info.last_liq_side === 'SELL' ? 'text-red' : 'text-green';
+                    
                     coinsHtml += `
                         <div class="coin-box">
                             <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
-                            <div class="coin-val">$${info.price}</div>
-                            <div style="font-size: 11px; color: #fcd535; margin-top: 2px;">${liqDisplay}</div>
+                            <div class="coin-val">Price: $${info.price}</div>
+                            <div class="liq-box">
+                                <span class="${liqColor}" style="font-weight:bold;">${liqText}</span>
+                                <div style="color: #848e9c; font-size: 9px;">Time: ${info.last_liq_time}</div>
+                            </div>
                             <div class="coin-status ${colorClass}">${info.status}</div>
                         </div>
                     `;
@@ -624,7 +621,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 document.getElementById("coins-grid").innerHTML = coinsHtml;
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("liquidation-feed").innerHTML = scansHtml || "-";
+                document.getElementById("liquidation-feed").innerHTML = scansHtml || "No liquidations captured yet (Listening...)";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -647,13 +644,13 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">🪙 ALL COINS LIVE PRICES & LIQUIDATIONS</div>
+        <div class="label">🪙 ALL COINS LIVE PRICES & LIQUIDATION TRACKER</div>
         <div id="coins-grid" class="coins-grid"></div>
     </div>
 
     <div class="card">
-        <div class="label">📊 RECENT LIQUIDATION EVENTS & ACTIONS</div>
-        <div id="liquidation-feed" class="ledger text-red">-</div>
+        <div class="label">📊 LIVE LIQUIDATION RADAR (RECENT LIQS)</div>
+        <div id="liquidation-feed" class="ledger text-yellow" style="max-height: 140px; overflow-y: auto;">-</div>
     </div>
 
     <div class="card">
@@ -700,6 +697,5 @@ if __name__ == "__main__":
     threading.Thread(target=self_ping_worker, daemon=True).start()
     threading.Thread(target=initialize_bot, daemon=True).start()
     
-    # Keep main thread alive
     while True:
         time.sleep(1)
