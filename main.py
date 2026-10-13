@@ -611,10 +611,12 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 let coinsHtml = "";
                 for (let [ticker, info] of Object.entries(data.coin_stats)) {
                     let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
+                    let liqDisplay = info.notional > 0 ? `Liq: $${info.notional}` : "Scanning Liq...";
                     coinsHtml += `
                         <div class="coin-box">
                             <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
                             <div class="coin-val">$${info.price}</div>
+                            <div style="font-size: 11px; color: #fcd535; margin-top: 2px;">${liqDisplay}</div>
                             <div class="coin-status ${colorClass}">${info.status}</div>
                         </div>
                     `;
