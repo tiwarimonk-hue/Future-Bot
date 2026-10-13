@@ -49,6 +49,14 @@ COIN_CONFIG = {
 }
 active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
 
+# Live tracking stats for each coin to show on dashboard
+coin_live_stats = {
+    'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
+    'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
+    'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
+    'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
+}
+
 # --- DASHBOARD & LOGGING DATA ---
 app = FastAPI()
 system_logs = []
@@ -65,7 +73,7 @@ def add_log(msg):
 
 def add_scan(msg):
     market_scans.insert(0, msg)
-    if len(market_scans) > 3: 
+    if len(market_scans) > 6: 
         market_scans.pop()
 
 # --- FASTAPI DASHBOARD ---
@@ -79,20 +87,25 @@ async def get_dashboard():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>HFT Bot Dashboard</title>
         <style>
-            body { background-color: #16181c; color: #b7bdc6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; }
-            .card { background-color: #20242d; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+            body { background-color: #16181c; color: #b7bdc6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
+            .card { background-color: #20242d; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
             .header-card { display: flex; justify-content: space-between; align-items: stretch; gap: 10px; }
             .title-box { flex: 1; }
-            .title { color: #fcd535; font-size: 16px; font-weight: bold; margin: 0; line-height: 1.4; }
-            .status-badge { background-color: #1e3a29; color: #0ecb81; padding: 10px; border-radius: 8px; font-size: 11px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; text-align: center; }
+            .title { color: #fcd535; font-size: 15px; font-weight: bold; margin: 0; line-height: 1.4; }
+            .status-badge { background-color: #1e3a29; color: #0ecb81; padding: 8px; border-radius: 8px; font-size: 11px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; text-align: center; min-width: 80px; }
             .status-badge.paused { background-color: #3a1e1e; color: #f6465d; }
-            .label { font-size: 10px; text-transform: uppercase; color: #848e9c; margin-bottom: 6px; font-weight: 600; letter-spacing: 0.5px; }
-            .value { font-size: 18px; font-weight: bold; color: #eaecef; }
+            .label { font-size: 10px; text-transform: uppercase; color: #848e9c; margin-bottom: 4px; font-weight: 600; letter-spacing: 0.5px; }
+            .value { font-size: 16px; font-weight: bold; color: #eaecef; }
             .text-green { color: #0ecb81; }
             .text-red { color: #f6465d; }
             .text-yellow { color: #fcd535; }
-            .ledger { font-size: 13px; max-height: 250px; overflow-y: auto; line-height: 1.6; }
-            .ledger p { margin: 4px 0; border-bottom: 1px solid #2b3139; padding-bottom: 4px; }
+            .coins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+            .coin-box { background-color: #16181c; border-radius: 8px; padding: 8px; border: 1px solid #2b3139; }
+            .coin-name { font-size: 12px; font-weight: bold; color: #fcd535; display: flex; justify-content: space-between; }
+            .coin-val { font-size: 13px; color: #eaecef; margin-top: 2px; }
+            .coin-status { font-size: 10px; margin-top: 2px; font-weight: bold; }
+            .ledger { font-size: 12px; max-height: 200px; overflow-y: auto; line-height: 1.5; }
+            .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
             ::-webkit-scrollbar { width: 4px; }
             ::-webkit-scrollbar-thumb { background: #474d57; border-radius: 4px; }
         </style>
@@ -107,21 +120,35 @@ async def get_dashboard():
                         let remaining = Math.round(data.paused_until - (Date.now()/1000));
                         if (remaining > 0) {
                             statusBox.className = "status-badge paused";
-                            statusBox.innerHTML = `PAUSED<br>Cooldown:<br>${remaining}s left`;
+                            statusBox.innerHTML = `PAUSED<br>${remaining}s left`;
                         } else {
                             statusBox.className = "status-badge";
-                            statusBox.innerHTML = `ARMED<br>Active Scans<br>Running`;
+                            statusBox.innerHTML = `ARMED<br>Running`;
                         }
                     } else {
                         statusBox.className = "status-badge";
-                        statusBox.innerHTML = `ARMED<br>Losses: ${data.losses}/5<br>Running`;
+                        statusBox.innerHTML = `ARMED<br>Losses: ${data.losses}/5`;
                     }
                     
                     document.getElementById("target-coin").innerText = data.active_coin;
                     document.getElementById("drift").innerText = data.drift + " ms";
                     
-                    let scansHtml = data.scans.join("<br>");
-                    document.getElementById("liquidation").innerHTML = scansHtml || "-";
+                    // Render Coins Live Grid
+                    let coinsHtml = "";
+                    for (let [ticker, info] of Object.entries(data.coin_stats)) {
+                        let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
+                        coinsHtml += `
+                            <div class="coin-box">
+                                <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
+                                <div class="coin-val">$${info.notional.toLocaleString()} @ ${info.price}</div>
+                                <div class="coin-status ${colorClass}">${info.status}</div>
+                            </div>
+                        `;
+                    }
+                    document.getElementById("coins-grid").innerHTML = coinsHtml;
+                    
+                    let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
+                    document.getElementById("liquidation-feed").innerHTML = scansHtml || "-";
                     
                     let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                     document.getElementById("ledger").innerHTML = logsHtml;
@@ -133,28 +160,35 @@ async def get_dashboard():
     <body>
         <div class="card header-card">
             <div class="title-box">
-                <h1 class="title">⚡ Binance WS HFT Micro-Scalper<br>($0.45 Margin + Max 20x Leverage)</h1>
+                <h1 class="title">⚡ Binance WS HFT Micro-Scalper<br>($0.45 Margin + 20x Leverage)</h1>
             </div>
             <div id="status-box" class="status-badge">LOADING...</div>
         </div>
+        
         <div class="card">
-            <div class="label">LIVE TARGET COIN</div>
+            <div class="label">LIVE TARGET COIN (ACTIVE TRADE)</div>
             <div id="target-coin" class="value text-yellow">NONE</div>
         </div>
+
         <div class="card">
-            <div class="label">LATEST LIQUIDATION SCAN</div>
-            <div id="liquidation" class="value text-red" style="font-size: 15px;">-</div>
+            <div class="label">🪙 ALL COINS LIVE LIQUIDATION SCANNER</div>
+            <div id="coins-grid" class="coins-grid">
+                <!-- Dynamically filled -->
+            </div>
         </div>
+
         <div class="card">
-            <div class="label">DIRECTION</div>
-            <div class="value text-yellow">LONG CAPTURE (10 SECONDS)</div>
+            <div class="label">📊 RECENT LIQUIDATION EVENTS & ACTIONS</div>
+            <div id="liquidation-feed" class="ledger text-red" style="font-size: 12px; max-height: 120px; overflow-y: auto;">-</div>
         </div>
+
         <div class="card">
             <div class="label">CLOCK DRIFT</div>
             <div id="drift" class="value text-yellow">0.00 ms</div>
         </div>
+
         <div class="card">
-            <div class="label">📋 Execution Ledger</div>
+            <div class="label">📋 Execution Ledger & Logs</div>
             <div id="ledger" class="ledger"></div>
         </div>
     </body>
@@ -171,6 +205,7 @@ async def get_status():
         "logs": system_logs,
         "scans": market_scans,
         "active_coin": active_coin,
+        "coin_stats": coin_live_stats,
         "drift": round(last_clock_drift, 2)
     }
 
@@ -278,21 +313,19 @@ async def execute_trade(symbol, entry_price):
         active_trades[symbol] = False
 
 async def monitor_multi_liquidations():
+    global coin_live_stats
     streams = "/".join([f"{coin.lower()}@forceOrder" for coin in COIN_CONFIG.keys()])
     ws_url = f"wss://fstream.binance.com/stream?streams={streams}"
     
     while True: 
         try:
             async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
-                add_log("✅ WS Connected. Armed & Scanning...")
+                add_log("✅ WS Connected. Armed & Scanning All Coins...")
                 
                 while True:
                     response = await ws.recv()
-                    
-                    if time.time() < trading_paused_until:
-                        continue 
-                        
                     payload = json.loads(response)
+                    
                     if 'data' in payload:
                         order_data = payload['data']['o']
                         raw_symbol = order_data['s']
@@ -300,19 +333,38 @@ async def monitor_multi_liquidations():
                         if raw_symbol in COIN_CONFIG:
                             info = COIN_CONFIG[raw_symbol]
                             symbol = info['symbol']
+                            threshold = info['threshold']
                             
                             side = order_data['S'] 
                             price = float(order_data['p'])
                             qty = float(order_data['q'])
                             notional = price * qty
+                            scan_time = time.strftime('%H:%M:%S')
                             
                             if side == 'SELL':
-                                scan_time = time.strftime('%H:%M:%S')
-                                add_scan(f"{scan_time} | {raw_symbol} Liq: ${notional:.0f} @ {price}")
-                            
-                            if side == 'SELL' and notional >= info['threshold'] and not active_trades[symbol]:
-                                add_log(f"⚡ MASSIVE DROP DETECTED: {raw_symbol}")
-                                asyncio.create_task(execute_trade(symbol, price))
+                                is_paused = time.time() < trading_paused_until
+                                is_active = active_trades.get(symbol, False)
+                                
+                                # Determine status why it traded or skipped
+                                if is_paused:
+                                    status_desc = "PAUSED (Cooldown)"
+                                elif is_active:
+                                    status_desc = "SKIPPED (In Trade)"
+                                elif notional >= threshold:
+                                    status_desc = "⚡ TRIGGERED TRADE"
+                                    asyncio.create_task(execute_trade(symbol, price))
+                                else:
+                                    status_desc = f"SKIPPED (< ${threshold})"
+                                
+                                # Update live card stats for this specific coin
+                                coin_live_stats[raw_symbol] = {
+                                    'time': scan_time,
+                                    'notional': round(notional, 2),
+                                    'price': price,
+                                    'status': status_desc
+                                }
+                                
+                                add_scan(f"[{scan_time}] {raw_symbol} | ${notional:.0f} @ {price} ➔ {status_desc}")
                                 
         except Exception as e:
             add_log(f"WS Error. Reconnecting in 3s...")
