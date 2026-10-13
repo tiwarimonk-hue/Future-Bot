@@ -36,13 +36,13 @@ THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 30        # Within 30 seconds
 
 TP_PCT = 0.003                   # 0.3% Take Profit
-SL_PCT = 0.005                   # 0.5% Stop Loss (Updated)
+SL_PCT = 0.005                   # 0.5% Stop Loss
 HOLD_TIME_SECONDS = 30           # Max hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
 
-MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Stop Losses Limit (Updated)
+MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Stop Losses Limit
 PAUSE_DURATION_SECONDS = 3 * 3600  # 3 Hours pause after 10 consecutive SL hits
 SUCCESS_COOLDOWN_SECONDS = 60 
 
@@ -450,7 +450,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         d_fill = Decimal(str(fill_price_float))
         
-        # Target TP = 0.3%, Stop Loss = 0.5%
         if trade_side == "BUY":
             tp_raw = d_fill * Decimal("1.003")
             sl_raw = d_fill * Decimal("0.995")  # 0.5% SL
@@ -466,9 +465,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         tp_id = None
         sl_placed = False
         
-        # --- MILLISECOND INSTANT RETRY LOOP FOR TP & SL ---
         for attempt in range(5):
-            # 1. Check and Place TP
             if not tp_id:
                 try:
                     tp_res = send_ws_fapi_order(
@@ -479,7 +476,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 except Exception as e:
                     add_ui_log(f"[{symbol}] TP Retry {attempt+1} Error: {e}")
             
-            # 2. Check and Place SL
             if not sl_placed:
                 try:
                     sl_res = binance_signed_request("POST", "/fapi/v1/order", {
@@ -499,7 +495,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 add_ui_log(f"✅ [{symbol}] Instant Verification Success: TP (0.3%) & SL (0.5%) Confirmed Active.")
                 break
             
-            time.sleep(0.2)  # 200ms delay before fast retry if not placed
+            time.sleep(0.2)
             
         is_win = False
         trade_closed = False
@@ -731,7 +727,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Instant Millisecond TP/SL)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Self-Ping Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -784,7 +780,8 @@ def self_ping_worker():
             session.get(f"http://127.0.0.1:{port}/status", timeout=5)
         except Exception:
             pass
-        time.sleep(60)
+        # Har 30 second me self-ping karega taaki server ya render instance active rahe
+        time.sleep(30)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
@@ -793,7 +790,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized (Instant Millisecond TP/SL Check & 10 SL Pause)!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Active Self-Ping & Keep-Alive Guard!")
     
     while True:
         time.sleep(1)
