@@ -336,8 +336,8 @@ async def monitor_multi_liquidations():
                         data = payload['data']
                         event_type = data.get('e')
                         
-                        # 1. Handle Mini-Ticker (Real-time live prices safely separated)
-                        if event_type == '24hrMiniTicker':
+                        # 1. Handle Mini-Ticker (Fixed: Supports both Futures 'miniTicker' & Spot '24hrMiniTicker')
+                        if event_type in ['24hrMiniTicker', 'miniTicker']:
                             raw_symbol = data['s'].upper()
                             if raw_symbol in coin_live_stats:
                                 current_price = float(data['c'])
