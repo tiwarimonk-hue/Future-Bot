@@ -31,7 +31,7 @@ dashboard_data = {
     "action_direction": "--",
     "status": "Initializing Binance WS-FAPI Engine...",
     "target_settlement": "-- IST",
-    "entry_target": "-- IST (T + 900ms)",
+    "entry_target": "-- IST (T + 150ms)",
     "exit_target": "-- IST (T + 8000ms)",
     "clock_offset_ms": 0.0,
     "logs": [],
@@ -554,7 +554,7 @@ def run_funding_capture_engine():
 
             t_rescan_15s = settle_epoch - 15000
             t_recheck = settle_epoch - 2000
-            t_entry = settle_epoch + 900
+            t_entry = settle_epoch + 150
             t_exit = settle_epoch + 8000
             t_emergency_sweep = settle_epoch + 10000
 
@@ -562,11 +562,11 @@ def run_funding_capture_engine():
             exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
 
             with data_lock:
-                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 900ms)"
+                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 150ms)"
                 dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms)"
                 dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
 
-            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+900ms")
+            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+150ms")
 
             last_scan_time = time.time()
             interrupted = False
@@ -662,7 +662,7 @@ def run_funding_capture_engine():
             except Exception as e:
                 add_ui_log(f"Order prep warning: {e}")
 
-            # --- PHASE 3: T+900ms Market Buy Entry Execution ---
+            # --- PHASE 3: T+150ms Market Buy Entry Execution ---
             precision_wait_until(t_entry)
             entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             order_accepted = False
