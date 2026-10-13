@@ -36,7 +36,7 @@ THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 30        # Within 30 seconds
 
 TP_PCT = 0.003                   # 0.3% Take Profit
-SL_PCT = 0.003                   # 0.3% Stop Loss (Updated to 0.3%)
+SL_PCT = 0.003                   # 0.3% Stop Loss
 HOLD_TIME_SECONDS = 30           # Max hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
@@ -248,7 +248,6 @@ def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", 
         raise Exception("WS Order Timeout")
 
 def cancel_all_ws_orders(symbol):
-    # Double security: WebSocket cancel + HTTP REST fallback to ensure no open orders are left behind
     try:
         req_id = str(uuid.uuid4())
         params = {
@@ -270,7 +269,6 @@ def cancel_all_ws_orders(symbol):
     except Exception:
         pass
     
-    # HTTP REST fallback cancellation
     try:
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
     except Exception:
@@ -426,12 +424,27 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
         add_ui_log(f"🟢 Executing {action_name}: {symbol} at {price} (Qty: {amount})")
         
-        order_res = send_ws_fapi_order(
-            symbol=symbol, side=trade_side, quantity=amount, price=price,
-            order_type="LIMIT", time_in_force="GTC"
-        )
+        try:
+            order_res = send_ws_fapi_order(
+                symbol=symbol, side=trade_side, quantity=amount, price=price,
+                order_type="LIMIT", time_in_force="GTC"
+            )
+        except Exception as e:
+            add_ui_log(f"[{symbol}] Order Placement Rejected (-2027/Limit Error): {e}")
+            cancel_all_ws_orders(symbol)
+            with data_lock:
+                active_trade_symbols.discard(symbol)
+                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
+            return
         
         order_id = order_res.get("orderId")
+        if not order_id:
+            add_ui_log(f"[{symbol}] Order failed, no orderId returned.")
+            cancel_all_ws_orders(symbol)
+            with data_lock:
+                active_trade_symbols.discard(symbol)
+                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
+            return
         
         filled = False
         fill_price_float = live_price
@@ -458,7 +471,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         d_fill = Decimal(str(fill_price_float))
         
-        # Target TP = 0.3%, Stop Loss = 0.3% (Updated)
         if trade_side == "BUY":
             tp_raw = d_fill * Decimal("1.003")
             sl_raw = d_fill * Decimal("0.997")  # 0.3% SL
@@ -543,7 +555,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 send_ws_fapi_order(symbol=symbol, side=market_exit_side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
             is_win = False
         
-        # Absolute Cleanup: Cancel ALL open orders (TP or SL) for this symbol immediately when trade finishes
         cancel_all_ws_orders(symbol)
         handle_trade_result(symbol, is_win)
 
@@ -737,7 +748,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Auto Cleanup Fixed)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Error -2027 Handled)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -799,7 +810,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Robust Order Cancellation & 0.3% SL!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Error -2027 Safety Handling!")
     
     while True:
         time.sleep(1)
