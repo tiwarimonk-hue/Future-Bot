@@ -311,6 +311,24 @@ async def execute_trade(symbol, entry_price):
     finally:
         active_trades[symbol] = False
 
+# --- REST API PRICE POLLING FALLBACK (Bypasses WS Network Blocks) ---
+async def poll_prices_rest():
+    while True:
+        try:
+            symbols = [info['symbol'] for info in COIN_CONFIG.values()]
+            tickers = await exchange.fetch_tickers(symbols)
+            for raw_coin, info in COIN_CONFIG.items():
+                sym = info['symbol']
+                if sym in tickers:
+                    price = float(tickers[sym]['last'])
+                    coin_live_stats[raw_coin]['price'] = price
+                    coin_live_stats[raw_coin]['time'] = time.strftime('%H:%M:%S')
+                    if coin_live_stats[raw_coin]['status'] in ['CONNECTING...', 'WAITING']:
+                        coin_live_stats[raw_coin]['status'] = 'SCANNING (Live)'
+        except Exception as e:
+            pass
+        await asyncio.sleep(3)
+
 async def monitor_multi_liquidations():
     global coin_live_stats
     
@@ -336,7 +354,7 @@ async def monitor_multi_liquidations():
                         data = payload['data']
                         event_type = data.get('e')
                         
-                        # 1. Handle Mini-Ticker (Fixed: Supports both Futures 'miniTicker' & Spot '24hrMiniTicker')
+                        # 1. Handle Mini-Ticker
                         if event_type in ['24hrMiniTicker', 'miniTicker']:
                             raw_symbol = data['s'].upper()
                             if raw_symbol in coin_live_stats:
@@ -346,7 +364,7 @@ async def monitor_multi_liquidations():
                                 if coin_live_stats[raw_symbol]['status'] in ['CONNECTING...', 'WAITING']:
                                     coin_live_stats[raw_symbol]['status'] = 'SCANNING (Live)'
 
-                        # 2. Handle Force Order (Liquidations safely separated)
+                        # 2. Handle Force Order (Liquidations)
                         elif event_type == 'forceOrder' and 'o' in data:
                             order_data = data['o']
                             raw_symbol = order_data['s'].upper()
@@ -413,6 +431,7 @@ async def start_trading_bot():
     for config in COIN_CONFIG.values():
         await set_leverage(config['symbol'])
         
+    asyncio.create_task(poll_prices_rest())          # <-- Added REST polling fallback
     asyncio.create_task(monitor_multi_liquidations())
 
 @app.on_event("startup")
