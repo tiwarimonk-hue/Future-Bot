@@ -51,10 +51,10 @@ active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
 
 # Live tracking stats for each coin to show on dashboard
 coin_live_stats = {
-    'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
-    'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
-    'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
-    'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
+    'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
+    'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
+    'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
+    'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
 }
 
 # --- DASHBOARD & LOGGING DATA ---
@@ -102,8 +102,8 @@ async def get_dashboard():
             .coins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
             .coin-box { background-color: #16181c; border-radius: 8px; padding: 8px; border: 1px solid #2b3139; }
             .coin-name { font-size: 12px; font-weight: bold; color: #fcd535; display: flex; justify-content: space-between; }
-            .coin-val { font-size: 13px; color: #eaecef; margin-top: 2px; }
-            .coin-status { font-size: 10px; margin-top: 2px; font-weight: bold; }
+            .coin-val { font-size: 14px; color: #eaecef; margin-top: 3px; font-weight: bold; }
+            .coin-status { font-size: 10px; margin-top: 3px; font-weight: bold; }
             .ledger { font-size: 12px; max-height: 200px; overflow-y: auto; line-height: 1.5; }
             .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
             ::-webkit-scrollbar { width: 4px; }
@@ -133,15 +133,13 @@ async def get_dashboard():
                     document.getElementById("target-coin").innerText = data.active_coin;
                     document.getElementById("drift").innerText = data.drift + " ms";
                     
-                    // Render Coins Live Grid
                     let coinsHtml = "";
                     for (let [ticker, info] of Object.entries(data.coin_stats)) {
                         let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
-                        let notionalDisplay = info.notional > 0 ? `$${info.notional.toLocaleString()}` : `Price`;
                         coinsHtml += `
                             <div class="coin-box">
                                 <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
-                                <div class="coin-val">${notionalDisplay} @ ${info.price}</div>
+                                <div class="coin-val">$${info.price}</div>
                                 <div class="coin-status ${colorClass}">${info.status}</div>
                             </div>
                         `;
@@ -172,7 +170,7 @@ async def get_dashboard():
         </div>
 
         <div class="card">
-            <div class="label">🪙 ALL COINS LIVE BACKGROUND SCANNER (PRICES & LIQUIDATIONS)</div>
+            <div class="label">🪙 ALL COINS LIVE PRICES & LIQUIDATIONS</div>
             <div id="coins-grid" class="coins-grid">
                 <!-- Dynamically filled -->
             </div>
@@ -316,7 +314,6 @@ async def execute_trade(symbol, entry_price):
 async def monitor_multi_liquidations():
     global coin_live_stats
     
-    # Combined streams: forceOrder for liquidations + miniTicker for live real-time price feed
     streams_list = []
     for coin in COIN_CONFIG.keys():
         c_lower = coin.lower()
@@ -337,20 +334,20 @@ async def monitor_multi_liquidations():
                     
                     if 'data' in payload:
                         data = payload['data']
+                        event_type = data.get('e')
                         
-                        # Handle Mini-Ticker (Real-time live prices)
-                        if 'e' in data and data['e'] == '24hrMiniTicker':
-                            raw_symbol = data['s']
-                            current_price = float(data['c'])
+                        # 1. Handle Mini-Ticker (Real-time live prices safely separated)
+                        if event_type == '24hrMiniTicker':
+                            raw_symbol = data['s'].upper()
                             if raw_symbol in coin_live_stats:
-                                # Update price and show SCANNING status if no liquidation happened yet
-                                if coin_live_stats[raw_symbol]['status'] in ['CONNECTING...', 'SCANNING (Live)', 'WAITING']:
-                                    coin_live_stats[raw_symbol]['price'] = current_price
+                                current_price = float(data['c'])
+                                coin_live_stats[raw_symbol]['price'] = current_price
+                                coin_live_stats[raw_symbol]['time'] = time.strftime('%H:%M:%S')
+                                if coin_live_stats[raw_symbol]['status'] in ['CONNECTING...', 'WAITING']:
                                     coin_live_stats[raw_symbol]['status'] = 'SCANNING (Live)'
-                                    coin_live_stats[raw_symbol]['time'] = time.strftime('%H:%M:%S')
 
-                        # Handle Force Order (Liquidations)
-                        elif 'o' in data:
+                        # 2. Handle Force Order (Liquidations safely separated)
+                        elif event_type == 'forceOrder' and 'o' in data:
                             order_data = data['o']
                             raw_symbol = order_data['s'].upper()
                             
@@ -381,7 +378,6 @@ async def monitor_multi_liquidations():
                                 else:
                                     status_desc = f"BUY LIQ (${notional:.0f})"
 
-                                # Update live card stats for this specific coin
                                 coin_live_stats[raw_symbol] = {
                                     'time': scan_time,
                                     'notional': round(notional, 2),
