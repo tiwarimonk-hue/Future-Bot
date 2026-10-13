@@ -50,7 +50,7 @@ COIN_CONFIG = {
 }
 active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
 
-# Live tracking stats for dashboard
+# Live tracking stats for dashboard with Orderbook Liquidity Depth
 dashboard_data = {
     "status": "INITIALIZING...",
     "active_coin": "NONE",
@@ -58,10 +58,10 @@ dashboard_data = {
     "paused_until": 0,
     "clock_offset_ms": 0.0,
     "coin_stats": {
-        'SOLUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
-        'DOGEUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
-        'XRPUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
-        'BNBUSDT': {'time': '-', 'price': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'}
+        'SOLUSDT': {'time': '-', 'price': 0.0, 'bid_liq': 0, 'ask_liq': 0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
+        'DOGEUSDT': {'time': '-', 'price': 0.0, 'bid_liq': 0, 'ask_liq': 0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
+        'XRPUSDT': {'time': '-', 'price': 0.0, 'bid_liq': 0, 'ask_liq': 0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
+        'BNBUSDT': {'time': '-', 'price': 0.0, 'bid_liq': 0, 'ask_liq': 0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'}
     },
     "scans": [],
     "logs": []
@@ -415,28 +415,52 @@ def execute_trade(symbol, entry_price):
         active_trades[symbol] = False
 
 # ==========================================
-# REST API POLLING FALLBACK (Prices & Liquidations)
+# ADVANCED LIQUIDITY DEPTH & RECENT LIQ TRACKER
 # ==========================================
-def poll_market_and_liquidations_rest():
+def poll_market_and_liquidity_tracker():
     processed_liq_ids = set()
     while True:
         try:
-            # 1. Fetch live prices
-            tickers = binance_public_get("/fapi/v1/premiumIndex")
-            if isinstance(tickers, list):
-                for t in tickers:
-                    raw_sym = t.get("symbol")
-                    if raw_sym in COIN_CONFIG:
-                        price = float(t.get("markPrice", 0))
-                        with data_lock:
-                            dashboard_data['coin_stats'][raw_sym]['price'] = price
-                            dashboard_data['coin_stats'][raw_sym]['time'] = datetime.now(IST).strftime('%H:%M:%S')
-
-            # 2. Fetch recent liquidations via REST API fallback
+            # 1. Fetch live prices & Orderbook Liquidity Depth (Bids & Asks within 1% range)
             for raw_sym, info in COIN_CONFIG.items():
                 symbol = info['symbol']
                 threshold = info['threshold']
-                liq_res = binance_public_get("/fapi/v1/forceOrders", {"symbol": raw_sym, "limit": 3})
+                
+                # Fetch Order Book Depth
+                depth = binance_public_get("/fapi/v1/depth", {"symbol": raw_sym, "limit": 50})
+                mark_price = 0.0
+                bid_liq_usd = 0.0
+                ask_liq_usd = 0.0
+                
+                if isinstance(depth, dict) and 'bids' in depth and 'asks' in depth:
+                    bids = depth['bids']
+                    asks = depth['asks']
+                    if bids and asks:
+                        best_bid = float(bids[0][0])
+                        best_ask = float(asks[0][0])
+                        mark_price = (best_bid + best_ask) / 2.0
+                        
+                        # Calculate total USD liquidity within 1% of mark price
+                        for b_price_str, b_qty_str in bids:
+                            bp = float(b_price_str)
+                            bq = float(b_qty_str)
+                            if bp >= mark_price * 0.99:  # Within 1% range
+                                bid_liq_usd += bp * bq
+                                
+                        for a_price_str, a_qty_str in asks:
+                            ap = float(a_price_str)
+                            aq = float(a_qty_str)
+                            if ap <= mark_price * 1.01:  # Within 1% range
+                                ask_liq_usd += ap * aq
+
+                with data_lock:
+                    dashboard_data['coin_stats'][raw_sym]['price'] = mark_price
+                    dashboard_data['coin_stats'][raw_sym]['bid_liq'] = round(bid_liq_usd, 2)
+                    dashboard_data['coin_stats'][raw_sym]['ask_liq'] = round(ask_liq_usd, 2)
+                    dashboard_data['coin_stats'][raw_sym]['time'] = datetime.now(IST).strftime('%H:%M:%S')
+
+                # 2. Fetch Recent Liquidations via REST API Fallback
+                liq_res = binance_public_get("/fapi/v1/forceOrders", {"symbol": raw_sym, "limit": 2})
                 if isinstance(liq_res, list):
                     for ord_data in liq_res:
                         liq_id = f"{raw_sym}_{ord_data.get('time')}_{ord_data.get('price')}"
@@ -474,11 +498,12 @@ def poll_market_and_liquidations_rest():
                                 dashboard_data['coin_stats'][raw_sym]['status'] = status_desc
                             
                             add_scan(f"[{scan_time}] {raw_sym} ({side}) | Size: ${notional:.0f} @ {price} ➔ {status_desc}")
+
         except Exception:
             pass
         time.sleep(3)
 
-threading.Thread(target=poll_market_and_liquidations_rest, daemon=True).start()
+threading.Thread(target=poll_market_and_liquidity_tracker, daemon=True).start()
 
 # ==========================================
 # EMBEDDED HTTP SERVER & DASHBOARD
@@ -526,8 +551,9 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
         .coins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .coin-box { background-color: #16181c; border-radius: 8px; padding: 8px; border: 1px solid #2b3139; }
         .coin-name { font-size: 12px; font-weight: bold; color: #fcd535; display: flex; justify-content: space-between; }
-        .coin-val { font-size: 13px; color: #eaecef; margin-top: 3px; font-weight: bold; }
-        .liq-box { font-size: 11px; margin-top: 4px; background: #252a34; padding: 4px 6px; border-radius: 4px; border-left: 3px solid #fcd535; }
+        .coin-val { font-size: 12px; color: #eaecef; margin-top: 3px; font-weight: bold; }
+        .liq-depth { font-size: 10px; margin-top: 4px; background: #252a34; padding: 4px 6px; border-radius: 4px; display: flex; justify-content: space-between; }
+        .last-liq { font-size: 10px; margin-top: 3px; color: #fcd535; }
         .coin-status { font-size: 10px; margin-top: 4px; font-weight: bold; }
         .ledger { font-size: 12px; max-height: 180px; overflow-y: auto; line-height: 1.5; }
         .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
@@ -561,17 +587,17 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 let coinsHtml = "";
                 for (let [ticker, info] of Object.entries(data.coin_stats)) {
                     let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
-                    let liqText = info.last_liq_notional > 0 ? `${info.last_liq_side} Liq: $${info.last_liq_notional}` : "Waiting for Liq...";
-                    let liqColor = info.last_liq_side === 'SELL' ? 'text-red' : 'text-green';
+                    let liqDisplay = info.last_liq_notional > 0 ? `${info.last_liq_side} Liq: $${info.last_liq_notional}` : "No recent liq";
                     
                     coinsHtml += `
                         <div class="coin-box">
                             <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
-                            <div class="coin-val">Price: $${info.price}</div>
-                            <div class="liq-box">
-                                <span class="${liqColor}" style="font-weight:bold;">${liqText}</span>
-                                <div style="color: #848e9c; font-size: 9px;">Time: ${info.last_liq_time}</div>
+                            <div class="coin-val">$${info.price}</div>
+                            <div class="liq-depth">
+                                <span class="text-green" title="Bids within 1%">Bids: $${(info.bid_liq/1000).toFixed(1)}k</span>
+                                <span class="text-red" title="Asks within 1%">Asks: $${(info.ask_liq/1000).toFixed(1)}k</span>
                             </div>
+                            <div class="last-liq">🔥 ${liqDisplay}</div>
                             <div class="coin-status ${colorClass}">${info.status}</div>
                         </div>
                     `;
@@ -579,7 +605,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 document.getElementById("coins-grid").innerHTML = coinsHtml;
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("liquidation-feed").innerHTML = scansHtml || "No liquidations captured yet (Listening...)";
+                document.getElementById("liquidation-feed").innerHTML = scansHtml || "Scanning market for liquidity & liquidations...";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -593,7 +619,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
         <div class="title-box">
             <h1 class="title">⚡ Binance WS-FAPI HFT Scalper<br>($0.45 Margin + 20x Leverage)</h1>
         </div>
-        <div id="status-box" class="status-badge">LOADING...</div>
+        <div id="status-badge" class="status-badge">LOADING...</div>
     </div>
     
     <div class="card">
@@ -602,12 +628,12 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">🪙 ALL COINS LIVE PRICES & LIQUIDATION TRACKER</div>
+        <div class="label">🪙 COIN LIQUIDITY DEPTH (BIDS vs ASKS 1% RANGE) & LIQUIDATIONS</div>
         <div id="coins-grid" class="coins-grid"></div>
     </div>
 
     <div class="card">
-        <div class="label">📊 LIVE LIQUIDATION RADAR (RECENT LIQS)</div>
+        <div class="label">📊 LIVE LIQUIDATION & ACTIVITY RADAR</div>
         <div id="liquidation-feed" class="ledger text-yellow" style="max-height: 140px; overflow-y: auto;">-</div>
     </div>
 
@@ -647,7 +673,7 @@ def initialize_bot():
     sync_binance_clock()
     for config in COIN_CONFIG.values():
         set_leverage(config['symbol'])
-    add_ui_log("⚡ HFT Bot initialized successfully. Ready to scan liquidations via REST Fallback!")
+    add_ui_log("⚡ HFT Bot initialized with Orderbook Liquidity Depth Tracker!")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
