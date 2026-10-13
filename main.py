@@ -265,7 +265,7 @@ def cancel_all_ws_orders(symbol):
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 # ==========================================
-# TRADING EXECUTION LOGIC & PRECISE FORMATTING
+# TRADING EXECUTION & STRICT PRECISION FETCH
 # ==========================================
 def set_leverage(symbol):
     try:
@@ -273,33 +273,35 @@ def set_leverage(symbol):
     except Exception:
         pass
 
-def fetch_exchange_info():
+def fetch_symbol_precision(symbol):
+    """Directly fetch and cache exact stepSize, minQty, and tickSize for a specific symbol to prevent -1111 error"""
     global exchange_info_cache
-    try:
-        info = binance_public_get("/fapi/v1/exchangeInfo")
-        if isinstance(info, dict) and "symbols" in info:
-            cache = {}
-            for s in info["symbols"]:
-                sym = s.get("symbol")
-                step_size = "0.01"
-                min_qty = "0.01"
-                tick_size = "0.01"
-                for f in s.get("filters", []):
-                    if f.get("filterType") == "LOT_SIZE":
-                        step_size = f.get("stepSize", "0.01")
-                        min_qty = f.get("minQty", "0.01")
-                    elif f.get("filterType") == "PRICE_FILTER":
-                        tick_size = f.get("tickSize", "0.01")
-                cache[sym] = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
-            exchange_info_cache = cache
-    except Exception:
-        pass
-
-def get_precision_info(symbol):
     if symbol in exchange_info_cache:
         return exchange_info_cache[symbol]
-    fetch_exchange_info()
-    return exchange_info_cache.get(symbol, (Decimal("0.01"), Decimal("0.01"), Decimal("0.01")))
+    
+    try:
+        # Binance exchangeInfo does not take query params, returns all symbols
+        info = binance_public_get("/fapi/v1/exchangeInfo")
+        if isinstance(info, dict) and "symbols" in info:
+            for s in info["symbols"]:
+                if s.get("symbol") == symbol:
+                    step_size = "0.01"
+                    min_qty = "0.01"
+                    tick_size = "0.01"
+                    for f in s.get("filters", []):
+                        if f.get("filterType") == "LOT_SIZE":
+                            step_size = f.get("stepSize", "0.01")
+                            min_qty = f.get("minQty", "0.01")
+                        elif f.get("filterType") == "PRICE_FILTER":
+                            tick_size = f.get("tickSize", "0.01")
+                    
+                    res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
+                    exchange_info_cache[symbol] = res
+                    return res
+    except Exception as e:
+        add_ui_log(f"Precision Fetch Error for {symbol}: {e}")
+        
+    return Decimal("0.01"), Decimal("0.01"), Decimal("0.01")
 
 def format_price(price, tick_size):
     try:
@@ -316,8 +318,11 @@ def format_qty(qty, step_size):
         d_qty = Decimal(str(qty))
         quantized = (d_qty // step_size) * step_size
         step_str = f"{step_size:f}".rstrip("0")
-        decimals = len(step_str.split(".")[1]) if "." in step_str else 0
-        return f"{quantized:.{decimals}f}"
+        if "." in step_str:
+            decimals = len(step_str.split(".")[1])
+            return f"{quantized:.{decimals}f}"
+        else:
+            return str(int(quantized))
     except Exception:
         return str(qty)
 
@@ -344,7 +349,8 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         set_leverage(symbol)
         coin_last_trade_time[symbol] = time.time()
         
-        step_size, min_qty, tick_size = get_precision_info(symbol)
+        # Fetch exact precision filters for THIS specific symbol right now
+        step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
         
         d_entry = Decimal(str(entry_price))
         d_pos_size = Decimal(str(POSITION_SIZE_USD))
@@ -680,8 +686,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    fetch_exchange_info()
-    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized successfully with Decimal Precision Fix!")
+    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized with Fixed Symbol Precision Fetch!")
     
     while True:
         time.sleep(1)
