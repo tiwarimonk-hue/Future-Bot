@@ -26,43 +26,40 @@ data_lock = threading.Lock()
 session = requests.Session()
 
 # --- STRATEGY & RISK SETTINGS ---
-TRADE_MARGIN_USD = 0.45  
+TRADE_MARGIN_USD = 0.30  
 LEVERAGE = 20
-POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE
+POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $6.0 USD (Satisfies $5 min notional)
 
-TP_PCT = 0.0006  
-SL_PCT = 0.0015  
-HOLD_TIME_SECONDS = 10
+MIN_24H_VOLUME_USD = 50_000_000  # Minimum $50M liquidity
+DROP_PCT = 0.005                 # 0.5% price drop
+DROP_TIME_WINDOW_SEC = 30        # Within 30 seconds
+
+TP_PCT = 0.003                   # 0.3% Take Profit
+SL_PCT = 0.003                   # 0.3% Stop Loss
+HOLD_TIME_SECONDS = 30           # Max hold timeout
+
+MAX_CONCURRENT_TRADES = 2
+COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
 
 MAX_CONSECUTIVE_LOSSES = 5
 PAUSE_DURATION_SECONDS = 5 * 3600  
-SUCCESS_COOLDOWN_SECONDS = 120 
+SUCCESS_COOLDOWN_SECONDS = 60 
 
 consecutive_losses = 0
 trading_paused_until = 0
 clock_offset_ms = 0.0
 
-COIN_CONFIG = {
-    'SOLUSDT': {'symbol': 'SOLUSDT', 'ccxt_symbol': 'SOL/USDT', 'threshold': 10000},
-    'DOGEUSDT': {'symbol': 'DOGEUSDT', 'ccxt_symbol': 'DOGE/USDT', 'threshold': 5000},
-    'XRPUSDT': {'symbol': 'XRPUSDT', 'ccxt_symbol': 'XRP/USDT', 'threshold': 5000},
-    'BNBUSDT': {'symbol': 'BNBUSDT', 'ccxt_symbol': 'BNB/USDT', 'threshold': 10000}
-}
-active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
+active_trade_symbols = set()
+coin_last_trade_time = {}
+price_history = {}  # symbol -> list of (timestamp, price)
 
 # Live tracking stats for dashboard
 dashboard_data = {
     "status": "INITIALIZING...",
-    "active_coin": "NONE",
+    "active_trades_count": 0,
     "losses": 0,
     "paused_until": 0,
     "clock_offset_ms": 0.0,
-    "coin_stats": {
-        'SOLUSDT': {'time': '-', 'price': 0.0, 'volume_usd': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
-        'DOGEUSDT': {'time': '-', 'price': 0.0, 'volume_usd': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
-        'XRPUSDT': {'time': '-', 'price': 0.0, 'volume_usd': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'},
-        'BNBUSDT': {'time': '-', 'price': 0.0, 'volume_usd': 0.0, 'last_liq_time': 'None', 'last_liq_side': '-', 'last_liq_notional': 0, 'status': 'SCANNING (Live)'}
-    },
     "scans": [],
     "logs": []
 }
@@ -268,14 +265,13 @@ def cancel_all_ws_orders(symbol):
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 # ==========================================
-# TRADING EXECUTION LOGIC
+# TRADING EXECUTION LOGIC (DIP BUYING SCALPER)
 # ==========================================
 def set_leverage(symbol):
     try:
         binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
-        add_ui_log(f"Leverage set to {LEVERAGE}x for {symbol}")
-    except Exception as e:
-        add_ui_log(f"Leverage error {symbol}: {e}")
+    except Exception:
+        pass
 
 def get_precision_info(symbol):
     step_size = 0.01
@@ -301,28 +297,28 @@ def format_number(val, step):
     decimals = len(step_str.split(".")[1]) if "." in step_str else 0
     return f"{round(val, decimals):.{decimals}f}"
 
-def handle_trade_result(is_win):
+def handle_trade_result(symbol, is_win):
     global consecutive_losses, trading_paused_until
     with data_lock:
-        dashboard_data['active_coin'] = "NONE"
+        active_trade_symbols.discard(symbol)
+        dashboard_data['active_trades_count'] = len(active_trade_symbols)
     
     if is_win:
         consecutive_losses = 0
         trading_paused_until = time.time() + SUCCESS_COOLDOWN_SECONDS
-        add_ui_log("✅ Trade WON (TP Hit)! 2-Min Rest Cooldown.")
+        add_ui_log(f"✅ [{symbol}] Trade WON (TP Hit)! Cooldown.")
     else:
         consecutive_losses += 1
-        add_ui_log(f"❌ Trade LOST. Losses: {consecutive_losses}/{MAX_CONSECUTIVE_LOSSES}")
+        add_ui_log(f"❌ [{symbol}] Trade LOST. Losses: {consecutive_losses}/{MAX_CONSECUTIVE_LOSSES}")
         if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
             add_ui_log("🚨 5 Consecutive Losses! 5-Hour PAUSE triggered.")
 
-def execute_trade(symbol, entry_price):
+def execute_dip_trade(symbol, entry_price):
     global trading_paused_until
     try:
-        active_trades[symbol] = True
-        with data_lock:
-            dashboard_data['active_coin'] = f"{symbol} (SCALPING)"
+        set_leverage(symbol)
+        coin_last_trade_time[symbol] = time.time()
         
         step_size, min_qty, tick_size = get_precision_info(symbol)
         raw_qty = POSITION_SIZE_USD / entry_price
@@ -330,157 +326,186 @@ def execute_trade(symbol, entry_price):
         amount = format_number(calc_qty, step_size)
         price = format_number(entry_price, tick_size)
         
-        add_ui_log(f"🟢 ENTRY: {symbol} at {price} (Qty: {amount})")
+        add_ui_log(f"🟢 DIP DETECTED! Placing Limit BUY: {symbol} at {price} (Qty: {amount})")
         
+        # Place Limit Buy Order (GTC or IOC/GTX)
         order_res = send_ws_fapi_order(
             symbol=symbol, side="BUY", quantity=amount, price=price,
-            order_type="LIMIT", time_in_force="GTX"
+            order_type="LIMIT", time_in_force="GTC"
         )
         
         order_id = order_res.get("orderId")
-        time.sleep(1)
         
-        check_order = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+        # Wait up to 5 seconds for limit order to fill
+        filled = False
+        for _ in range(5):
+            time.sleep(1)
+            chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+            if chk.get("status") == "FILLED":
+                filled = True
+                break
+            elif chk.get("status") in ["CANCELED", "REJECTED"]:
+                break
         
-        if check_order.get("status") == "FILLED":
-            add_ui_log(f"[{symbol}] Filled! Placing TP/SL limits.")
-            
-            fill_price = float(check_order.get("avgPrice", entry_price))
-            tp_raw = fill_price * (1 + TP_PCT)
-            sl_raw = fill_price * (1 - SL_PCT)
-            
-            tp_price = format_number(tp_raw, tick_size)
-            sl_price = format_number(sl_raw, tick_size)
-            
-            tp_res = send_ws_fapi_order(
-                symbol=symbol, side="SELL", quantity=amount, price=tp_price,
-                order_type="LIMIT", time_in_force="GTX", reduce_only=True
-            )
-            tp_id = tp_res.get("orderId")
-            
-            send_ws_fapi_order(
-                symbol=symbol, side="SELL", quantity=amount, order_type="STOP_MARKET",
-                reduce_only=True, stop_price=sl_price
-            )
-            
-            is_win = False
-            trade_closed = False
-            
-            for _ in range(HOLD_TIME_SECONDS):
-                time.sleep(1)
-                pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-                pos_amt = 0.0
-                if isinstance(pos_risk, list):
-                    for p in pos_risk:
-                        if p.get("symbol") == symbol:
-                            pos_amt = float(p.get("positionAmt", 0))
-                            break
-                
-                if pos_amt == 0:
-                    trade_closed = True
-                    tp_check = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": tp_id})
-                    if tp_check.get("status") == "FILLED":
-                        is_win = True
-                    break
-            
-            if not trade_closed:
-                add_ui_log(f"🔴 [{symbol}] 10s Timeout! Force Market Exit.")
-                cancel_all_ws_orders(symbol)
-                
-                pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-                current_amt = 0.0
-                if isinstance(pos_risk, list):
-                    for p in pos_risk:
-                        if p.get("symbol") == symbol:
-                            current_amt = float(p.get("positionAmt", 0))
-                            break
-                if current_amt != 0:
-                    side = "SELL" if current_amt > 0 else "BUY"
-                    send_ws_fapi_order(symbol=symbol, side=side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
-                is_win = False
-            
-            cancel_all_ws_orders(symbol)
-            handle_trade_result(is_win)
-        else:
-            add_ui_log(f"[{symbol}] Order missed/unfilled. Canceling.")
+        if not filled:
+            add_ui_log(f"[{symbol}] Limit order unfilled. Canceling...")
             cancel_all_ws_orders(symbol)
             with data_lock:
-                dashboard_data['active_coin'] = "NONE"
+                active_trade_symbols.discard(symbol)
+                dashboard_data['active_trades_count'] = len(active_trade_symbols)
+            return
+
+        add_ui_log(f"[{symbol}] Limit Order Filled! Setting 0.3% TP and 0.3% SL.")
+        
+        fill_price = float(binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}).get("avgPrice", entry_price))
+        tp_raw = fill_price * (1 + TP_PCT)
+        sl_raw = fill_price * (1 - SL_PCT)
+        
+        tp_price = format_number(tp_raw, tick_size)
+        sl_price = format_number(sl_raw, tick_size)
+        
+        # Place TP Limit order
+        tp_res = send_ws_fapi_order(
+            symbol=symbol, side="SELL", quantity=amount, price=tp_price,
+            order_type="LIMIT", time_in_force="GTC", reduce_only=True
+        )
+        tp_id = tp_res.get("orderId")
+        
+        # Place SL Stop Market order
+        send_ws_fapi_order(
+            symbol=symbol, side="SELL", quantity=amount, order_type="STOP_MARKET",
+            reduce_only=True, stop_price=sl_price
+        )
+        
+        is_win = False
+        trade_closed = False
+        
+        for _ in range(HOLD_TIME_SECONDS):
+            time.sleep(1)
+            pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+            pos_amt = 0.0
+            if isinstance(pos_risk, list):
+                for p in pos_risk:
+                    if p.get("symbol") == symbol:
+                        pos_amt = float(p.get("positionAmt", 0))
+                        break
+            
+            if pos_amt == 0:
+                trade_closed = True
+                tp_check = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": tp_id})
+                if tp_check.get("status") == "FILLED":
+                    is_win = True
+                break
+        
+        if not trade_closed:
+            add_ui_log(f"🔴 [{symbol}] Hold time reached! Force Market Exit.")
+            cancel_all_ws_orders(symbol)
+            
+            pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+            current_amt = 0.0
+            if isinstance(pos_risk, list):
+                for p in pos_risk:
+                    if p.get("symbol") == symbol:
+                        current_amt = float(p.get("positionAmt", 0))
+                        break
+            if current_amt != 0:
+                send_ws_fapi_order(symbol=symbol, side="SELL", quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
+            is_win = False
+        
+        cancel_all_ws_orders(symbol)
+        handle_trade_result(symbol, is_win)
 
     except Exception as e:
         add_ui_log(f"[{symbol}] Trade Error: {e}")
         with data_lock:
-            dashboard_data['active_coin'] = "NONE"
-    finally:
-        active_trades[symbol] = False
+            active_trade_symbols.discard(symbol)
+            dashboard_data['active_trades_count'] = len(active_trade_symbols)
 
 # ==========================================
-# FAST LIGHTWEIGHT LIQUIDITY & PRICE TRACKER
+# DYNAMIC MARKET SCANNER & DIP DETECTOR THREAD
 # ==========================================
-def poll_market_and_liquidity():
-    processed_liq_ids = set()
+def dynamic_market_scanner():
+    global active_trade_symbols
+    add_ui_log("🚀 Dynamic Market Scanner & Dip Detector Active ($50M+ Liq, 0.5% Drop)...")
+    
     while True:
         try:
-            # 1. Fetch 24hr Ticker (Prices + Total USD Volume/Liquidity in one fast call)
+            if time.time() < trading_paused_until:
+                time.sleep(3)
+                continue
+
             tickers = binance_public_get("/fapi/v1/ticker/24hr")
-            if isinstance(tickers, list):
-                for t in tickers:
-                    raw_sym = t.get("symbol")
-                    if raw_sym in COIN_CONFIG:
-                        price = float(t.get("lastPrice", 0))
-                        volume_usd = float(t.get("quoteVolume", 0))  # Total 24h USDT volume (Liquidity indicator)
+            if not isinstance(tickers, list):
+                time.sleep(3)
+                continue
+
+            now = time.time()
+            now_ms = now * 1000
+
+            for t in tickers:
+                sym = t.get("symbol", "")
+                if not sym.endswith("USDT") or "_" in sym:
+                    continue
+
+                try:
+                    vol = float(t.get("quoteVolume", 0))
+                    price = float(t.get("lastPrice", 0))
+                except ValueError:
+                    continue
+
+                # Filter: Minimum $50M 24h liquidity
+                if vol < MIN_24H_VOLUME_USD:
+                    continue
+
+                # Initialize price history buffer
+                if sym not in price_history:
+                    price_history[sym] = []
+
+                price_history[sym].append((now, price))
+
+                # Clean up history older than 30 seconds
+                price_history[sym] = [(ts, p) for ts, p in price_history[sym] if now - ts <= DROP_TIME_WINDOW_SEC]
+
+                # Check if we have enough span to measure 0.5% drop
+                if len(price_history[sym]) >= 2:
+                    oldest_price = price_history[sym][0][1]
+                    pct_change = (price - oldest_price) / oldest_price
+
+                    # Check drop condition: <= -0.5% (-0.005)
+                    if pct_change <= -DROP_PCT:
                         with data_lock:
-                            dashboard_data['coin_stats'][raw_sym]['price'] = price
-                            dashboard_data['coin_stats'][raw_sym]['volume_usd'] = volume_usd
-                            dashboard_data['coin_stats'][raw_sym]['time'] = datetime.now(IST).strftime('%H:%M:%S')
+                            current_active_count = len(active_trade_symbols)
 
-            # 2. Fetch Recent Liquidations via REST API Fallback
-            for raw_sym, info in COIN_CONFIG.items():
-                symbol = info['symbol']
-                threshold = info['threshold']
-                liq_res = binance_public_get("/fapi/v1/forceOrders", {"symbol": raw_sym, "limit": 2})
-                if isinstance(liq_res, list):
-                    for ord_data in liq_res:
-                        liq_id = f"{raw_sym}_{ord_data.get('time')}_{ord_data.get('price')}"
-                        if liq_id not in processed_liq_ids:
-                            processed_liq_ids.add(liq_id)
-                            if len(processed_liq_ids) > 100:
-                                processed_liq_ids.pop()
-                            
-                            price = float(ord_data.get('price', 0))
-                            qty = float(ord_data.get('origQty', 0))
-                            notional = price * qty
-                            side = ord_data.get('side', 'SELL')
-                            scan_time = datetime.now(IST).strftime('%H:%M:%S')
-                            
-                            is_paused = time.time() < trading_paused_until
-                            is_active = active_trades.get(symbol, False)
-                            
-                            if side == 'SELL':
-                                if is_paused:
-                                    status_desc = "PAUSED (Cooldown)"
-                                elif is_active:
-                                    status_desc = "SKIPPED (In Trade)"
-                                elif notional >= threshold:
-                                    status_desc = "⚡ TRIGGERED TRADE"
-                                    threading.Thread(target=execute_trade, args=(symbol, price), daemon=True).start()
-                                else:
-                                    status_desc = f"SKIPPED (< ${threshold})"
+                        if current_active_count >= MAX_CONCURRENT_TRADES:
+                            continue
+
+                        if sym in active_trade_symbols:
+                            continue
+
+                        last_trade = coin_last_trade_time.get(sym, 0)
+                        if now - last_trade < COIN_COOLDOWN_SECONDS:
+                            continue
+
+                        # All checks passed! Lock and trigger trade
+                        with data_lock:
+                            if len(active_trade_symbols) < MAX_CONCURRENT_TRADES and sym not in active_trade_symbols:
+                                active_trade_symbols.add(sym)
+                                dashboard_data['active_trades_count'] = len(active_trade_symbols)
+                                trigger_trade = True
                             else:
-                                status_desc = f"BUY LIQ (${notional:.0f})"
+                                trigger_trade = False
 
-                            with data_lock:
-                                dashboard_data['coin_stats'][raw_sym]['last_liq_time'] = scan_time
-                                dashboard_data['coin_stats'][raw_sym]['last_liq_side'] = side
-                                dashboard_data['coin_stats'][raw_sym]['last_liq_notional'] = round(notional, 2)
-                                dashboard_data['coin_stats'][raw_sym]['status'] = status_desc
-                            
-                            add_scan(f"[{scan_time}] {raw_sym} ({side}) | Size: ${notional:.0f} @ {price} ➔ {status_desc}")
-        except Exception:
+                        if trigger_trade:
+                            drop_display = f"{pct_change*100:.2f}%"
+                            add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} Dropped {drop_display} in 30s! Triggering Dip Buy.")
+                            threading.Thread(target=execute_dip_trade, args=(sym, price), daemon=True).start()
+
+        except Exception as e:
             pass
+
         time.sleep(2)
 
-threading.Thread(target=poll_market_and_liquidity, daemon=True).start()
+threading.Thread(target=dynamic_market_scanner, daemon=True).start()
 
 # ==========================================
 # EMBEDDED HTTP SERVER & DASHBOARD
@@ -511,7 +536,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HFT Liquidation Scalper Bot</title>
+    <title>HFT Dip Scalper Bot</title>
     <style>
         body { background-color: #16181c; color: #b7bdc6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
         .card { background-color: #20242d; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
@@ -525,13 +550,6 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
         .text-green { color: #0ecb81; }
         .text-red { color: #f6465d; }
         .text-yellow { color: #fcd535; }
-        .coins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .coin-box { background-color: #16181c; border-radius: 8px; padding: 8px; border: 1px solid #2b3139; }
-        .coin-name { font-size: 12px; font-weight: bold; color: #fcd535; display: flex; justify-content: space-between; }
-        .coin-val { font-size: 12px; color: #eaecef; margin-top: 3px; font-weight: bold; }
-        .liq-box { font-size: 10px; margin-top: 4px; background: #252a34; padding: 4px 6px; border-radius: 4px; display: flex; justify-content: space-between; }
-        .last-liq { font-size: 10px; margin-top: 3px; color: #fcd535; }
-        .coin-status { font-size: 10px; margin-top: 4px; font-weight: bold; }
         .ledger { font-size: 12px; max-height: 180px; overflow-y: auto; line-height: 1.5; }
         .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
         ::-webkit-scrollbar { width: 4px; }
@@ -558,31 +576,11 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                     statusBox.innerHTML = `ARMED<br>Losses: ${data.losses}/5`;
                 }
                 
-                document.getElementById("target-coin").innerText = data.active_coin;
+                document.getElementById("active-trades").innerText = data.active_trades_count + " / 2 Max";
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
-                let coinsHtml = "";
-                for (let [ticker, info] of Object.entries(data.coin_stats)) {
-                    let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
-                    let liqText = info.last_liq_notional > 0 ? `${info.last_liq_side} Liq: $${info.last_liq_notional}` : "Waiting for Liq...";
-                    let volM = (info.volume_usd / 1000000).toFixed(1);
-                    
-                    coinsHtml += `
-                        <div class="coin-box">
-                            <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
-                            <div class="coin-val">$${info.price}</div>
-                            <div class="liq-box">
-                                <span class="text-yellow" title="24h Volume / Liquidity">24h Vol: $${volM}M</span>
-                            </div>
-                            <div class="last-liq">🔥 ${liqText}</div>
-                            <div class="coin-status ${colorClass}">${info.status}</div>
-                        </div>
-                    `;
-                }
-                document.getElementById("coins-grid").innerHTML = coinsHtml;
-                
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("liquidation-feed").innerHTML = scansHtml || "Scanning market for liquidations...";
+                document.getElementById("dip-feed").innerHTML = scansHtml || "Scanning market for 0.5% dips in 30s...";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -594,24 +592,19 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance WS-FAPI HFT Scalper<br>($0.45 Margin + 20x Leverage)</h1>
+            <h1 class="title">⚡ Binance Dip Scalper Bot<br>($0.30 Margin + 20x | 0.5% Drop in 30s)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
     
     <div class="card">
-        <div class="label">LIVE TARGET COIN (ACTIVE TRADE)</div>
-        <div id="target-coin" class="value text-yellow">NONE</div>
+        <div class="label">ACTIVE TRADES (MAX 2)</div>
+        <div id="active-trades" class="value text-yellow">0 / 2 Max</div>
     </div>
 
     <div class="card">
-        <div class="label">🪙 COIN PRICES, 24H LIQUIDITY (VOLUME) & RECENT LIQS</div>
-        <div id="coins-grid" class="coins-grid"></div>
-    </div>
-
-    <div class="card">
-        <div class="label">📊 LIVE LIQUIDATION & ACTIVITY RADAR</div>
-        <div id="liquidation-feed" class="ledger text-yellow" style="max-height: 140px; overflow-y: auto;">-</div>
+        <div class="label">📊 LIVE DIP DETECTION RADAR (0.5% DROP / 30s)</div>
+        <div id="dip-feed" class="ledger text-yellow" style="max-height: 160px; overflow-y: auto;">-</div>
     </div>
 
     <div class="card">
@@ -642,21 +635,14 @@ def self_ping_worker():
             pass
         time.sleep(60)
 
-# ==========================================
-# INITIALIZATION & BACKGROUND STARTUP
-# ==========================================
-def initialize_bot():
-    add_ui_log("Syncing clock and exchange settings...")
-    sync_binance_clock()
-    for config in COIN_CONFIG.values():
-        set_leverage(config['symbol'])
-    add_ui_log("⚡ HFT Bot initialized with Fast Liquidity & Ticker Tracker!")
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     threading.Thread(target=run_web_server, daemon=True).start()
     threading.Thread(target=self_ping_worker, daemon=True).start()
-    threading.Thread(target=initialize_bot, daemon=True).start()
+    
+    add_ui_log("Syncing clock and exchange settings...")
+    sync_binance_clock()
+    add_ui_log("⚡ Binance Dip Scalper Bot initialized successfully!")
     
     while True:
         time.sleep(1)
