@@ -268,13 +268,45 @@ def cancel_all_ws_orders(symbol):
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 # ==========================================
-# TRADING EXECUTION & PRECISION FETCH
+# TRADING EXECUTION & STRICT VALIDATION
 # ==========================================
 def set_leverage(symbol):
     try:
         binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
     except Exception:
         pass
+
+def validate_coin_for_trading(symbol):
+    """Checks if symbol supports 20x leverage and min notional is <= $5"""
+    try:
+        info = binance_public_get("/fapi/v1/exchangeInfo")
+        if isinstance(info, dict) and "symbols" in info:
+            for s in info["symbols"]:
+                if s.get("symbol") == symbol:
+                    # Check if trading is allowed
+                    if s.get("status") != "TRADING":
+                        return False
+                    
+                    max_lev = 20
+                    min_notional = 5.0
+                    for f in s.get("filters", []):
+                        if f.get("filterType") == "LEVERAGE_FILTER":
+                            max_lev = int(f.get("maxLeverage", 20))
+                        elif f.get("filterType") == "MIN_NOTIONAL":
+                            min_notional = float(f.get("notional", 5.0))
+                    
+                    # If max leverage is less than 20x, reject coin
+                    if max_lev < LEVERAGE:
+                        return False
+                    
+                    # If minimum notional value is strictly greater than $5, reject coin
+                    if min_notional > 5.0:
+                        return False
+                        
+                    return True
+    except Exception:
+        pass
+    return False
 
 def fetch_symbol_precision(symbol):
     global exchange_info_cache
@@ -347,7 +379,7 @@ def handle_trade_result(symbol, is_win):
         dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
         if is_win:
             tp_hits_count += 1
-            consecutive_losses = 0  # Reset losses on win
+            consecutive_losses = 0
             dashboard_data['tp_hits'] = tp_hits_count
             dashboard_data['losses'] = consecutive_losses
         else:
@@ -367,12 +399,19 @@ def handle_trade_result(symbol, is_win):
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
+        # Pre-verify leverage and min notional before placing order
+        if not validate_coin_for_trading(symbol):
+            add_ui_log(f"[{symbol}] Skipped: Does not meet 20x leverage or Min Notional <= $5 requirement.")
+            with data_lock:
+                active_trade_symbols.discard(symbol)
+                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
+            return
+
         set_leverage(symbol)
         coin_last_trade_time[symbol] = time.time()
         
         step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
         
-        # Get latest live ticker price right now to ensure instant fill limit order
         ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
         live_price = float(ticker.get("price", entry_price)) if ticker else entry_price
         
@@ -382,13 +421,11 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         calc_qty = max(min_qty, raw_qty)
         amount = format_qty(calc_qty, step_size)
         
-        # Aggressive Limit Price (matches current market price for instant fill)
         price = format_price(live_price, tick_size)
         
         action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
         add_ui_log(f"🟢 Executing {action_name}: {symbol} at {price} (Qty: {amount})")
         
-        # Place Instant Fill Limit Order
         order_res = send_ws_fapi_order(
             symbol=symbol, side=trade_side, quantity=amount, price=price,
             order_type="LIMIT", time_in_force="GTC"
@@ -396,7 +433,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         order_id = order_res.get("orderId")
         
-        # Check if filled immediately (within 2 seconds)
         filled = False
         fill_price_float = live_price
         for _ in range(2):
@@ -411,12 +447,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 break
         
         if not filled:
-            # If not filled instantly, cancel and retry once with slightly aggressive price or fallback
             cancel_all_ws_orders(symbol)
             ticker_retry = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
             retry_price = float(ticker_retry.get("price", live_price)) if ticker_retry else live_price
             
-            # Make price slightly aggressive to guarantee fill
             if trade_side == "BUY":
                 retry_price *= 1.0005
             else:
@@ -459,14 +493,12 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         tp_price = format_price(tp_raw, tick_size)
         sl_price = format_price(sl_raw, tick_size)
         
-        # Place Take Profit (Limit, reduceOnly)
         tp_res = send_ws_fapi_order(
             symbol=symbol, side=exit_side, quantity=amount, price=tp_price,
             order_type="LIMIT", time_in_force="GTC", reduce_only=True
         )
         tp_id = tp_res.get("orderId")
         
-        # Place Stop Loss (Stop Market, reduceOnly)
         binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
             "side": exit_side,
@@ -479,7 +511,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         is_win = False
         trade_closed = False
         
-        # Monitor position and TP status
         for _ in range(HOLD_TIME_SECONDS):
             time.sleep(1)
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -513,7 +544,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 send_ws_fapi_order(symbol=symbol, side=market_exit_side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
             is_win = False
         
-        # Cleanup: Cancel all remaining open orders for this symbol immediately
         cancel_all_ws_orders(symbol)
         handle_trade_result(symbol, is_win)
 
@@ -707,7 +737,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Instant Limit & SL Pause)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Strict Filters)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -769,7 +799,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized (Instant Limit Fill & 5 SL Pause)!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with 20x Leverage & Min Notional Validation!")
     
     while True:
         time.sleep(1)
