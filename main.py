@@ -51,10 +51,10 @@ active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
 
 # Live tracking stats for each coin to show on dashboard
 coin_live_stats = {
-    'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
-    'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
-    'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
-    'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'WAITING'},
+    'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
+    'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
+    'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
+    'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0, 'status': 'CONNECTING...'},
 }
 
 # --- DASHBOARD & LOGGING DATA ---
@@ -137,10 +137,11 @@ async def get_dashboard():
                     let coinsHtml = "";
                     for (let [ticker, info] of Object.entries(data.coin_stats)) {
                         let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
+                        let notionalDisplay = info.notional > 0 ? `$${info.notional.toLocaleString()}` : `Price`;
                         coinsHtml += `
                             <div class="coin-box">
                                 <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
-                                <div class="coin-val">$${info.notional.toLocaleString()} @ ${info.price}</div>
+                                <div class="coin-val">${notionalDisplay} @ ${info.price}</div>
                                 <div class="coin-status ${colorClass}">${info.status}</div>
                             </div>
                         `;
@@ -171,7 +172,7 @@ async def get_dashboard():
         </div>
 
         <div class="card">
-            <div class="label">🪙 ALL COINS LIVE LIQUIDATION SCANNER</div>
+            <div class="label">🪙 ALL COINS LIVE BACKGROUND SCANNER (PRICES & LIQUIDATIONS)</div>
             <div id="coins-grid" class="coins-grid">
                 <!-- Dynamically filled -->
             </div>
@@ -314,58 +315,81 @@ async def execute_trade(symbol, entry_price):
 
 async def monitor_multi_liquidations():
     global coin_live_stats
-    streams = "/".join([f"{coin.lower()}@forceOrder" for coin in COIN_CONFIG.keys()])
+    
+    # Combined streams: forceOrder for liquidations + miniTicker for live real-time price feed
+    streams_list = []
+    for coin in COIN_CONFIG.keys():
+        c_lower = coin.lower()
+        streams_list.append(f"{c_lower}@forceOrder")
+        streams_list.append(f"{c_lower}@miniTicker")
+        
+    streams = "/".join(streams_list)
     ws_url = f"wss://fstream.binance.com/stream?streams={streams}"
     
     while True: 
         try:
             async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
-                add_log("✅ WS Connected. Armed & Scanning All Coins...")
+                add_log("✅ WS Connected. Scanning Prices & Liquidations Live...")
                 
                 while True:
                     response = await ws.recv()
                     payload = json.loads(response)
                     
-                    if 'data' in payload and 'o' in payload['data']:
-                        order_data = payload['data']['o']
-                        raw_symbol = order_data['s'].upper()  # Guaranteed upper-case matching
+                    if 'data' in payload:
+                        data = payload['data']
                         
-                        if raw_symbol in COIN_CONFIG:
-                            info = COIN_CONFIG[raw_symbol]
-                            symbol = info['symbol']
-                            threshold = info['threshold']
-                            
-                            side = order_data['S'] 
-                            price = float(order_data['p'])
-                            qty = float(order_data['q'])
-                            notional = price * qty
-                            scan_time = time.strftime('%H:%M:%S')
-                            
-                            is_paused = time.time() < trading_paused_until
-                            is_active = active_trades.get(symbol, False)
-                            
-                            if side == 'SELL':
-                                if is_paused:
-                                    status_desc = "PAUSED (Cooldown)"
-                                elif is_active:
-                                    status_desc = "SKIPPED (In Trade)"
-                                elif notional >= threshold:
-                                    status_desc = "⚡ TRIGGERED TRADE"
-                                    asyncio.create_task(execute_trade(symbol, price))
-                                else:
-                                    status_desc = f"SKIPPED (< ${threshold})"
-                            else:
-                                status_desc = f"BUY LIQ (${notional:.0f})"
+                        # Handle Mini-Ticker (Real-time live prices)
+                        if 'e' in data and data['e'] == '24hrMiniTicker':
+                            raw_symbol = data['s']
+                            current_price = float(data['c'])
+                            if raw_symbol in coin_live_stats:
+                                # Update price and show SCANNING status if no liquidation happened yet
+                                if coin_live_stats[raw_symbol]['status'] in ['CONNECTING...', 'SCANNING (Live)', 'WAITING']:
+                                    coin_live_stats[raw_symbol]['price'] = current_price
+                                    coin_live_stats[raw_symbol]['status'] = 'SCANNING (Live)'
+                                    coin_live_stats[raw_symbol]['time'] = time.strftime('%H:%M:%S')
 
-                            # Update live card stats for this specific coin
-                            coin_live_stats[raw_symbol] = {
-                                'time': scan_time,
-                                'notional': round(notional, 2),
-                                'price': price,
-                                'status': status_desc
-                            }
+                        # Handle Force Order (Liquidations)
+                        elif 'o' in data:
+                            order_data = data['o']
+                            raw_symbol = order_data['s'].upper()
                             
-                            add_scan(f"[{scan_time}] {raw_symbol} ({side}) | ${notional:.0f} @ {price} ➔ {status_desc}")
+                            if raw_symbol in COIN_CONFIG:
+                                info = COIN_CONFIG[raw_symbol]
+                                symbol = info['symbol']
+                                threshold = info['threshold']
+                                
+                                side = order_data['S'] 
+                                price = float(order_data['p'])
+                                qty = float(order_data['q'])
+                                notional = price * qty
+                                scan_time = time.strftime('%H:%M:%S')
+                                
+                                is_paused = time.time() < trading_paused_until
+                                is_active = active_trades.get(symbol, False)
+                                
+                                if side == 'SELL':
+                                    if is_paused:
+                                        status_desc = "PAUSED (Cooldown)"
+                                    elif is_active:
+                                        status_desc = "SKIPPED (In Trade)"
+                                    elif notional >= threshold:
+                                        status_desc = "⚡ TRIGGERED TRADE"
+                                        asyncio.create_task(execute_trade(symbol, price))
+                                    else:
+                                        status_desc = f"SKIPPED (< ${threshold})"
+                                else:
+                                    status_desc = f"BUY LIQ (${notional:.0f})"
+
+                                # Update live card stats for this specific coin
+                                coin_live_stats[raw_symbol] = {
+                                    'time': scan_time,
+                                    'notional': round(notional, 2),
+                                    'price': price,
+                                    'status': status_desc
+                                }
+                                
+                                add_scan(f"[{scan_time}] {raw_symbol} ({side}) | ${notional:.0f} @ {price} ➔ {status_desc}")
                                 
         except Exception as e:
             add_log(f"WS Error: {e}. Reconnecting in 3s...")
