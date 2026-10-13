@@ -9,6 +9,7 @@ import threading
 import urllib.parse
 import requests
 import websocket
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -264,7 +265,7 @@ def cancel_all_ws_orders(symbol):
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 # ==========================================
-# TRADING EXECUTION LOGIC (DIP & PUMP SCALPER)
+# TRADING EXECUTION LOGIC & PRECISE FORMATTING
 # ==========================================
 def set_leverage(symbol):
     try:
@@ -280,16 +281,16 @@ def fetch_exchange_info():
             cache = {}
             for s in info["symbols"]:
                 sym = s.get("symbol")
-                step_size = 0.01
-                min_qty = 0.01
-                tick_size = 0.01
+                step_size = "0.01"
+                min_qty = "0.01"
+                tick_size = "0.01"
                 for f in s.get("filters", []):
                     if f.get("filterType") == "LOT_SIZE":
-                        step_size = float(f.get("stepSize", "0.01"))
-                        min_qty = float(f.get("minQty", "0.01"))
+                        step_size = f.get("stepSize", "0.01")
+                        min_qty = f.get("minQty", "0.01")
                     elif f.get("filterType") == "PRICE_FILTER":
-                        tick_size = float(f.get("tickSize", "0.01"))
-                cache[sym] = (step_size, min_qty, tick_size)
+                        tick_size = f.get("tickSize", "0.01")
+                cache[sym] = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
             exchange_info_cache = cache
     except Exception:
         pass
@@ -298,16 +299,27 @@ def get_precision_info(symbol):
     if symbol in exchange_info_cache:
         return exchange_info_cache[symbol]
     fetch_exchange_info()
-    return exchange_info_cache.get(symbol, (0.01, 0.01, 0.01))
+    return exchange_info_cache.get(symbol, (Decimal("0.01"), Decimal("0.01"), Decimal("0.01")))
 
-def format_number(val, step):
-    if step <= 0:
-        return str(val)
-    step_str = f"{step:.8f}".rstrip("0")
-    decimals = len(step_str.split(".")[1]) if "." in step_str else 0
-    factor = 10 ** decimals
-    truncated = math.floor(val * factor) / factor
-    return f"{truncated:.{decimals}f}" if decimals > 0 else str(int(truncated))
+def format_price(price, tick_size):
+    try:
+        d_price = Decimal(str(price))
+        quantized = d_price.quantize(tick_size, rounding=ROUND_DOWN)
+        tick_str = f"{tick_size:f}".rstrip("0")
+        decimals = len(tick_str.split(".")[1]) if "." in tick_str else 0
+        return f"{quantized:.{decimals}f}"
+    except Exception:
+        return str(price)
+
+def format_qty(qty, step_size):
+    try:
+        d_qty = Decimal(str(qty))
+        quantized = (d_qty // step_size) * step_size
+        step_str = f"{step_size:f}".rstrip("0")
+        decimals = len(step_str.split(".")[1]) if "." in step_str else 0
+        return f"{quantized:.{decimals}f}"
+    except Exception:
+        return str(qty)
 
 def handle_trade_result(symbol, is_win):
     global consecutive_losses, trading_paused_until
@@ -333,10 +345,14 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         coin_last_trade_time[symbol] = time.time()
         
         step_size, min_qty, tick_size = get_precision_info(symbol)
-        raw_qty = POSITION_SIZE_USD / entry_price
-        calc_qty = max(min_qty, math.floor(raw_qty / step_size) * step_size)
-        amount = format_number(calc_qty, step_size)
-        price = format_number(entry_price, tick_size)
+        
+        d_entry = Decimal(str(entry_price))
+        d_pos_size = Decimal(str(POSITION_SIZE_USD))
+        raw_qty = d_pos_size / d_entry
+        calc_qty = max(min_qty, raw_qty)
+        
+        amount = format_qty(calc_qty, step_size)
+        price = format_price(entry_price, tick_size)
         
         action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
         add_ui_log(f"🟢 {action_name}: {symbol} at {price} (Qty: {amount})")
@@ -368,29 +384,27 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
 
         add_ui_log(f"[{symbol}] Limit Order Filled! Setting 0.3% TP and 0.3% SL.")
         
-        fill_price = float(binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}).get("avgPrice", entry_price))
+        fill_price_float = float(binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}).get("avgPrice", entry_price))
+        d_fill = Decimal(str(fill_price_float))
         
-        # Calculate TP and SL based on trade direction (Long vs Short)
         if trade_side == "BUY":
-            tp_raw = fill_price * (1 + TP_PCT)
-            sl_raw = fill_price * (1 - SL_PCT)
+            tp_raw = d_fill * Decimal("1.003")
+            sl_raw = d_fill * Decimal("0.997")
             exit_side = "SELL"
-        else:  # SELL (Short)
-            tp_raw = fill_price * (1 - TP_PCT)
-            sl_raw = fill_price * (1 + SL_PCT)
+        else:
+            tp_raw = d_fill * Decimal("0.997")
+            sl_raw = d_fill * Decimal("1.003")
             exit_side = "BUY"
         
-        tp_price = format_number(tp_raw, tick_size)
-        sl_price = format_number(sl_raw, tick_size)
+        tp_price = format_price(tp_raw, tick_size)
+        sl_price = format_price(sl_raw, tick_size)
         
-        # 1. Place TP Limit Order via WS-FAPI
         tp_res = send_ws_fapi_order(
             symbol=symbol, side=exit_side, quantity=amount, price=tp_price,
             order_type="LIMIT", time_in_force="GTC", reduce_only=True
         )
         tp_id = tp_res.get("orderId")
         
-        # 2. Place SL Stop Market Order via REST API
         binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
             "side": exit_side,
@@ -492,9 +506,9 @@ def dynamic_market_scanner():
 
                     trade_side = None
                     if pct_change <= -THRESHOLD_PCT:
-                        trade_side = "BUY"   # Dump hua toh Buy (Long) karo
+                        trade_side = "BUY"
                     elif pct_change >= THRESHOLD_PCT:
-                        trade_side = "SELL"  # Pump hua toh Sell (Short) karo
+                        trade_side = "SELL"
 
                     if trade_side:
                         with data_lock:
@@ -667,7 +681,7 @@ if __name__ == "__main__":
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
     fetch_exchange_info()
-    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized successfully!")
+    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized successfully with Decimal Precision Fix!")
     
     while True:
         time.sleep(1)
