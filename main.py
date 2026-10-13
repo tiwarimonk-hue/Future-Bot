@@ -42,10 +42,11 @@ HOLD_TIME_SECONDS = 30           # Max hold timeout
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
 
-MAX_CONSECUTIVE_LOSSES = 5
-PAUSE_DURATION_SECONDS = 5 * 3600  
+PAUSE_DURATION_SECONDS = 3 * 3600  # 3 Hours pause after 5 consecutive SL hits
 SUCCESS_COOLDOWN_SECONDS = 60 
 
+tp_hits_count = 0
+sl_hits_count = 0
 consecutive_losses = 0
 trading_paused_until = 0
 clock_offset_ms = 0.0
@@ -59,6 +60,8 @@ exchange_info_cache = {}
 dashboard_data = {
     "status": "INITIALIZING...",
     "active_trades_count": 0,
+    "tp_hits": 0,
+    "sl_hits": 0,
     "losses": 0,
     "paused_until": 0,
     "clock_offset_ms": 0.0,
@@ -265,7 +268,7 @@ def cancel_all_ws_orders(symbol):
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 # ==========================================
-# TRADING EXECUTION & STRICT PRECISION FETCH
+# TRADING EXECUTION & PRECISION FETCH
 # ==========================================
 def set_leverage(symbol):
     try:
@@ -325,7 +328,6 @@ def format_qty(qty, step_size):
         return str(qty)
 
 def get_active_positions_count_from_exchange():
-    """Directly checks Binance API to count how many open positions currently exist"""
     try:
         pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk")
         if isinstance(pos_risk, list):
@@ -339,21 +341,28 @@ def get_active_positions_count_from_exchange():
     return len(active_trade_symbols)
 
 def handle_trade_result(symbol, is_win):
-    global consecutive_losses, trading_paused_until
+    global tp_hits_count, sl_hits_count, consecutive_losses, trading_paused_until
     with data_lock:
         active_trade_symbols.discard(symbol)
         dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
+        if is_win:
+            tp_hits_count += 1
+            consecutive_losses = 0  # Reset losses on win
+            dashboard_data['tp_hits'] = tp_hits_count
+            dashboard_data['losses'] = consecutive_losses
+        else:
+            sl_hits_count += 1
+            consecutive_losses += 1
+            dashboard_data['sl_hits'] = sl_hits_count
+            dashboard_data['losses'] = consecutive_losses
     
     if is_win:
-        consecutive_losses = 0
-        trading_paused_until = time.time() + SUCCESS_COOLDOWN_SECONDS
-        add_ui_log(f"✅ [{symbol}] Trade WON (TP Hit)! Cooldown.")
+        add_ui_log(f"✅ [{symbol}] Trade WON (TP Hit)! Total TP: {tp_hits_count}")
     else:
-        consecutive_losses += 1
-        add_ui_log(f"❌ [{symbol}] Trade LOST. Losses: {consecutive_losses}/{MAX_CONSECUTIVE_LOSSES}")
-        if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+        add_ui_log(f"❌ [{symbol}] Trade LOST (SL Hit / Timeout)! Losses: {consecutive_losses}/5")
+        if consecutive_losses >= 5:
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
-            add_ui_log("🚨 5 Consecutive Losses! 5-Hour PAUSE triggered.")
+            add_ui_log("🚨 5 Consecutive Stop Losses! 3-Hour PAUSE triggered.")
 
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
@@ -362,70 +371,79 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         coin_last_trade_time[symbol] = time.time()
         
         step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
+        
+        # Get latest live ticker price right now to ensure instant fill limit order
+        ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
+        live_price = float(ticker.get("price", entry_price)) if ticker else entry_price
+        
         d_pos_size = Decimal(str(POSITION_SIZE_USD))
+        d_entry = Decimal(str(live_price))
+        raw_qty = d_pos_size / d_entry
+        calc_qty = max(min_qty, raw_qty)
+        amount = format_qty(calc_qty, step_size)
         
+        # Aggressive Limit Price (matches current market price for instant fill)
+        price = format_price(live_price, tick_size)
+        
+        action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
+        add_ui_log(f"🟢 Executing {action_name}: {symbol} at {price} (Qty: {amount})")
+        
+        # Place Instant Fill Limit Order
+        order_res = send_ws_fapi_order(
+            symbol=symbol, side=trade_side, quantity=amount, price=price,
+            order_type="LIMIT", time_in_force="GTC"
+        )
+        
+        order_id = order_res.get("orderId")
+        
+        # Check if filled immediately (within 2 seconds)
         filled = False
-        order_id = None
-        fill_price_float = entry_price
-        current_raw_price = entry_price
-        
-        # AGGRESSIVE LIMIT CHASER LOOP (Up to 5 attempts / 5 seconds)
-        for attempt in range(5):
-            d_entry = Decimal(str(current_raw_price))
-            raw_qty = d_pos_size / d_entry
-            calc_qty = max(min_qty, raw_qty)
-            
-            amount = format_qty(calc_qty, step_size)
-            price = format_price(current_raw_price, tick_size)
-            
-            action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
-            add_ui_log(f"🟢 [{symbol}] Limit Attempt {attempt+1}: {action_name} at {price} (Qty: {amount})")
-            
-            try:
-                order_res = send_ws_fapi_order(
-                    symbol=symbol, side=trade_side, quantity=amount, price=price,
-                    order_type="LIMIT", time_in_force="GTC"
-                )
-                order_id = order_res.get("orderId")
-            except Exception as e:
-                add_ui_log(f"[{symbol}] Order Error: {e}")
-                time.sleep(1)
-                continue
-            
-            # Check status for 1 second
-            sub_filled = False
-            for _ in range(1):
-                time.sleep(1)
-                chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
-                status = chk.get("status")
-                if status == "FILLED":
-                    sub_filled = True
-                    fill_price_float = float(chk.get("avgPrice", current_raw_price))
-                    break
-                elif status in ["CANCELED", "REJECTED"]:
-                    break
-            
-            if sub_filled:
+        fill_price_float = live_price
+        for _ in range(2):
+            time.sleep(1)
+            chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+            status = chk.get("status")
+            if status == "FILLED":
                 filled = True
+                fill_price_float = float(chk.get("avgPrice", live_price))
                 break
-            else:
-                # Not filled in 1s, cancel and fetch latest price to chase
-                cancel_all_ws_orders(symbol)
-                ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
-                if ticker and "price" in ticker:
-                    current_raw_price = float(ticker["price"])
-                else:
-                    break
+            elif status in ["CANCELED", "REJECTED"]:
+                break
         
         if not filled:
-            add_ui_log(f"[{symbol}] Limit order not filled in 5s. Canceling trade completely.")
+            # If not filled instantly, cancel and retry once with slightly aggressive price or fallback
+            cancel_all_ws_orders(symbol)
+            ticker_retry = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
+            retry_price = float(ticker_retry.get("price", live_price)) if ticker_retry else live_price
+            
+            # Make price slightly aggressive to guarantee fill
+            if trade_side == "BUY":
+                retry_price *= 1.0005
+            else:
+                retry_price *= 0.9995
+                
+            price = format_price(retry_price, tick_size)
+            order_res = send_ws_fapi_order(
+                symbol=symbol, side=trade_side, quantity=amount, price=price,
+                order_type="LIMIT", time_in_force="GTC"
+            )
+            order_id = order_res.get("orderId")
+            time.sleep(1)
+            
+            chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+            if chk.get("status") == "FILLED":
+                filled = True
+                fill_price_float = float(chk.get("avgPrice", retry_price))
+        
+        if not filled:
+            add_ui_log(f"[{symbol}] Limit order not filled instantly. Canceling trade.")
             cancel_all_ws_orders(symbol)
             with data_lock:
                 active_trade_symbols.discard(symbol)
                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
             return
 
-        add_ui_log(f"[{symbol}] Limit Order Filled! Setting 0.3% TP and 0.3% SL.")
+        add_ui_log(f"[{symbol}] Order Filled at {fill_price_float}! Instantly placing 0.3% TP and SL.")
         
         d_fill = Decimal(str(fill_price_float))
         
@@ -441,12 +459,14 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         tp_price = format_price(tp_raw, tick_size)
         sl_price = format_price(sl_raw, tick_size)
         
+        # Place Take Profit (Limit, reduceOnly)
         tp_res = send_ws_fapi_order(
             symbol=symbol, side=exit_side, quantity=amount, price=tp_price,
             order_type="LIMIT", time_in_force="GTC", reduce_only=True
         )
         tp_id = tp_res.get("orderId")
         
+        # Place Stop Loss (Stop Market, reduceOnly)
         binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
             "side": exit_side,
@@ -459,6 +479,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         is_win = False
         trade_closed = False
         
+        # Monitor position and TP status
         for _ in range(HOLD_TIME_SECONDS):
             time.sleep(1)
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -492,17 +513,19 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 send_ws_fapi_order(symbol=symbol, side=market_exit_side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
             is_win = False
         
+        # Cleanup: Cancel all remaining open orders for this symbol immediately
         cancel_all_ws_orders(symbol)
         handle_trade_result(symbol, is_win)
 
     except Exception as e:
         add_ui_log(f"[{symbol}] Trade Error: {e}")
+        cancel_all_ws_orders(symbol)
         with data_lock:
             active_trade_symbols.discard(symbol)
             dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
 
 # ==========================================
-# DYNAMIC MARKET SCANNER & PUMP/DUMP DETECTOR
+# DYNAMIC MARKET SCANNER
 # ==========================================
 def dynamic_market_scanner():
     global active_trade_symbols
@@ -547,7 +570,6 @@ def dynamic_market_scanner():
                     price_history[sym] = []
 
                 price_history[sym].append((now, price))
-
                 price_history[sym] = [(ts, p) for ts, p in price_history[sym] if now - ts <= DROP_TIME_WINDOW_SEC]
 
                 if len(price_history[sym]) >= 2:
@@ -607,7 +629,6 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             with data_lock:
-                dashboard_data['losses'] = consecutive_losses
                 dashboard_data['paused_until'] = trading_paused_until
                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
                 payload = json.dumps(dashboard_data).encode('utf-8')
@@ -630,7 +651,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
         .header-card { display: flex; justify-content: space-between; align-items: stretch; gap: 10px; }
         .title-box { flex: 1; }
         .title { color: #fcd535; font-size: 15px; font-weight: bold; margin: 0; line-height: 1.4; }
-        .status-badge { background-color: #1e3a29; color: #0ecb81; padding: 8px; border-radius: 8px; font-size: 11px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; text-align: center; min-width: 80px; }
+        .status-badge { background-color: #1e3a29; color: #0ecb81; padding: 8px; border-radius: 8px; font-size: 11px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; text-align: center; min-width: 90px; }
         .status-badge.paused { background-color: #3a1e1e; color: #f6465d; }
         .label { font-size: 10px; text-transform: uppercase; color: #848e9c; margin-bottom: 4px; font-weight: 600; letter-spacing: 0.5px; }
         .value { font-size: 16px; font-weight: bold; color: #eaecef; }
@@ -639,6 +660,8 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
         .text-yellow { color: #fcd535; }
         .ledger { font-size: 12px; max-height: 180px; overflow-y: auto; line-height: 1.5; }
         .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
+        .stats-grid { display: flex; gap: 10px; }
+        .stats-box { flex: 1; background-color: #16181c; padding: 8px; border-radius: 6px; text-align: center; }
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-thumb { background: #474d57; border-radius: 4px; }
     </style>
@@ -652,8 +675,11 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 if (data.paused_until > 0) {
                     let remaining = Math.round(data.paused_until - (Date.now()/1000));
                     if (remaining > 0) {
+                        let hrs = Math.floor(remaining / 3600);
+                        let mins = Math.floor((remaining % 3600) / 60);
+                        let secs = remaining % 60;
                         statusBox.className = "status-badge paused";
-                        statusBox.innerHTML = `PAUSED<br>${remaining}s left`;
+                        statusBox.innerHTML = `PAUSED<br>${hrs}h ${mins}m ${secs}s`;
                     } else {
                         statusBox.className = "status-badge";
                         statusBox.innerHTML = `ARMED<br>Running`;
@@ -664,6 +690,8 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 }
                 
                 document.getElementById("active-trades").innerText = data.active_trades_count + " / 3 Max";
+                document.getElementById("tp-count").innerText = data.tp_hits;
+                document.getElementById("sl-count").innerText = data.sl_hits;
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
@@ -679,19 +707,31 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Pump/Dump Scalper Bot<br>($0.30 Margin + 20x | 1.0% in 30s)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Instant Limit & SL Pause)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
     
     <div class="card">
-        <div class="label">ACTIVE TRADES (MAX 3)</div>
-        <div id="active-trades" class="value text-yellow">0 / 3 Max</div>
+        <div class="stats-grid">
+            <div class="stats-box">
+                <div class="label">Active Trades</div>
+                <div id="active-trades" class="value text-yellow">0 / 3 Max</div>
+            </div>
+            <div class="stats-box">
+                <div class="label">Total TP Hits</div>
+                <div id="tp-count" class="value text-green">0</div>
+            </div>
+            <div class="stats-box">
+                <div class="label">Total SL Hits</div>
+                <div id="sl-count" class="value text-red">0</div>
+            </div>
+        </div>
     </div>
 
     <div class="card">
         <div class="label">📊 LIVE PUMP/DUMP RADAR (1.0% / 30s)</div>
-        <div id="radar-feed" class="ledger text-yellow" style="max-height: 160px; overflow-y: auto;">-</div>
+        <div id="radar-feed" class="ledger text-yellow" style="max-height: 140px; overflow-y: auto;">-</div>
     </div>
 
     <div class="card">
@@ -700,7 +740,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">📋 Execution Ledger & Logs</div>
+        <div class="label">📋 Execution Ledger & Logs (TP / SL Tracker)</div>
         <div id="ledger" class="ledger"></div>
     </div>
 </body>
@@ -729,7 +769,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized (1.0% Threshold, Max 3 Trades, Limit Chaser)!")
+    add_ui_log("⚡ Binance Scalper Bot initialized (Instant Limit Fill & 5 SL Pause)!")
     
     while True:
         time.sleep(1)
