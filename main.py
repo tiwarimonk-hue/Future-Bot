@@ -52,6 +52,7 @@ clock_offset_ms = 0.0
 active_trade_symbols = set()
 coin_last_trade_time = {}
 price_history = {}  # symbol -> list of (timestamp, price)
+exchange_info_cache = {}
 
 # Live tracking stats for dashboard
 dashboard_data = {
@@ -273,29 +274,42 @@ def set_leverage(symbol):
     except Exception:
         pass
 
-def get_precision_info(symbol):
-    step_size = 0.01
-    min_qty = 0.01
-    tick_size = 0.01
+def fetch_exchange_info():
+    global exchange_info_cache
     try:
         info = binance_public_get("/fapi/v1/exchangeInfo")
-        for s in info.get("symbols", []):
-            if s.get("symbol") == symbol:
+        if isinstance(info, dict) and "symbols" in info:
+            cache = {}
+            for s in info["symbols"]:
+                sym = s.get("symbol")
+                step_size = 0.01
+                min_qty = 0.01
+                tick_size = 0.01
                 for f in s.get("filters", []):
                     if f.get("filterType") == "LOT_SIZE":
                         step_size = float(f.get("stepSize", "0.01"))
                         min_qty = float(f.get("minQty", "0.01"))
                     elif f.get("filterType") == "PRICE_FILTER":
                         tick_size = float(f.get("tickSize", "0.01"))
-                break
+                cache[sym] = (step_size, min_qty, tick_size)
+            exchange_info_cache = cache
     except Exception:
         pass
-    return step_size, min_qty, tick_size
+
+def get_precision_info(symbol):
+    if symbol in exchange_info_cache:
+        return exchange_info_cache[symbol]
+    fetch_exchange_info()
+    return exchange_info_cache.get(symbol, (0.01, 0.01, 0.01))
 
 def format_number(val, step):
+    if step <= 0:
+        return str(val)
     step_str = f"{step:.8f}".rstrip("0")
     decimals = len(step_str.split(".")[1]) if "." in step_str else 0
-    return f"{round(val, decimals):.{decimals}f}"
+    factor = 10 ** decimals
+    truncated = math.floor(val * factor) / factor
+    return f"{truncated:.{decimals}f}" if decimals > 0 else str(int(truncated))
 
 def handle_trade_result(symbol, is_win):
     global consecutive_losses, trading_paused_until
@@ -328,7 +342,6 @@ def execute_dip_trade(symbol, entry_price):
         
         add_ui_log(f"🟢 DIP DETECTED! Placing Limit BUY: {symbol} at {price} (Qty: {amount})")
         
-        # Place Limit Buy Order (GTC or IOC/GTX)
         order_res = send_ws_fapi_order(
             symbol=symbol, side="BUY", quantity=amount, price=price,
             order_type="LIMIT", time_in_force="GTC"
@@ -336,7 +349,6 @@ def execute_dip_trade(symbol, entry_price):
         
         order_id = order_res.get("orderId")
         
-        # Wait up to 5 seconds for limit order to fill
         filled = False
         for _ in range(5):
             time.sleep(1)
@@ -364,14 +376,12 @@ def execute_dip_trade(symbol, entry_price):
         tp_price = format_number(tp_raw, tick_size)
         sl_price = format_number(sl_raw, tick_size)
         
-        # Place TP Limit order
         tp_res = send_ws_fapi_order(
             symbol=symbol, side="SELL", quantity=amount, price=tp_price,
             order_type="LIMIT", time_in_force="GTC", reduce_only=True
         )
         tp_id = tp_res.get("orderId")
         
-        # Place SL Stop Market order
         send_ws_fapi_order(
             symbol=symbol, side="SELL", quantity=amount, order_type="STOP_MARKET",
             reduce_only=True, stop_price=sl_price
@@ -440,7 +450,6 @@ def dynamic_market_scanner():
                 continue
 
             now = time.time()
-            now_ms = now * 1000
 
             for t in tickers:
                 sym = t.get("symbol", "")
@@ -453,25 +462,20 @@ def dynamic_market_scanner():
                 except ValueError:
                     continue
 
-                # Filter: Minimum $50M 24h liquidity
                 if vol < MIN_24H_VOLUME_USD:
                     continue
 
-                # Initialize price history buffer
                 if sym not in price_history:
                     price_history[sym] = []
 
                 price_history[sym].append((now, price))
 
-                # Clean up history older than 30 seconds
                 price_history[sym] = [(ts, p) for ts, p in price_history[sym] if now - ts <= DROP_TIME_WINDOW_SEC]
 
-                # Check if we have enough span to measure 0.5% drop
                 if len(price_history[sym]) >= 2:
                     oldest_price = price_history[sym][0][1]
                     pct_change = (price - oldest_price) / oldest_price
 
-                    # Check drop condition: <= -0.5% (-0.005)
                     if pct_change <= -DROP_PCT:
                         with data_lock:
                             current_active_count = len(active_trade_symbols)
@@ -486,7 +490,6 @@ def dynamic_market_scanner():
                         if now - last_trade < COIN_COOLDOWN_SECONDS:
                             continue
 
-                        # All checks passed! Lock and trigger trade
                         with data_lock:
                             if len(active_trade_symbols) < MAX_CONCURRENT_TRADES and sym not in active_trade_symbols:
                                 active_trade_symbols.add(sym)
@@ -500,7 +503,7 @@ def dynamic_market_scanner():
                             add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} Dropped {drop_display} in 30s! Triggering Dip Buy.")
                             threading.Thread(target=execute_dip_trade, args=(sym, price), daemon=True).start()
 
-        except Exception as e:
+        except Exception:
             pass
 
         time.sleep(2)
@@ -642,6 +645,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
+    fetch_exchange_info()
     add_ui_log("⚡ Binance Dip Scalper Bot initialized successfully!")
     
     while True:
