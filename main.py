@@ -36,7 +36,7 @@ THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 30        # Within 30 seconds
 
 TP_PCT = 0.003                   # 0.3% Take Profit
-SL_PCT = 0.005                   # 0.5% Stop Loss
+SL_PCT = 0.003                   # 0.3% Stop Loss (Updated to 0.3%)
 HOLD_TIME_SECONDS = 30           # Max hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
@@ -248,6 +248,7 @@ def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", 
         raise Exception("WS Order Timeout")
 
 def cancel_all_ws_orders(symbol):
+    # Double security: WebSocket cancel + HTTP REST fallback to ensure no open orders are left behind
     try:
         req_id = str(uuid.uuid4())
         params = {
@@ -263,10 +264,17 @@ def cancel_all_ws_orders(symbol):
         req_info = {"event": event, "result": None}
         with ws_req_lock:
             ws_pending_requests[req_id] = req_info
-        ws_fapi_client.send(json.dumps(payload))
-        event.wait(timeout=2.0)
+        if ws_fapi_ready and ws_fapi_client:
+            ws_fapi_client.send(json.dumps(payload))
+            event.wait(timeout=1.5)
     except Exception:
+        pass
+    
+    # HTTP REST fallback cancellation
+    try:
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+    except Exception:
+        pass
 
 # ==========================================
 # TRADING EXECUTION & STRICT VALIDATION
@@ -450,13 +458,14 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         d_fill = Decimal(str(fill_price_float))
         
+        # Target TP = 0.3%, Stop Loss = 0.3% (Updated)
         if trade_side == "BUY":
             tp_raw = d_fill * Decimal("1.003")
-            sl_raw = d_fill * Decimal("0.995")  # 0.5% SL
+            sl_raw = d_fill * Decimal("0.997")  # 0.3% SL
             exit_side = "SELL"
         else:
             tp_raw = d_fill * Decimal("0.997")
-            sl_raw = d_fill * Decimal("1.005")  # 0.5% SL
+            sl_raw = d_fill * Decimal("1.003")  # 0.3% SL
             exit_side = "BUY"
         
         tp_price = format_price(tp_raw, tick_size)
@@ -492,7 +501,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                     add_ui_log(f"[{symbol}] SL Retry {attempt+1} Error: {e}")
             
             if tp_id and sl_placed:
-                add_ui_log(f"✅ [{symbol}] Instant Verification Success: TP (0.3%) & SL (0.5%) Confirmed Active.")
+                add_ui_log(f"✅ [{symbol}] Instant Verification Success: TP (0.3%) & SL (0.3%) Confirmed Active.")
                 break
             
             time.sleep(0.2)
@@ -534,6 +543,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 send_ws_fapi_order(symbol=symbol, side=market_exit_side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
             is_win = False
         
+        # Absolute Cleanup: Cancel ALL open orders (TP or SL) for this symbol immediately when trade finishes
         cancel_all_ws_orders(symbol)
         handle_trade_result(symbol, is_win)
 
@@ -727,7 +737,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Self-Ping Active)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Auto Cleanup Fixed)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -780,7 +790,6 @@ def self_ping_worker():
             session.get(f"http://127.0.0.1:{port}/status", timeout=5)
         except Exception:
             pass
-        # Har 30 second me self-ping karega taaki server ya render instance active rahe
         time.sleep(30)
 
 if __name__ == "__main__":
@@ -790,7 +799,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Active Self-Ping & Keep-Alive Guard!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Robust Order Cancellation & 0.3% SL!")
     
     while True:
         time.sleep(1)
