@@ -50,7 +50,7 @@ COIN_CONFIG = {
 }
 active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
 
-# Live tracking stats for dashboard with dedicated liquidation tracking
+# Live tracking stats for dashboard
 dashboard_data = {
     "status": "INITIALIZING...",
     "active_coin": "NONE",
@@ -139,7 +139,7 @@ def get_synced_time_ms():
     return (time.time() * 1000) + clock_offset_ms
 
 # ==========================================
-# WEBSOCKET API (WS-FAPI) FOR ULTRA-FAST ORDERS
+# WEBSOCKET API (WS-FAPI) FOR ORDERS
 # ==========================================
 ws_fapi_client = None
 ws_fapi_ready = False
@@ -415,11 +415,13 @@ def execute_trade(symbol, entry_price):
         active_trades[symbol] = False
 
 # ==========================================
-# REST API FALLBACK POLLING (Guarantees live price sync)
+# REST API POLLING FALLBACK (Prices & Liquidations)
 # ==========================================
-def poll_market_rest():
+def poll_market_and_liquidations_rest():
+    processed_liq_ids = set()
     while True:
         try:
+            # 1. Fetch live prices
             tickers = binance_public_get("/fapi/v1/premiumIndex")
             if isinstance(tickers, list):
                 for t in tickers:
@@ -429,98 +431,54 @@ def poll_market_rest():
                         with data_lock:
                             dashboard_data['coin_stats'][raw_sym]['price'] = price
                             dashboard_data['coin_stats'][raw_sym]['time'] = datetime.now(IST).strftime('%H:%M:%S')
+
+            # 2. Fetch recent liquidations via REST API fallback
+            for raw_sym, info in COIN_CONFIG.items():
+                symbol = info['symbol']
+                threshold = info['threshold']
+                liq_res = binance_public_get("/fapi/v1/forceOrders", {"symbol": raw_sym, "limit": 3})
+                if isinstance(liq_res, list):
+                    for ord_data in liq_res:
+                        liq_id = f"{raw_sym}_{ord_data.get('time')}_{ord_data.get('price')}"
+                        if liq_id not in processed_liq_ids:
+                            processed_liq_ids.add(liq_id)
+                            if len(processed_liq_ids) > 100:
+                                processed_liq_ids.pop()
+                            
+                            price = float(ord_data.get('price', 0))
+                            qty = float(ord_data.get('origQty', 0))
+                            notional = price * qty
+                            side = ord_data.get('side', 'SELL')
+                            scan_time = datetime.now(IST).strftime('%H:%M:%S')
+                            
+                            is_paused = time.time() < trading_paused_until
+                            is_active = active_trades.get(symbol, False)
+                            
+                            if side == 'SELL':
+                                if is_paused:
+                                    status_desc = "PAUSED (Cooldown)"
+                                elif is_active:
+                                    status_desc = "SKIPPED (In Trade)"
+                                elif notional >= threshold:
+                                    status_desc = "⚡ TRIGGERED TRADE"
+                                    threading.Thread(target=execute_trade, args=(symbol, price), daemon=True).start()
+                                else:
+                                    status_desc = f"SKIPPED (< ${threshold})"
+                            else:
+                                status_desc = f"BUY LIQ (${notional:.0f})"
+
+                            with data_lock:
+                                dashboard_data['coin_stats'][raw_sym]['last_liq_time'] = scan_time
+                                dashboard_data['coin_stats'][raw_sym]['last_liq_side'] = side
+                                dashboard_data['coin_stats'][raw_sym]['last_liq_notional'] = round(notional, 2)
+                                dashboard_data['coin_stats'][raw_sym]['status'] = status_desc
+                            
+                            add_scan(f"[{scan_time}] {raw_sym} ({side}) | Size: ${notional:.0f} @ {price} ➔ {status_desc}")
         except Exception:
             pass
         time.sleep(3)
 
-threading.Thread(target=poll_market_rest, daemon=True).start()
-
-# ==========================================
-# PUBLIC WEBSOCKET STREAM (Liquidations & Mini-Ticker)
-# ==========================================
-def on_public_ws_message(ws, message):
-    try:
-        payload = json.loads(message)
-        if 'data' in payload:
-            data = payload['data']
-            event_type = data.get('e')
-            
-            if event_type in ['24hrMiniTicker', 'miniTicker']:
-                raw_symbol = data['s'].upper()
-                if raw_symbol in COIN_CONFIG:
-                    current_price = float(data['c'])
-                    scan_time = datetime.now(IST).strftime('%H:%M:%S')
-                    with data_lock:
-                        dashboard_data['coin_stats'][raw_symbol]['price'] = current_price
-                        dashboard_data['coin_stats'][raw_symbol]['time'] = scan_time
-
-            elif event_type == 'forceOrder' and 'o' in data:
-                order_data = data['o']
-                raw_symbol = order_data['s'].upper()
-                
-                if raw_symbol in COIN_CONFIG:
-                    info = COIN_CONFIG[raw_symbol]
-                    symbol = info['symbol']
-                    threshold = info['threshold']
-                    
-                    side = order_data['S'] 
-                    price = float(order_data['p'])
-                    qty = float(order_data['q'])
-                    notional = price * qty
-                    scan_time = datetime.now(IST).strftime('%H:%M:%S')
-                    
-                    is_paused = time.time() < trading_paused_until
-                    is_active = active_trades.get(symbol, False)
-                    
-                    if side == 'SELL':
-                        if is_paused:
-                            status_desc = "PAUSED (Cooldown)"
-                        elif is_active:
-                            status_desc = "SKIPPED (In Trade)"
-                        elif notional >= threshold:
-                            status_desc = "⚡ TRIGGERED TRADE"
-                            threading.Thread(target=execute_trade, args=(symbol, price), daemon=True).start()
-                        else:
-                            status_desc = f"SKIPPED (< ${threshold})"
-                    else:
-                        status_desc = f"BUY LIQ (${notional:.0f})"
-
-                    with data_lock:
-                        dashboard_data['coin_stats'][raw_symbol]['time'] = scan_time
-                        dashboard_data['coin_stats'][raw_symbol]['last_liq_time'] = scan_time
-                        dashboard_data['coin_stats'][raw_symbol]['last_liq_side'] = side
-                        dashboard_data['coin_stats'][raw_symbol]['last_liq_notional'] = round(notional, 2)
-                        dashboard_data['coin_stats'][raw_symbol]['status'] = status_desc
-                    
-                    add_scan(f"[{scan_time}] {raw_symbol} ({side}) | Size: ${notional:.0f} @ {price} ➔ {status_desc}")
-    except Exception:
-        pass
-
-def connect_public_websocket():
-    streams_list = []
-    for coin in COIN_CONFIG.keys():
-        c_lower = coin.lower()
-        streams_list.append(f"{c_lower}@forceOrder")
-        streams_list.append(f"{c_lower}@miniTicker")
-        
-    streams = "/".join(streams_list)
-    ws_url = f"wss://fstream.binance.com/stream?streams={streams}"
-    
-    while True:
-        try:
-            add_ui_log("Connecting to Binance Public WebSocket Stream...")
-            ws_app = websocket.WebSocketApp(
-                ws_url,
-                on_message=on_public_ws_message,
-                on_error=lambda ws, err: None,
-                on_close=lambda ws, code, msg: None
-            )
-            ws_app.run_forever(ping_interval=20, ping_timeout=10)
-        except Exception:
-            pass
-        time.sleep(3)
-
-threading.Thread(target=connect_public_websocket, daemon=True).start()
+threading.Thread(target=poll_market_and_liquidations_rest, daemon=True).start()
 
 # ==========================================
 # EMBEDDED HTTP SERVER & DASHBOARD
@@ -689,7 +647,7 @@ def initialize_bot():
     sync_binance_clock()
     for config in COIN_CONFIG.values():
         set_leverage(config['symbol'])
-    add_ui_log("⚡ HFT Bot initialized successfully. Ready to scan liquidations!")
+    add_ui_log("⚡ HFT Bot initialized successfully. Ready to scan liquidations via REST Fallback!")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
