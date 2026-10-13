@@ -32,14 +32,14 @@ LEVERAGE = 20
 POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $6.0 USD
 
 MIN_24H_VOLUME_USD = 50_000_000  # Minimum $50M liquidity
-THRESHOLD_PCT = 0.009            # 0.90% price movement (Pump or Dump)
+THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 30        # Within 30 seconds
 
 TP_PCT = 0.003                   # 0.3% Take Profit
 SL_PCT = 0.003                   # 0.3% Stop Loss
 HOLD_TIME_SECONDS = 30           # Max hold timeout
 
-MAX_CONCURRENT_TRADES = 2
+MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
 
 MAX_CONSECUTIVE_LOSSES = 5
@@ -274,13 +274,11 @@ def set_leverage(symbol):
         pass
 
 def fetch_symbol_precision(symbol):
-    """Directly fetch and cache exact stepSize, minQty, and tickSize for a specific symbol to prevent -1111 error"""
     global exchange_info_cache
     if symbol in exchange_info_cache:
         return exchange_info_cache[symbol]
     
     try:
-        # Binance exchangeInfo does not take query params, returns all symbols
         info = binance_public_get("/fapi/v1/exchangeInfo")
         if isinstance(info, dict) and "symbols" in info:
             for s in info["symbols"]:
@@ -326,11 +324,25 @@ def format_qty(qty, step_size):
     except Exception:
         return str(qty)
 
+def get_active_positions_count_from_exchange():
+    """Directly checks Binance API to count how many open positions currently exist"""
+    try:
+        pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk")
+        if isinstance(pos_risk, list):
+            count = 0
+            for p in pos_risk:
+                if float(p.get("positionAmt", 0)) != 0:
+                    count += 1
+            return count
+    except Exception:
+        pass
+    return len(active_trade_symbols)
+
 def handle_trade_result(symbol, is_win):
     global consecutive_losses, trading_paused_until
     with data_lock:
         active_trade_symbols.discard(symbol)
-        dashboard_data['active_trades_count'] = len(active_trade_symbols)
+        dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
     
     if is_win:
         consecutive_losses = 0
@@ -349,7 +361,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         set_leverage(symbol)
         coin_last_trade_time[symbol] = time.time()
         
-        # Fetch exact precision filters for THIS specific symbol right now
         step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
         
         d_entry = Decimal(str(entry_price))
@@ -385,7 +396,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             cancel_all_ws_orders(symbol)
             with data_lock:
                 active_trade_symbols.discard(symbol)
-                dashboard_data['active_trades_count'] = len(active_trade_symbols)
+                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
             return
 
         add_ui_log(f"[{symbol}] Limit Order Filled! Setting 0.3% TP and 0.3% SL.")
@@ -463,19 +474,28 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         add_ui_log(f"[{symbol}] Trade Error: {e}")
         with data_lock:
             active_trade_symbols.discard(symbol)
-            dashboard_data['active_trades_count'] = len(active_trade_symbols)
+            dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
 
 # ==========================================
 # DYNAMIC MARKET SCANNER & PUMP/DUMP DETECTOR
 # ==========================================
 def dynamic_market_scanner():
     global active_trade_symbols
-    add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 0.90% Pump/Dump in 30s)...")
+    add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 1.0% Pump/Dump in 30s | Max 3 Trades)...")
     
     while True:
         try:
             if time.time() < trading_paused_until:
                 time.sleep(3)
+                continue
+
+            # Strict check directly from Binance exchange active positions
+            current_active_count = get_active_positions_count_from_exchange()
+            with data_lock:
+                dashboard_data['active_trades_count'] = current_active_count
+
+            if current_active_count >= MAX_CONCURRENT_TRADES:
+                time.sleep(2)
                 continue
 
             tickers = binance_public_get("/fapi/v1/ticker/24hr")
@@ -517,11 +537,10 @@ def dynamic_market_scanner():
                         trade_side = "SELL"
 
                     if trade_side:
-                        with data_lock:
-                            current_active_count = len(active_trade_symbols)
-
-                        if current_active_count >= MAX_CONCURRENT_TRADES:
-                            continue
+                        # Re-verify live count right before triggering
+                        latest_count = get_active_positions_count_from_exchange()
+                        if latest_count >= MAX_CONCURRENT_TRADES:
+                            break
 
                         if sym in active_trade_symbols:
                             continue
@@ -531,9 +550,9 @@ def dynamic_market_scanner():
                             continue
 
                         with data_lock:
-                            if len(active_trade_symbols) < MAX_CONCURRENT_TRADES and sym not in active_trade_symbols:
+                            if get_active_positions_count_from_exchange() < MAX_CONCURRENT_TRADES and sym not in active_trade_symbols:
                                 active_trade_symbols.add(sym)
-                                dashboard_data['active_trades_count'] = len(active_trade_symbols)
+                                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
                                 trigger_trade = True
                             else:
                                 trigger_trade = False
@@ -567,6 +586,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
             with data_lock:
                 dashboard_data['losses'] = consecutive_losses
                 dashboard_data['paused_until'] = trading_paused_until
+                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
                 payload = json.dumps(dashboard_data).encode('utf-8')
             self.wfile.write(payload)
             return
@@ -620,11 +640,11 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                     statusBox.innerHTML = `ARMED<br>Losses: ${data.losses}/5`;
                 }
                 
-                document.getElementById("active-trades").innerText = data.active_trades_count + " / 2 Max";
+                document.getElementById("active-trades").innerText = data.active_trades_count + " / 3 Max";
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("radar-feed").innerHTML = scansHtml || "Scanning market for 0.90% pumps/dumps in 30s...";
+                document.getElementById("radar-feed").innerHTML = scansHtml || "Scanning market for 1.0% pumps/dumps in 30s...";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -636,18 +656,18 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Pump/Dump Scalper Bot<br>($0.30 Margin + 20x | 0.90% in 30s)</h1>
+            <h1 class="title">⚡ Binance Pump/Dump Scalper Bot<br>($0.30 Margin + 20x | 1.0% in 30s)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
     
     <div class="card">
-        <div class="label">ACTIVE TRADES (MAX 2)</div>
-        <div id="active-trades" class="value text-yellow">0 / 2 Max</div>
+        <div class="label">ACTIVE TRADES (MAX 3)</div>
+        <div id="active-trades" class="value text-yellow">0 / 3 Max</div>
     </div>
 
     <div class="card">
-        <div class="label">📊 LIVE PUMP/DUMP RADAR (0.90% / 30s)</div>
+        <div class="label">📊 LIVE PUMP/DUMP RADAR (1.0% / 30s)</div>
         <div id="radar-feed" class="ledger text-yellow" style="max-height: 160px; overflow-y: auto;">-</div>
     </div>
 
@@ -686,7 +706,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized with Fixed Symbol Precision Fetch!")
+    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized (1.0% Threshold, Max 3 Trades)!")
     
     while True:
         time.sleep(1)
