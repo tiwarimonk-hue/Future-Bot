@@ -28,10 +28,10 @@ session = requests.Session()
 # --- STRATEGY & RISK SETTINGS ---
 TRADE_MARGIN_USD = 0.30  
 LEVERAGE = 20
-POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $6.0 USD (Satisfies $5 min notional)
+POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $6.0 USD
 
 MIN_24H_VOLUME_USD = 50_000_000  # Minimum $50M liquidity
-DROP_PCT = 0.005                 # 0.5% price drop
+THRESHOLD_PCT = 0.009            # 0.90% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 30        # Within 30 seconds
 
 TP_PCT = 0.003                   # 0.3% Take Profit
@@ -189,7 +189,7 @@ def connect_ws_fapi():
 
 threading.Thread(target=connect_ws_fapi, daemon=True).start()
 
-def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", time_in_force=None, reduce_only=False, stop_price=None):
+def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", time_in_force=None, reduce_only=False):
     if not ws_fapi_ready or not ws_fapi_client:
         raise Exception("WS-FAPI not ready")
     
@@ -208,8 +208,6 @@ def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", 
         params["timeInForce"] = time_in_force
     if reduce_only:
         params["reduceOnly"] = "true"
-    if stop_price is not None:
-        params["stopPrice"] = str(stop_price)
 
     sorted_params = sorted(params.items())
     query_string = urllib.parse.urlencode(sorted_params)
@@ -266,7 +264,7 @@ def cancel_all_ws_orders(symbol):
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 # ==========================================
-# TRADING EXECUTION LOGIC (DIP BUYING SCALPER)
+# TRADING EXECUTION LOGIC (DIP & PUMP SCALPER)
 # ==========================================
 def set_leverage(symbol):
     try:
@@ -328,7 +326,7 @@ def handle_trade_result(symbol, is_win):
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
             add_ui_log("🚨 5 Consecutive Losses! 5-Hour PAUSE triggered.")
 
-def execute_dip_trade(symbol, entry_price):
+def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
         set_leverage(symbol)
@@ -340,10 +338,11 @@ def execute_dip_trade(symbol, entry_price):
         amount = format_number(calc_qty, step_size)
         price = format_number(entry_price, tick_size)
         
-        add_ui_log(f"🟢 DIP DETECTED! Placing Limit BUY: {symbol} at {price} (Qty: {amount})")
+        action_name = "LIMIT BUY (LONG)" if trade_side == "BUY" else "LIMIT SELL (SHORT)"
+        add_ui_log(f"🟢 {action_name}: {symbol} at {price} (Qty: {amount})")
         
         order_res = send_ws_fapi_order(
-            symbol=symbol, side="BUY", quantity=amount, price=price,
+            symbol=symbol, side=trade_side, quantity=amount, price=price,
             order_type="LIMIT", time_in_force="GTC"
         )
         
@@ -370,22 +369,36 @@ def execute_dip_trade(symbol, entry_price):
         add_ui_log(f"[{symbol}] Limit Order Filled! Setting 0.3% TP and 0.3% SL.")
         
         fill_price = float(binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}).get("avgPrice", entry_price))
-        tp_raw = fill_price * (1 + TP_PCT)
-        sl_raw = fill_price * (1 - SL_PCT)
+        
+        # Calculate TP and SL based on trade direction (Long vs Short)
+        if trade_side == "BUY":
+            tp_raw = fill_price * (1 + TP_PCT)
+            sl_raw = fill_price * (1 - SL_PCT)
+            exit_side = "SELL"
+        else:  # SELL (Short)
+            tp_raw = fill_price * (1 - TP_PCT)
+            sl_raw = fill_price * (1 + SL_PCT)
+            exit_side = "BUY"
         
         tp_price = format_number(tp_raw, tick_size)
         sl_price = format_number(sl_raw, tick_size)
         
+        # 1. Place TP Limit Order via WS-FAPI
         tp_res = send_ws_fapi_order(
-            symbol=symbol, side="SELL", quantity=amount, price=tp_price,
+            symbol=symbol, side=exit_side, quantity=amount, price=tp_price,
             order_type="LIMIT", time_in_force="GTC", reduce_only=True
         )
         tp_id = tp_res.get("orderId")
         
-        send_ws_fapi_order(
-            symbol=symbol, side="SELL", quantity=amount, order_type="STOP_MARKET",
-            reduce_only=True, stop_price=sl_price
-        )
+        # 2. Place SL Stop Market Order via REST API
+        binance_signed_request("POST", "/fapi/v1/order", {
+            "symbol": symbol,
+            "side": exit_side,
+            "type": "STOP_MARKET",
+            "quantity": str(amount),
+            "stopPrice": str(sl_price),
+            "reduceOnly": "true"
+        })
         
         is_win = False
         trade_closed = False
@@ -419,7 +432,8 @@ def execute_dip_trade(symbol, entry_price):
                         current_amt = float(p.get("positionAmt", 0))
                         break
             if current_amt != 0:
-                send_ws_fapi_order(symbol=symbol, side="SELL", quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
+                market_exit_side = "SELL" if current_amt > 0 else "BUY"
+                send_ws_fapi_order(symbol=symbol, side=market_exit_side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
             is_win = False
         
         cancel_all_ws_orders(symbol)
@@ -432,11 +446,11 @@ def execute_dip_trade(symbol, entry_price):
             dashboard_data['active_trades_count'] = len(active_trade_symbols)
 
 # ==========================================
-# DYNAMIC MARKET SCANNER & DIP DETECTOR THREAD
+# DYNAMIC MARKET SCANNER & PUMP/DUMP DETECTOR
 # ==========================================
 def dynamic_market_scanner():
     global active_trade_symbols
-    add_ui_log("🚀 Dynamic Market Scanner & Dip Detector Active ($50M+ Liq, 0.5% Drop)...")
+    add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 0.90% Pump/Dump in 30s)...")
     
     while True:
         try:
@@ -476,7 +490,13 @@ def dynamic_market_scanner():
                     oldest_price = price_history[sym][0][1]
                     pct_change = (price - oldest_price) / oldest_price
 
-                    if pct_change <= -DROP_PCT:
+                    trade_side = None
+                    if pct_change <= -THRESHOLD_PCT:
+                        trade_side = "BUY"   # Dump hua toh Buy (Long) karo
+                    elif pct_change >= THRESHOLD_PCT:
+                        trade_side = "SELL"  # Pump hua toh Sell (Short) karo
+
+                    if trade_side:
                         with data_lock:
                             current_active_count = len(active_trade_symbols)
 
@@ -499,9 +519,10 @@ def dynamic_market_scanner():
                                 trigger_trade = False
 
                         if trigger_trade:
-                            drop_display = f"{pct_change*100:.2f}%"
-                            add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} Dropped {drop_display} in 30s! Triggering Dip Buy.")
-                            threading.Thread(target=execute_dip_trade, args=(sym, price), daemon=True).start()
+                            move_type = "Dumped" if trade_side == "BUY" else "Pumped"
+                            move_display = f"{pct_change*100:.2f}%"
+                            add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} {move_type} {move_display} in 30s! Triggering {trade_side}.")
+                            threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
 
         except Exception:
             pass
@@ -539,7 +560,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HFT Dip Scalper Bot</title>
+    <title>HFT Pump/Dump Scalper Bot</title>
     <style>
         body { background-color: #16181c; color: #b7bdc6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
         .card { background-color: #20242d; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
@@ -583,7 +604,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("dip-feed").innerHTML = scansHtml || "Scanning market for 0.5% dips in 30s...";
+                document.getElementById("radar-feed").innerHTML = scansHtml || "Scanning market for 0.90% pumps/dumps in 30s...";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -595,7 +616,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Dip Scalper Bot<br>($0.30 Margin + 20x | 0.5% Drop in 30s)</h1>
+            <h1 class="title">⚡ Binance Pump/Dump Scalper Bot<br>($0.30 Margin + 20x | 0.90% in 30s)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -606,8 +627,8 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">📊 LIVE DIP DETECTION RADAR (0.5% DROP / 30s)</div>
-        <div id="dip-feed" class="ledger text-yellow" style="max-height: 160px; overflow-y: auto;">-</div>
+        <div class="label">📊 LIVE PUMP/DUMP RADAR (0.90% / 30s)</div>
+        <div id="radar-feed" class="ledger text-yellow" style="max-height: 160px; overflow-y: auto;">-</div>
     </div>
 
     <div class="card">
@@ -646,7 +667,7 @@ if __name__ == "__main__":
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
     fetch_exchange_info()
-    add_ui_log("⚡ Binance Dip Scalper Bot initialized successfully!")
+    add_ui_log("⚡ Binance Pump/Dump Scalper Bot initialized successfully!")
     
     while True:
         time.sleep(1)
