@@ -22,45 +22,69 @@ except ImportError:
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
-# Persistent session for public/fallback HTTP requests
+# Persistent session for HTTP requests
 session = requests.Session()
 
+# --- STRATEGY & RISK SETTINGS ---
+TRADE_MARGIN_USD = 0.45  
+LEVERAGE = 20
+POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE
+
+TP_PCT = 0.0006  
+SL_PCT = 0.0015  
+HOLD_TIME_SECONDS = 10
+
+MAX_CONSECUTIVE_LOSSES = 5
+PAUSE_DURATION_SECONDS = 5 * 3600  
+SUCCESS_COOLDOWN_SECONDS = 120 
+
+consecutive_losses = 0
+trading_paused_until = 0
+clock_offset_ms = 0.0
+
+COIN_CONFIG = {
+    'SOLUSDT': {'symbol': 'SOLUSDT', 'ccxt_symbol': 'SOL/USDT', 'threshold': 10000},
+    'DOGEUSDT': {'symbol': 'DOGEUSDT', 'ccxt_symbol': 'DOGE/USDT', 'threshold': 5000},
+    'XRPUSDT': {'symbol': 'XRPUSDT', 'ccxt_symbol': 'XRP/USDT', 'threshold': 5000},
+    'BNBUSDT': {'symbol': 'BNBUSDT', 'ccxt_symbol': 'BNB/USDT', 'threshold': 10000}
+}
+active_trades = {info['symbol']: False for info in COIN_CONFIG.values()}
+
+# Live tracking stats for dashboard
 dashboard_data = {
-    "target_symbol": "Scanning Market...",
-    "funding_rate": "0.00%",
-    "action_direction": "--",
-    "status": "Initializing Binance WS-FAPI Engine...",
-    "target_settlement": "-- IST",
-    "entry_target": "-- IST (T + 950ms)",
-    "exit_target": "-- IST (T + 8000ms)",
+    "status": "INITIALIZING...",
+    "active_coin": "NONE",
+    "losses": 0,
+    "paused_until": 0,
     "clock_offset_ms": 0.0,
-    "logs": [],
-    "ledger": []
+    "coin_stats": {
+        'SOLUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
+        'DOGEUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
+        'XRPUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'},
+        'BNBUSDT': {'time': '-', 'notional': 0, 'price': 0.0, 'status': 'CONNECTING...'}
+    },
+    "scans": [],
+    "logs": []
 }
 
 def add_ui_log(message):
-    timestamp = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+    timestamp = datetime.now(IST).strftime('%H:%M:%S')
     line = f'[{timestamp}] {message}'
     print(line)
     with data_lock:
-        dashboard_data['logs'].append(line)
-        if len(dashboard_data['logs']) > 70:
-            dashboard_data['logs'].pop(0)
+        dashboard_data['logs'].insert(0, line)
+        if len(dashboard_data['logs']) > 50:
+            dashboard_data['logs'].pop()
 
-def add_ledger_entry(trade_info):
+def add_scan(message):
     with data_lock:
-        dashboard_data['ledger'].insert(0, trade_info)
-        if len(dashboard_data['ledger']) > 20:
-            dashboard_data['ledger'].pop()
+        dashboard_data['scans'].insert(0, message)
+        if len(dashboard_data['scans']) > 8:
+            dashboard_data['scans'].pop()
 
 API_KEY = os.environ.get('BINANCE_API_KEY')
 API_SECRET = os.environ.get('BINANCE_API_SECRET')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
-
-MIN_FUNDING_RATE_THRESHOLD = -0.004
-ENTRY_MARGIN_USD = 1.0
-
-clock_offset_ms = 0.0
 
 def binance_public_get(endpoint, params=None):
     url = f"{BINANCE_FUTURES_URL}{endpoint}"
@@ -91,8 +115,8 @@ def binance_signed_request(method, endpoint, params=None):
         
         if resp.status_code == 200:
             return resp.json()
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"Signed Request Error ({endpoint}): {e}")
     return {}
 
 def sync_binance_clock():
@@ -113,17 +137,6 @@ def sync_binance_clock():
 
 def get_synced_time_ms():
     return (time.time() * 1000) + clock_offset_ms
-
-def precision_wait_until(target_time_ms):
-    while True:
-        now = get_synced_time_ms()
-        diff = target_time_ms - now
-        if diff <= 0:
-            break
-        elif diff > 10:
-            time.sleep(0.002)
-        elif diff > 2:
-            time.sleep(0.0005)
 
 # ==========================================
 # WEBSOCKET API (WS-FAPI) FOR ULTRA-FAST ORDERS
@@ -148,12 +161,11 @@ def on_ws_fapi_message(ws, message):
 def on_ws_fapi_open(ws):
     global ws_fapi_ready
     ws_fapi_ready = True
-    add_ui_log("⚡ Binance WebSocket API (WS-FAPI) Connected & Ready")
+    add_ui_log("⚡ Binance WS-FAPI Connected & Ready for Orders")
 
 def on_ws_fapi_close(ws, code, msg):
     global ws_fapi_ready
     ws_fapi_ready = False
-    add_ui_log("⚠️ Binance WebSocket API Disconnected")
 
 def on_ws_fapi_error(ws, error):
     global ws_fapi_ready
@@ -179,7 +191,7 @@ def connect_ws_fapi():
 
 threading.Thread(target=connect_ws_fapi, daemon=True).start()
 
-def send_ws_fapi_order(symbol, side, quantity, reduce_only=False):
+def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", time_in_force=None, reduce_only=False, stop_price=None):
     if not ws_fapi_ready or not ws_fapi_client:
         raise Exception("WS-FAPI not ready")
     
@@ -188,12 +200,18 @@ def send_ws_fapi_order(symbol, side, quantity, reduce_only=False):
         "apiKey": API_KEY,
         "symbol": symbol,
         "side": side,
-        "type": "MARKET",
+        "type": order_type,
         "quantity": str(quantity),
         "timestamp": int(get_synced_time_ms())
     }
+    if price is not None:
+        params["price"] = str(price)
+    if time_in_force:
+        params["timeInForce"] = time_in_force
     if reduce_only:
         params["reduceOnly"] = "true"
+    if stop_price is not None:
+        params["stopPrice"] = str(stop_price)
 
     sorted_params = sorted(params.items())
     query_string = urllib.parse.urlencode(sorted_params)
@@ -228,20 +246,307 @@ def send_ws_fapi_order(symbol, side, quantity, reduce_only=False):
             ws_pending_requests.pop(req_id, None)
         raise Exception("WS Order Timeout")
 
+def cancel_all_ws_orders(symbol):
+    try:
+        req_id = str(uuid.uuid4())
+        params = {
+            "apiKey": API_KEY,
+            "symbol": symbol,
+            "timestamp": int(get_synced_time_ms())
+        }
+        query_string = urllib.parse.urlencode(sorted(params.items()))
+        params["signature"] = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        
+        payload = {"id": req_id, "method": "allOpenOrders.cancel", "params": params}
+        event = threading.Event()
+        req_info = {"event": event, "result": None}
+        with ws_req_lock:
+            ws_pending_requests[req_id] = req_info
+        ws_fapi_client.send(json.dumps(payload))
+        event.wait(timeout=2.0)
+    except Exception:
+        binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+
 # ==========================================
-# DASHBOARD WEB SERVER & ANTI-SLEEP WORKER
+# TRADING EXECUTION LOGIC
 # ==========================================
-class FundingDashboardHandler(BaseHTTPRequestHandler):
+def set_leverage(symbol):
+    try:
+        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
+        add_ui_log(f"Leverage set to {LEVERAGE}x for {symbol}")
+    except Exception as e:
+        add_ui_log(f"Leverage error {symbol}: {e}")
+
+def get_precision_info(symbol):
+    step_size = 0.01
+    min_qty = 0.01
+    tick_size = 0.01
+    try:
+        info = binance_public_get("/fapi/v1/exchangeInfo")
+        for s in info.get("symbols", []):
+            if s.get("symbol") == symbol:
+                for f in s.get("filters", []):
+                    if f.get("filterType") == "LOT_SIZE":
+                        step_size = float(f.get("stepSize", "0.01"))
+                        min_qty = float(f.get("minQty", "0.01"))
+                    elif f.get("filterType") == "PRICE_FILTER":
+                        tick_size = float(f.get("tickSize", "0.01"))
+                break
+    except Exception:
+        pass
+    return step_size, min_qty, tick_size
+
+def format_number(val, step):
+    step_str = f"{step:.8f}".rstrip("0")
+    decimals = len(step_str.split(".")[1]) if "." in step_str else 0
+    return f"{round(val, decimals):.{decimals}f}"
+
+def handle_trade_result(is_win):
+    global consecutive_losses, trading_paused_until
+    with data_lock:
+        dashboard_data['active_coin'] = "NONE"
+    
+    if is_win:
+        consecutive_losses = 0
+        trading_paused_until = time.time() + SUCCESS_COOLDOWN_SECONDS
+        add_ui_log("✅ Trade WON (TP Hit)! 2-Min Rest Cooldown.")
+    else:
+        consecutive_losses += 1
+        add_ui_log(f"❌ Trade LOST. Losses: {consecutive_losses}/{MAX_CONSECUTIVE_LOSSES}")
+        if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+            trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
+            add_ui_log("🚨 5 Consecutive Losses! 5-Hour PAUSE triggered.")
+
+def execute_trade(symbol, entry_price):
+    global trading_paused_until
+    try:
+        active_trades[symbol] = True
+        with data_lock:
+            dashboard_data['active_coin'] = f"{symbol} (SCALPING)"
+        
+        step_size, min_qty, tick_size = get_precision_info(symbol)
+        raw_qty = POSITION_SIZE_USD / entry_price
+        calc_qty = max(min_qty, math.floor(raw_qty / step_size) * step_size)
+        amount = format_number(calc_qty, step_size)
+        price = format_number(entry_price, tick_size)
+        
+        add_ui_log(f"🟢 ENTRY: {symbol} at {price} (Qty: {amount})")
+        
+        # Place Limit Buy Order (GTX - Post Only)
+        order_res = send_ws_fapi_order(
+            symbol=symbol, side="BUY", quantity=amount, price=price,
+            order_type="LIMIT", time_in_force="GTX"
+        )
+        
+        order_id = order_res.get("orderId")
+        time.sleep(1)
+        
+        # Verify order fill via REST
+        check_order = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+        
+        if check_order.get("status") == "FILLED":
+            add_ui_log(f"[{symbol}] Filled! Placing TP/SL limits.")
+            
+            fill_price = float(check_order.get("avgPrice", entry_price))
+            tp_raw = fill_price * (1 + TP_PCT)
+            sl_raw = fill_price * (1 - SL_PCT)
+            
+            tp_price = format_number(tp_raw, tick_size)
+            sl_price = format_number(sl_raw, tick_size)
+            
+            # Place TP Limit order
+            tp_res = send_ws_fapi_order(
+                symbol=symbol, side="SELL", quantity=amount, price=tp_price,
+                order_type="LIMIT", time_in_force="GTX", reduce_only=True
+            )
+            tp_id = tp_res.get("orderId")
+            
+            # Place SL Stop Market order
+            send_ws_fapi_order(
+                symbol=symbol, side="SELL", quantity=amount, order_type="STOP_MARKET",
+                reduce_only=True, stop_price=sl_price
+            )
+            
+            is_win = False
+            trade_closed = False
+            
+            for _ in range(HOLD_TIME_SECONDS):
+                time.sleep(1)
+                pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+                pos_amt = 0.0
+                if isinstance(pos_risk, list):
+                    for p in pos_risk:
+                        if p.get("symbol") == symbol:
+                            pos_amt = float(p.get("positionAmt", 0))
+                            break
+                
+                if pos_amt == 0:
+                    trade_closed = True
+                    tp_check = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": tp_id})
+                    if tp_check.get("status") == "FILLED":
+                        is_win = True
+                    break
+            
+            if not trade_closed:
+                add_ui_log(f"🔴 [{symbol}] 10s Timeout! Force Market Exit.")
+                cancel_all_ws_orders(symbol)
+                
+                pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+                current_amt = 0.0
+                if isinstance(pos_risk, list):
+                    for p in pos_risk:
+                        if p.get("symbol") == symbol:
+                            current_amt = float(p.get("positionAmt", 0))
+                            break
+                if current_amt != 0:
+                    side = "SELL" if current_amt > 0 else "BUY"
+                    send_ws_fapi_order(symbol=symbol, side=side, quantity=abs(current_amt), order_type="MARKET", reduce_only=True)
+                is_win = False
+            
+            cancel_all_ws_orders(symbol)
+            handle_trade_result(is_win)
+        else:
+            add_ui_log(f"[{symbol}] Order missed/unfilled. Canceling.")
+            cancel_all_ws_orders(symbol)
+            with data_lock:
+                dashboard_data['active_coin'] = "NONE"
+
+    except Exception as e:
+        add_ui_log(f"[{symbol}] Trade Error: {e}")
+        with data_lock:
+            dashboard_data['active_coin'] = "NONE"
+    finally:
+        active_trades[symbol] = False
+
+# ==========================================
+# REST API FALLBACK POLLING (Guarantees no $0 / Connecting issue)
+# ==========================================
+def poll_market_rest():
+    while True:
+        try:
+            tickers = binance_public_get("/fapi/v1/premiumIndex")
+            if isinstance(tickers, list):
+                for t in tickers:
+                    raw_sym = t.get("symbol")
+                    if raw_sym in COIN_CONFIG:
+                        price = float(t.get("markPrice", 0))
+                        with data_lock:
+                            dashboard_data['coin_stats'][raw_sym]['price'] = price
+                            dashboard_data['coin_stats'][raw_sym]['time'] = datetime.now(IST).strftime('%H:%M:%S')
+                            if dashboard_data['coin_stats'][raw_sym]['status'] in ['CONNECTING...', 'WAITING']:
+                                dashboard_data['coin_stats'][raw_sym]['status'] = 'SCANNING (Live)'
+        except Exception:
+            pass
+        time.sleep(3)
+
+threading.Thread(target=poll_market_rest, daemon=True).start()
+
+# ==========================================
+# PUBLIC WEBSOCKET STREAM (Liquidations & Mini-Ticker)
+# ==========================================
+def on_public_ws_message(ws, message):
+    try:
+        payload = json.loads(message)
+        if 'data' in payload:
+            data = payload['data']
+            event_type = data.get('e')
+            
+            if event_type in ['24hrMiniTicker', 'miniTicker']:
+                raw_symbol = data['s'].upper()
+                if raw_symbol in COIN_CONFIG:
+                    current_price = float(data['c'])
+                    scan_time = datetime.now(IST).strftime('%H:%M:%S')
+                    with data_lock:
+                        dashboard_data['coin_stats'][raw_symbol]['price'] = current_price
+                        dashboard_data['coin_stats'][raw_symbol]['time'] = scan_time
+                        if dashboard_data['coin_stats'][raw_symbol]['status'] in ['CONNECTING...', 'WAITING']:
+                            dashboard_data['coin_stats'][raw_symbol]['status'] = 'SCANNING (Live)'
+
+            elif event_type == 'forceOrder' and 'o' in data:
+                order_data = data['o']
+                raw_symbol = order_data['s'].upper()
+                
+                if raw_symbol in COIN_CONFIG:
+                    info = COIN_CONFIG[raw_symbol]
+                    symbol = info['symbol']
+                    threshold = info['threshold']
+                    
+                    side = order_data['S'] 
+                    price = float(order_data['p'])
+                    qty = float(order_data['q'])
+                    notional = price * qty
+                    scan_time = datetime.now(IST).strftime('%H:%M:%S')
+                    
+                    is_paused = time.time() < trading_paused_until
+                    is_active = active_trades.get(symbol, False)
+                    
+                    if side == 'SELL':
+                        if is_paused:
+                            status_desc = "PAUSED (Cooldown)"
+                        elif is_active:
+                            status_desc = "SKIPPED (In Trade)"
+                        elif notional >= threshold:
+                            status_desc = "⚡ TRIGGERED TRADE"
+                            threading.Thread(target=execute_trade, args=(symbol, price), daemon=True).start()
+                        else:
+                            status_desc = f"SKIPPED (< ${threshold})"
+                    else:
+                        status_desc = f"BUY LIQ (${notional:.0f})"
+
+                    with data_lock:
+                        dashboard_data['coin_stats'][raw_symbol] = {
+                            'time': scan_time,
+                            'notional': round(notional, 2),
+                            'price': price,
+                            'status': status_desc
+                        }
+                    
+                    add_scan(f"[{scan_time}] {raw_symbol} ({side}) | ${notional:.0f} @ {price} ➔ {status_desc}")
+    except Exception:
+        pass
+
+def connect_public_websocket():
+    streams_list = []
+    for coin in COIN_CONFIG.keys():
+        c_lower = coin.lower()
+        streams_list.append(f"{c_lower}@forceOrder")
+        streams_list.append(f"{c_lower}@miniTicker")
+        
+    streams = "/".join(streams_list)
+    ws_url = f"wss://fstream.binance.com/stream?streams={streams}"
+    
+    while True:
+        try:
+            add_ui_log("Connecting to Binance Public WebSocket Stream...")
+            ws_app = websocket.WebSocketApp(
+                ws_url,
+                on_message=on_public_ws_message,
+                on_error=lambda ws, err: None,
+                on_close=lambda ws, code, msg: None
+            )
+            ws_app.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception:
+            pass
+        time.sleep(3)
+
+threading.Thread(target=connect_public_websocket, daemon=True).start()
+
+# ==========================================
+# EMBEDDED HTTP SERVER & DASHBOARD
+# ==========================================
+class BotDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
     def do_GET(self):
-        if self.path == '/api/status':
+        if self.path == '/status':
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             with data_lock:
+                dashboard_data['losses'] = consecutive_losses
+                dashboard_data['paused_until'] = trading_paused_until
                 payload = json.dumps(dashboard_data).encode('utf-8')
             self.wfile.write(payload)
             return
@@ -250,99 +555,121 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/html")
         self.end_headers()
         
-        html_content = """<!DOCTYPE html>
+        html_content = '''<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Binance WS-FAPI Funding Engine</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
-body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
-.container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 16px; }
-.header { background: #1e2329; padding: 18px 24px; border-radius: 12px; border: 1px solid #2b313a; display: flex; justify-content: space-between; align-items: center; }
-.header h1 { font-size: 18px; color: #f0b90b; }
-.badge { background: rgba(14, 203, 129, 0.15); color: #0ecb81; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
-.card { background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; }
-.card-title { font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 6px; }
-.card-value { font-size: 18px; font-weight: 700; color: #f0b90b; }
-.section-card { background: #1e2329; padding: 18px; border-radius: 12px; border: 1px solid #2b313a; }
-#log-box { background: #0b0e11; border: 1px solid #2b313a; border-radius: 8px; padding: 14px; height: 220px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; color: #0ecb81; line-height: 1.5; }
-.ledger-container { max-height: 350px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
-.ledger-item { background: #181c22; border: 1px solid #2b313a; border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
-.ledger-info { display: flex; flex-direction: column; gap: 4px; }
-.coin-name { font-weight: 700; color: #f0b90b; font-size: 14px; }
-.rate-tag { color: #0ecb81; font-weight: 600; }
-.ledger-status { font-weight: 600; padding: 4px 10px; border-radius: 6px; font-size: 12px; text-align: right; }
-.status-profit { background: rgba(14, 203, 129, 0.15); color: #0ecb81; }
-.status-cancel { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HFT Liquidation Scalper Bot</title>
+    <style>
+        body { background-color: #16181c; color: #b7bdc6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
+        .card { background-color: #20242d; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .header-card { display: flex; justify-content: space-between; align-items: stretch; gap: 10px; }
+        .title-box { flex: 1; }
+        .title { color: #fcd535; font-size: 15px; font-weight: bold; margin: 0; line-height: 1.4; }
+        .status-badge { background-color: #1e3a29; color: #0ecb81; padding: 8px; border-radius: 8px; font-size: 11px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; text-align: center; min-width: 80px; }
+        .status-badge.paused { background-color: #3a1e1e; color: #f6465d; }
+        .label { font-size: 10px; text-transform: uppercase; color: #848e9c; margin-bottom: 4px; font-weight: 600; letter-spacing: 0.5px; }
+        .value { font-size: 16px; font-weight: bold; color: #eaecef; }
+        .text-green { color: #0ecb81; }
+        .text-red { color: #f6465d; }
+        .text-yellow { color: #fcd535; }
+        .coins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .coin-box { background-color: #16181c; border-radius: 8px; padding: 8px; border: 1px solid #2b3139; }
+        .coin-name { font-size: 12px; font-weight: bold; color: #fcd535; display: flex; justify-content: space-between; }
+        .coin-val { font-size: 14px; color: #eaecef; margin-top: 3px; font-weight: bold; }
+        .coin-status { font-size: 10px; margin-top: 3px; font-weight: bold; }
+        .ledger { font-size: 12px; max-height: 180px; overflow-y: auto; line-height: 1.5; }
+        .ledger p { margin: 3px 0; border-bottom: 1px solid #2b3139; padding-bottom: 3px; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #474d57; border-radius: 4px; }
+    </style>
+    <script>
+        async function fetchData() {
+            try {
+                const res = await fetch("/status");
+                const data = await res.json();
+                
+                let statusBox = document.getElementById("status-box");
+                if (data.paused_until > 0) {
+                    let remaining = Math.round(data.paused_until - (Date.now()/1000));
+                    if (remaining > 0) {
+                        statusBox.className = "status-badge paused";
+                        statusBox.innerHTML = `PAUSED<br>${remaining}s left`;
+                    } else {
+                        statusBox.className = "status-badge";
+                        statusBox.innerHTML = `ARMED<br>Running`;
+                    }
+                } else {
+                    statusBox.className = "status-badge";
+                    statusBox.innerHTML = `ARMED<br>Losses: ${data.losses}/5`;
+                }
+                
+                document.getElementById("target-coin").innerText = data.active_coin;
+                document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
+                
+                let coinsHtml = "";
+                for (let [ticker, info] of Object.entries(data.coin_stats)) {
+                    let colorClass = info.status.includes("TRIGGERED") ? "text-green" : (info.status.includes("SKIPPED") || info.status.includes("PAUSED") ? "text-red" : "text-yellow");
+                    coinsHtml += `
+                        <div class="coin-box">
+                            <div class="coin-name"><span>${ticker}</span> <span>${info.time}</span></div>
+                            <div class="coin-val">$${info.price}</div>
+                            <div class="coin-status ${colorClass}">${info.status}</div>
+                        </div>
+                    `;
+                }
+                document.getElementById("coins-grid").innerHTML = coinsHtml;
+                
+                let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
+                document.getElementById("liquidation-feed").innerHTML = scansHtml || "-";
+                
+                let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
+                document.getElementById("ledger").innerHTML = logsHtml;
+            } catch(e) {}
+        }
+        setInterval(fetchData, 1000);
+    </script>
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <h1>⚡ Binance WS-FAPI Funding Engine ($1 Margin + Max 25x Leverage)</h1>
-    <div class="badge" id="ws-status">INITIALIZING</div>
-  </div>
-  <div class="grid">
-    <div class="card"><div class="card-title">Live Target Coin</div><div class="card-value" id="coin">-</div></div>
-    <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color:#0ecb81;">-</div></div>
-    <div class="card"><div class="card-title">Direction</div><div class="card-value" id="direction" style="color:#f0b90b;">--</div></div>
-    <div class="card"><div class="card-title">Entry Target</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:14px;">-</div></div>
-    <div class="card"><div class="card-title">Exit Target</div><div class="card-value" id="exit" style="color:#f6465d; font-size:14px;">-</div></div>
-    <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
-  </div>
-  <div class="section-card">
-    <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">📋 Execution Ledger</div>
-    <div class="ledger-container" id="ledger-box">
-      <div style="color: #848e9c; text-align: center; padding: 20px;">No trades executed yet.</div>
-    </div>
-  </div>
-  <div class="section-card">
-    <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">🖥 System Logs</div>
-    <div id="log-box"></div>
-  </div>
-</div>
-<script>
-async function updateDashboard() {
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    document.getElementById('ws-status').innerText = data.status;
-    document.getElementById('coin').innerText = data.target_symbol;
-    document.getElementById('rate').innerText = data.funding_rate;
-    document.getElementById('direction').innerText = data.action_direction;
-    document.getElementById('entry').innerText = data.entry_target;
-    document.getElementById('exit').innerText = data.exit_target;
-    document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
-    const logBox = document.getElementById('log-box');
-    logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
-    logBox.scrollTop = logBox.scrollHeight;
-    const ledgerBox = document.getElementById('ledger-box');
-    if (data.ledger && data.ledger.length > 0) {
-      ledgerBox.innerHTML = data.ledger.map(item => `
-        <div class="ledger-item">
-          <div class="ledger-info">
-            <div class="coin-name">${item.coin} <span class="rate-tag">(${item.rate})</span></div>
-            <div style="color: #848e9c; font-size: 11px;">Entry Executed: ${item.entry_time} | Exit Closed: ${item.exit_time}</div>
-          </div>
-          <div class="ledger-status ${item.status_class}">${item.status_text}</div>
+    <div class="card header-card">
+        <div class="title-box">
+            <h1 class="title">⚡ Binance WS-FAPI HFT Scalper<br>($0.45 Margin + 20x Leverage)</h1>
         </div>
-      `).join('');
-    }
-  } catch (e) {}
-}
-setInterval(updateDashboard, 1000);
-updateDashboard();
-</script>
+        <div id="status-box" class="status-badge">LOADING...</div>
+    </div>
+    
+    <div class="card">
+        <div class="label">LIVE TARGET COIN (ACTIVE TRADE)</div>
+        <div id="target-coin" class="value text-yellow">NONE</div>
+    </div>
+
+    <div class="card">
+        <div class="label">🪙 ALL COINS LIVE PRICES & LIQUIDATIONS</div>
+        <div id="coins-grid" class="coins-grid"></div>
+    </div>
+
+    <div class="card">
+        <div class="label">📊 RECENT LIQUIDATION EVENTS & ACTIONS</div>
+        <div id="liquidation-feed" class="ledger text-red">-</div>
+    </div>
+
+    <div class="card">
+        <div class="label">CLOCK DRIFT</div>
+        <div id="drift" class="value text-yellow">0.00 ms</div>
+    </div>
+
+    <div class="card">
+        <div class="label">📋 Execution Ledger & Logs</div>
+        <div id="ledger" class="ledger"></div>
+    </div>
 </body>
-</html>"""
+</html>'''
         self.wfile.write(html_content.encode("utf-8"))
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), FundingDashboardHandler)
+    server = HTTPServer(('0.0.0.0', port), BotDashboardHandler)
     server.serve_forever()
 
 def self_ping_worker():
@@ -350,437 +677,27 @@ def self_ping_worker():
     time.sleep(5)
     while True:
         try:
-            session.get(f"http://127.0.0.1:{port}/api/status", timeout=5)
+            session.get(f"http://127.0.0.1:{port}/status", timeout=5)
         except Exception:
             pass
         time.sleep(60)
 
-# Start Web Server and Anti-Sleep Self-Ping in Background Threads
-threading.Thread(target=run_web_server, daemon=True).start()
-threading.Thread(target=self_ping_worker, daemon=True).start()
+# ==========================================
+# INITIALIZATION & BACKGROUND STARTUP
+# ==========================================
+def initialize_bot():
+    add_ui_log("Syncing clock and exchange settings...")
+    sync_binance_clock()
+    for config in COIN_CONFIG.values():
+        set_leverage(config['symbol'])
+    add_ui_log("⚡ HFT Bot initialized successfully. Ready to scan liquidations!")
 
-def get_funding_intervals():
-    intervals = {}
-    try:
-        info = binance_public_get("/fapi/v1/exchangeInfo")
-        for s in info.get("symbols", []):
-            sym = s.get("symbol")
-            fi = s.get("fundingIntervalHours", 8)
-            intervals[sym] = int(fi)
-    except Exception:
-        pass
-    return intervals
-
-def scan_best_funding_opportunity():
-    try:
-        tickers = binance_public_get("/fapi/v1/premiumIndex")
-        if not isinstance(tickers, list):
-            return None
-        intervals = get_funding_intervals()
-    except Exception:
-        return None
-
-    now_ms = int(get_synced_time_ms())
-    candidates_1h, candidates_4h, candidates_8h = [], [], []
-
-    for t in tickers:
-        sym = t.get("symbol", "")
-        if not sym.endswith("USDT"):
-            continue
-        raw_rate = t.get("lastFundingRate", "")
-        raw_next = t.get("nextFundingTime", "")
-        if not raw_rate or not raw_next:
-            continue
-        try:
-            rate = float(raw_rate)
-            next_time_ms = int(raw_next)
-            mark_price = float(t.get("markPrice", 0))
-        except ValueError:
-            continue
-
-        time_diff = next_time_ms - now_ms
-        if 0 < time_diff <= 8 * 3600 * 1000:
-            interval = intervals.get(sym, 8)
-            coin_data = {
-                "symbol": sym,
-                "funding_rate": rate,
-                "next_funding_time": next_time_ms,
-                "last_price": mark_price,
-                "interval": interval
-            }
-            if interval == 1 or time_diff <= 1.5 * 3600 * 1000:
-                candidates_1h.append(coin_data)
-            elif interval == 4 or time_diff <= 4.5 * 3600 * 1000:
-                candidates_4h.append(coin_data)
-            else:
-                candidates_8h.append(coin_data)
-
-    valid_1h = [c for c in candidates_1h if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD]
-    if valid_1h:
-        best = min(valid_1h, key=lambda x: x['funding_rate'])
-        best['window_type'] = '1H'
-        return best
-
-    valid_4h = [c for c in candidates_4h if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD]
-    if valid_4h:
-        best = min(valid_4h, key=lambda x: x['funding_rate'])
-        best['window_type'] = '4H'
-        return best
-
-    valid_8h = [c for c in candidates_8h if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD]
-    if valid_8h:
-        best = min(valid_8h, key=lambda x: x['funding_rate'])
-        best['window_type'] = '8H'
-        return best
-
-    return None
-
-def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
-    target_leverage = 25
-    try:
-        brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
-        if isinstance(brackets, list) and len(brackets) > 0:
-            b_list = brackets[0].get("brackets", [])
-            if b_list:
-                exch_max = max([b.get("initialLeverage", 25) for b in b_list])
-                target_leverage = min(int(exch_max), 25)
-    except Exception:
-        target_leverage = 25
-
-    try:
-        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": target_leverage})
-    except Exception:
-        pass
-
-    step_size = 1.0
-    min_qty = 1.0
-    try:
-        info = binance_public_get("/fapi/v1/exchangeInfo")
-        for s in info.get("symbols", []):
-            if s.get("symbol") == symbol:
-                for f in s.get("filters", []):
-                    if f.get("filterType") == "LOT_SIZE":
-                        step_size = float(f.get("stepSize", "1"))
-                        min_qty = float(f.get("minQty", "1"))
-                        break
-                break
-    except Exception:
-        pass
-
-    step_str = f"{step_size:.8f}".rstrip("0")
-    qty_decimals = len(step_str.split(".")[1]) if "." in step_str else 0
-
-    notional = margin_usd * target_leverage
-    calc_qty = max(min_qty, math.floor((notional / price) / step_size) * step_size)
-    qty_formatted = f"{calc_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_qty))
-
-    return qty_formatted, target_leverage
-
-def delayed_post_settlement_watchdog(symbol, settle_epoch):
-    checks = [
-        (60, "1-MINUTE POST-SETTLEMENT WATCHDOG"),
-        (120, "2-MINUTE POST-SETTLEMENT WATCHDOG")
-    ]
-    for delay_sec, label in checks:
-        target_wake_ms = settle_epoch + (delay_sec * 1000)
-        now_ms = get_synced_time_ms()
-        sleep_dur = (target_wake_ms - now_ms) / 1000.0
-        if sleep_dur > 0:
-            try:
-                time.sleep(sleep_dur)
-                try:
-                    binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
-                except Exception:
-                    pass
-                
-                positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-                active_size = 0.0
-                if isinstance(positions, list):
-                    for p in positions:
-                        if p.get("symbol") == symbol:
-                            active_size = abs(float(p.get("positionAmt", 0)))
-                            break
-                
-                if active_size > 0:
-                    add_ui_log(f"[{label}] Found open position ({active_size} {symbol})! Executing hard market sweep...")
-                    try:
-                        send_ws_fapi_order(symbol, "SELL", str(active_size), reduce_only=True)
-                    except Exception:
-                        binance_signed_request("POST", "/fapi/v1/order", {
-                            "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(active_size), "reduceOnly": "true"
-                        })
-                    add_ui_log(f"[{label}] Successfully flattened {symbol} position.")
-                else:
-                    add_ui_log(f"[{label}] Verified: 0 open position on {symbol} (Clean).")
-            except Exception as e:
-                add_ui_log(f"[{label} Exception]: {e}")
-
-def run_funding_capture_engine():
-    add_ui_log("Binance WS-FAPI Engine Active. Waiting for WS-FAPI connection...")
-
-    start_wait = time.time()
-    while not ws_fapi_ready:
-        if time.time() - start_wait > 25:
-            add_ui_log("⚠️ WS-FAPI startup timeout. Proceeding with REST fallback support...")
-            break
-        time.sleep(0.1)
-
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    threading.Thread(target=run_web_server, daemon=True).start()
+    threading.Thread(target=self_ping_worker, daemon=True).start()
+    threading.Thread(target=initialize_bot, daemon=True).start()
+    
+    # Keep main thread alive
     while True:
-        try:
-            sync_binance_clock()
-            opportunity = scan_best_funding_opportunity()
-
-            if not opportunity:
-                with data_lock:
-                    dashboard_data['target_symbol'] = "Scanning..."
-                    dashboard_data['funding_rate'] = "0.00%"
-                    dashboard_data['action_direction'] = "--"
-                    dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
-                time.sleep(3)
-                continue
-
-            symbol = opportunity['symbol']
-            rate = opportunity['funding_rate']
-            settle_epoch = opportunity['next_funding_time']
-            settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-            rate_percent = f"{rate * 100:+.4f}%"
-            window_type = opportunity['window_type']
-
-            with data_lock:
-                dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
-                dashboard_data['funding_rate'] = rate_percent
-                dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-                dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
-
-            t_rescan_15s = settle_epoch - 15000
-            t_recheck = settle_epoch - 2000
-            t_entry = settle_epoch + 950
-            t_exit = settle_epoch + 8000
-            t_emergency_sweep = settle_epoch + 10000
-
-            entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-            exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-
-            with data_lock:
-                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 950ms)"
-                dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms)"
-                dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
-
-            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+950ms")
-
-            last_scan_time = time.time()
-            interrupted = False
-
-            while True:
-                now_ms = get_synced_time_ms()
-                if now_ms >= t_rescan_15s:
-                    break
-
-                try:
-                    live_info = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
-                    if isinstance(live_info, dict) and "lastFundingRate" in live_info:
-                        current_rate = float(live_info["lastFundingRate"])
-                        current_rate_percent = f"{current_rate * 100:+.4f}%"
-                        
-                        with data_lock:
-                            dashboard_data['funding_rate'] = current_rate_percent
-                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Live Rate: {current_rate_percent}"
-                        
-                        if current_rate > MIN_FUNDING_RATE_THRESHOLD:
-                            add_ui_log(f"⚠️ ABORT ARMED: Funding rate for {symbol} rose to {current_rate_percent}. Rescanning...")
-                            interrupted = True
-                            break
-                except Exception:
-                    pass
-
-                time.sleep(3.0)
-
-                if time.time() - last_scan_time >= 900:
-                    last_scan_time = time.time()
-                    add_ui_log("🔍 Scheduled 15-minute background market rescan...")
-                    sync_binance_clock()
-                    new_opp = scan_best_funding_opportunity()
-
-                    if new_opp:
-                        new_rate_str = f"{new_opp['funding_rate'] * 100:+.4f}%"
-                        if new_opp['symbol'] != symbol:
-                            new_win = new_opp['window_type']
-                            if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
-                                add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_rate_str})")
-                                interrupted = True
-                                break
-                        else:
-                            rate = new_opp['funding_rate']
-                            with data_lock:
-                                dashboard_data['funding_rate'] = new_rate_str
-                                dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {new_rate_str}"
-
-            if interrupted:
-                continue
-
-            # --- PHASE 1: T-15s Fresh Scan & Hot Swap ---
-            precision_wait_until(t_rescan_15s)
-            add_ui_log("⚡ [T-15s FRESH SCAN] Re-evaluating market for best funding coin...")
-            sync_binance_clock()
-            try:
-                tickers_res = binance_public_get("/fapi/v1/premiumIndex")
-                if isinstance(tickers_res, list):
-                    for t in tickers_res:
-                        if t.get("symbol") == opportunity['symbol']:
-                            opportunity['last_price'] = float(t.get("markPrice", opportunity['last_price']))
-                            break
-            except Exception:
-                pass
-
-            # --- PHASE 2: T-2s Final Rate Re-Check ---
-            precision_wait_until(t_recheck)
-            fresh_rate_ok = True
-            try:
-                r_check = binance_public_get("/fapi/v1/premiumIndex", {"symbol": symbol})
-                if isinstance(r_check, dict) and "lastFundingRate" in r_check:
-                    fresh_rate = float(r_check["lastFundingRate"])
-                    fresh_mark = float(r_check.get("markPrice", opportunity['last_price']))
-                    if fresh_rate > MIN_FUNDING_RATE_THRESHOLD:
-                        add_ui_log(f"⚠️ [PRE-ENTRY HARD ABORT] Live rate dropped to {fresh_rate*100:+.4f}%. Cancelling entry!")
-                        fresh_rate_ok = False
-                    else:
-                        rate = fresh_rate
-                        if fresh_mark > 0:
-                            opportunity['last_price'] = fresh_mark
-                        add_ui_log(f"✅ [PRE-ENTRY VERIFIED] Live Rate: {rate*100:+.4f}% | Mark Price: {opportunity['last_price']} USDT")
-            except Exception as e:
-                add_ui_log(f"Pre-Entry Re-check warning: {e}. Keeping existing values.")
-
-            if not fresh_rate_ok:
-                continue
-
-            prepped_qty = "1"
-            try:
-                live_price = opportunity['last_price']
-                prepped_qty, max_lev = set_max_leverage_and_get_qty(symbol, live_price, ENTRY_MARGIN_USD)
-                add_ui_log(f"⚡ Pre-configured leverage and order qty ({prepped_qty}) for {symbol}")
-            except Exception as e:
-                add_ui_log(f"Order prep warning: {e}")
-
-            # --- PHASE 3: T+950ms Market Buy Entry Execution ---
-            precision_wait_until(t_entry)
-            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            order_accepted = False
-
-            try:
-                order_res = send_ws_fapi_order(symbol, "BUY", prepped_qty, reduce_only=False)
-                if order_res and ("orderId" in order_res or order_res.get("status") == 200):
-                    order_accepted = True
-                    add_ui_log(f"🚀 [MARKET BUY ATTEMPT #1 (WebSocket)] Success for {symbol}")
-            except Exception as ws_err:
-                add_ui_log(f"⚠️ [WS Order Failed] ({ws_err}), falling back to REST API...")
-
-            if not order_accepted:
-                try:
-                    order_res = binance_signed_request("POST", "/fapi/v1/order", {
-                        "symbol": symbol, "side": "BUY", "type": "MARKET", "quantity": prepped_qty
-                    })
-                    if order_res and "orderId" in order_res:
-                        order_accepted = True
-                        add_ui_log(f"🚀 [MARKET BUY ATTEMPT #2 (REST API)] Success for {symbol}")
-                except Exception as e:
-                    add_ui_log(f"Entry execution error: {e}")
-
-            if not order_accepted:
-                add_ui_log("❌ [ENTRY ABORT] Market Buy could not be confirmed. Aborting trade safely.")
-                continue
-
-            # --- PHASE 4: T+8s Scheduled Market Exit ---
-            precision_wait_until(t_exit)
-            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-
-            status_text = "EXIT FAILED"
-            status_class = "status-cancel"
-
-            try:
-                positions = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-                pos_qty = 0.0
-                if isinstance(positions, list):
-                    for p in positions:
-                        if p.get("symbol") == symbol:
-                            pos_qty = abs(float(p.get("positionAmt", 0)))
-                            break
-
-                if pos_qty > 0:
-                    exit_success = False
-                    try:
-                        exit_res = send_ws_fapi_order(symbol, "SELL", str(pos_qty), reduce_only=True)
-                        if exit_res and ("orderId" in exit_res or exit_res.get("status") == 200):
-                            exit_success = True
-                            add_ui_log(f"⏰ [WS EXIT SUCCESS] Closed {pos_qty} {symbol} at {exit_time_str}")
-                    except Exception as ws_err:
-                        add_ui_log(f"⚠️ [WS Exit Failed] ({ws_err}), falling back to REST...")
-
-                    if not exit_success:
-                        try:
-                            exit_res = binance_signed_request("POST", "/fapi/v1/order", {
-                                "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(pos_qty), "reduceOnly": "true"
-                            })
-                            if exit_res and "orderId" in exit_res:
-                                exit_success = True
-                                add_ui_log(f"⏰ [REST EXIT SUCCESS] Closed {pos_qty} {symbol} at {exit_time_str}")
-                        except Exception as e:
-                            add_ui_log(f"REST exit error: {e}")
-
-                    if exit_success:
-                        status_text = "HARD EXIT (T+8s)"
-                        status_class = "status-profit"
-                else:
-                    status_text = "NO POSITION"
-                    status_class = "status-cancel"
-            except Exception as e:
-                add_ui_log(f"Hard Exit Execution Error: {e}")
-
-            # --- PHASE 5: Emergency Hard Sweep & Safety Net at T+10s ---
-            try:
-                precision_wait_until(t_emergency_sweep)
-                binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
-                final_pos_check = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
-                final_pos = 0.0
-                if isinstance(final_pos_check, list):
-                    for p in final_pos_check:
-                        if p.get("symbol") == symbol:
-                            final_pos = abs(float(p.get("positionAmt", 0)))
-                            break
-                
-                if final_pos > 0:
-                    add_ui_log(f"🚨 [100% SAFETY NET T+10s] Remnant position found ({final_pos} {symbol}). Hard market closing...")
-                    try:
-                        send_ws_fapi_order(symbol, "SELL", str(final_pos), reduce_only=True)
-                    except Exception:
-                        binance_signed_request("POST", "/fapi/v1/order", {
-                            "symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(final_pos), "reduceOnly": "true"
-                        })
-                    add_ui_log(f"✅ [SAFETY NET] Remnant position successfully flattened.")
-            except Exception as e:
-                add_ui_log(f"Safety net warning: {e}")
-
-            # Launch Background Watchdogs
-            threading.Thread(
-                target=delayed_post_settlement_watchdog,
-                args=(symbol, settle_epoch),
-                daemon=True
-            ).start()
-
-            add_ledger_entry({
-                "coin": f"{symbol} ({window_type})",
-                "rate": f"{rate * 100:+.4f}%",
-                "entry_time": entry_time_str,
-                "exit_time": exit_time_str,
-                "status_text": status_text,
-                "status_class": status_class
-            })
-
-            time.sleep(3)
-
-        except Exception as outer_err:
-            add_ui_log(f"⚠️ Critical Engine Exception Handled: {outer_err}. Restarting loop in 3s...")
-            time.sleep(3)
-
-if __name__ == '__main__':
-    run_funding_capture_engine()
+        time.sleep(1)
