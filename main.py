@@ -326,9 +326,9 @@ async def monitor_multi_liquidations():
                     response = await ws.recv()
                     payload = json.loads(response)
                     
-                    if 'data' in payload:
+                    if 'data' in payload and 'o' in payload['data']:
                         order_data = payload['data']['o']
-                        raw_symbol = order_data['s']
+                        raw_symbol = order_data['s'].upper()  # Guaranteed upper-case matching
                         
                         if raw_symbol in COIN_CONFIG:
                             info = COIN_CONFIG[raw_symbol]
@@ -341,11 +341,10 @@ async def monitor_multi_liquidations():
                             notional = price * qty
                             scan_time = time.strftime('%H:%M:%S')
                             
+                            is_paused = time.time() < trading_paused_until
+                            is_active = active_trades.get(symbol, False)
+                            
                             if side == 'SELL':
-                                is_paused = time.time() < trading_paused_until
-                                is_active = active_trades.get(symbol, False)
-                                
-                                # Determine status why it traded or skipped
                                 if is_paused:
                                     status_desc = "PAUSED (Cooldown)"
                                 elif is_active:
@@ -355,19 +354,21 @@ async def monitor_multi_liquidations():
                                     asyncio.create_task(execute_trade(symbol, price))
                                 else:
                                     status_desc = f"SKIPPED (< ${threshold})"
-                                
-                                # Update live card stats for this specific coin
-                                coin_live_stats[raw_symbol] = {
-                                    'time': scan_time,
-                                    'notional': round(notional, 2),
-                                    'price': price,
-                                    'status': status_desc
-                                }
-                                
-                                add_scan(f"[{scan_time}] {raw_symbol} | ${notional:.0f} @ {price} ➔ {status_desc}")
+                            else:
+                                status_desc = f"BUY LIQ (${notional:.0f})"
+
+                            # Update live card stats for this specific coin
+                            coin_live_stats[raw_symbol] = {
+                                'time': scan_time,
+                                'notional': round(notional, 2),
+                                'price': price,
+                                'status': status_desc
+                            }
+                            
+                            add_scan(f"[{scan_time}] {raw_symbol} ({side}) | ${notional:.0f} @ {price} ➔ {status_desc}")
                                 
         except Exception as e:
-            add_log(f"WS Error. Reconnecting in 3s...")
+            add_log(f"WS Error: {e}. Reconnecting in 3s...")
             await asyncio.sleep(3)
 
 async def update_clock_drift():
