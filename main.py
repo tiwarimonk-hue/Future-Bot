@@ -348,35 +348,53 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             tp_id = tp_res.get("orderId")
             add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.7%)")
         
-        # Short pause (2-3 seconds allowed for robust SL placement)
+        # Short pause for SL placement
         time.sleep(1.0)
         
-        # 2. Place 0.7% Stop Loss Stop-Market Order
+        # 2. Place 0.7% Stop Loss with Fallback Retry Mechanism
         sl_id = None
-        sl_res = binance_signed_request("POST", "/fapi/v1/order", {
-            "symbol": symbol,
-            "side": exit_side,
-            "type": "STOP_MARKET",
-            "quantity": str(amount),
-            "stopPrice": str(sl_price),
-            "workingType": "MARK_PRICE",
-            "reduceOnly": "true"
-        })
-        if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
-            sl_id = sl_res.get("orderId")
-            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.7%)")
-        else:
-            add_ui_log(f"⚠️ [{symbol}] Stop Loss Warning: {sl_res}")
+        try:
+            sl_res = binance_signed_request("POST", "/fapi/v1/order", {
+                "symbol": symbol,
+                "side": exit_side,
+                "type": "STOP_MARKET",
+                "quantity": str(amount),
+                "stopPrice": str(sl_price),
+                "workingType": "MARK_PRICE",
+                "reduceOnly": "true"
+            })
+            if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
+                sl_id = sl_res.get("orderId")
+                add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.7%)")
+            else:
+                # Fallback: Agar standard STOP_MARKET fail ho toh alternative endpoint ya parameters se try karein
+                add_ui_log(f"⚠️ [{symbol}] Standard SL rejected, trying fallback Stop Order...")
+                fallback_res = binance_signed_request("POST", "/fapi/v1/order", {
+                    "symbol": symbol,
+                    "side": exit_side,
+                    "type": "STOP",
+                    "quantity": str(amount),
+                    "price": str(sl_price),
+                    "stopPrice": str(sl_price),
+                    "workingType": "MARK_PRICE",
+                    "reduceOnly": "true"
+                })
+                if fallback_res and isinstance(fallback_res, dict) and "orderId" in fallback_res:
+                    sl_id = fallback_res.get("orderId")
+                    add_ui_log(f"🛑 [{symbol}] Stop Loss Placed via Fallback at {sl_price} (0.7%)")
+                else:
+                    add_ui_log(f"❌ [{symbol}] Fallback Stop Loss Error: {fallback_res}")
+        except Exception as e:
+            add_ui_log(f"⚠️ [{symbol}] Stop Loss Exception Handled: {e}")
             
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 90 seconds (Waiting for TP, SL hit, or timeout)
+        # Monitor trade for 90 seconds (Waiting for TP hit, SL, or timeout)
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             
-            # Check position risk from exchange
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_amt = 0.0
             if isinstance(pos_risk, list):
@@ -385,7 +403,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         pos_amt = float(p.get("positionAmt", 0))
                         break
             
-            # If position amount is 0, trade has been closed (either TP or SL hit)
             if pos_amt == 0:
                 trade_closed = True
                 if tp_id:
@@ -394,9 +411,8 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
-        # If 90 seconds reached and position is still open, force exit and cancel TP/SL
         if not trade_closed:
-            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit & Closing TP/SL.")
+            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit & Closing Orders.")
             cancel_all_orders_rest(symbol)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -505,7 +521,6 @@ def dynamic_market_scanner():
                 if vol < MIN_24H_VOLUME_USD:
                     continue
 
-                # 2-minute strict cooldown check per coin
                 last_trade = coin_last_trade_time.get(sym, 0)
                 if now - last_trade < COIN_COOLDOWN_SECONDS:
                     continue
