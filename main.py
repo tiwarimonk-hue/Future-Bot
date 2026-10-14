@@ -33,10 +33,10 @@ POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $6.0 USD
 
 MIN_24H_VOLUME_USD = 50_000_000  # Minimum $50M liquidity
 THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
-DROP_TIME_WINDOW_SEC = 5         # Updated to 5 seconds
+DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
-TP_PCT = 0.01                    # 1.0% Take Profit (Updated)
-SL_PCT = 0.01                    # 1.0% Stop Loss (Updated)
+TP_PCT = 0.01                    # 1.0% Take Profit
+SL_PCT = 0.01                    # 1.0% Stop Loss
 HOLD_TIME_SECONDS = 30           # Max hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
@@ -44,7 +44,6 @@ COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
 
 MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Stop Losses Limit
 PAUSE_DURATION_SECONDS = 3 * 3600  # 3 Hours pause after 10 consecutive SL hits
-SUCCESS_COOLDOWN_SECONDS = 60 
 
 tp_hits_count = 0
 sl_hits_count = 0
@@ -104,7 +103,8 @@ def binance_signed_request(method, endpoint, params=None):
         params = {}
     try:
         params['timestamp'] = int(get_synced_time_ms())
-        query_string = urllib.parse.urlencode(params)
+        sorted_params = sorted(params.items(), key=lambda x: x[0])
+        query_string = urllib.parse.urlencode(sorted_params)
         signature = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
         full_url = f"{BINANCE_FUTURES_URL}{endpoint}?{query_string}&signature={signature}"
         headers = {"X-MBX-APIKEY": API_KEY}
@@ -214,7 +214,7 @@ def send_ws_fapi_order(symbol, side, quantity, price=None, order_type="MARKET", 
     if reduce_only:
         params["reduceOnly"] = "true"
 
-    sorted_params = sorted(params.items())
+    sorted_params = sorted(params.items(), key=lambda x: x[0])
     query_string = urllib.parse.urlencode(sorted_params)
     signature = hmac.new(
         API_SECRET.encode('utf-8'),
@@ -255,7 +255,8 @@ def cancel_all_ws_orders(symbol):
             "symbol": symbol,
             "timestamp": int(get_synced_time_ms())
         }
-        query_string = urllib.parse.urlencode(sorted(params.items()))
+        sorted_params = sorted(params.items(), key=lambda x: x[0])
+        query_string = urllib.parse.urlencode(sorted_params)
         params["signature"] = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
         
         payload = {"id": req_id, "method": "allOpenOrders.cancel", "params": params}
@@ -435,15 +436,13 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         order_id = order_res.get("orderId")
         time.sleep(0.5)
         
-        # Fetch actual average fill price
         chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
         fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Millisecond TP/SL (1.0%) Verification.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.0% TP and SL.")
         
         d_fill = Decimal(str(fill_price_float))
         
-        # Target TP = 1.0%, Stop Loss = 1.0%
         if trade_side == "BUY":
             tp_raw = d_fill * Decimal("1.01")
             sl_raw = d_fill * Decimal("0.99")
@@ -721,7 +720,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | 5s Window & 1.0% TP/SL)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | TP/SL Cleanup Fixed)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -783,7 +782,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized (5s Pump/Dump Window & 1.0% TP/SL)!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Fixed TP/SL Order Placement & Cleanup!")
     
     while True:
         time.sleep(1)
