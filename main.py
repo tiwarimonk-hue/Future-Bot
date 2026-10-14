@@ -54,6 +54,7 @@ active_trade_symbols = set()
 coin_last_trade_time = {}
 price_history = {}  # symbol -> list of (timestamp, price)
 exchange_info_cache = {}
+open_position_timestamps = {}  # symbol -> open time tracking for watchdog
 
 # Live tracking stats for dashboard
 dashboard_data = {
@@ -242,6 +243,7 @@ def handle_trade_result(symbol, is_win):
     global tp_hits_count, sl_hits_count, consecutive_losses, trading_paused_until
     with data_lock:
         active_trade_symbols.discard(symbol)
+        open_position_timestamps.pop(symbol, None)
         dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
         if is_win:
             tp_hits_count += 1
@@ -309,7 +311,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if chk and isinstance(chk, dict) and "avgPrice" in chk:
             fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.0% TP & SL.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Forcing 1.0% TP & SL placement.")
+        
+        with data_lock:
+            open_position_timestamps[symbol] = time.time()
         
         d_fill = Decimal(str(fill_price_float))
         
@@ -328,7 +333,8 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         tp_id = None
         sl_placed = False
         
-        for attempt in range(5):
+        # Robust Retry Loop to ensure TP and SL both are successfully accepted by Binance
+        for attempt in range(8):
             if not tp_id:
                 tp_res = binance_signed_request("POST", "/fapi/v1/order", {
                     "symbol": symbol,
@@ -341,8 +347,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 })
                 if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
                     tp_id = tp_res.get("orderId")
+                    add_ui_log(f"✅ [{symbol}] TP Successfully Placed at {tp_price}")
                 else:
-                    add_ui_log(f"[{symbol}] TP Attempt {attempt+1} Error: {tp_res}")
+                    add_ui_log(f"⚠️ [{symbol}] TP Retry {attempt+1} Failed: {tp_res}")
             
             if not sl_placed:
                 sl_res = binance_signed_request("POST", "/fapi/v1/order", {
@@ -355,15 +362,29 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 })
                 if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
                     sl_placed = True
+                    add_ui_log(f"✅ [{symbol}] SL Successfully Placed at {sl_price}")
                 else:
-                    add_ui_log(f"[{symbol}] SL Attempt {attempt+1} Error: {sl_res}")
+                    add_ui_log(f"⚠️ [{symbol}] SL Retry {attempt+1} Failed: {sl_res}")
             
             if tp_id and sl_placed:
-                add_ui_log(f"✅ [{symbol}] TP (1.0%) & SL (1.0%) Successfully Active.")
                 break
             
             time.sleep(0.3)
             
+        # SAFETY BACKUP: If either TP or SL failed after all retries, force close immediately to protect capital
+        if not tp_id or not sl_placed:
+            add_ui_log(f"🚨 [{symbol}] CRITICAL: TP or SL missing after retries! Force closing position for absolute safety.")
+            cancel_all_orders_rest(symbol)
+            binance_signed_request("POST", "/fapi/v1/order", {
+                "symbol": symbol,
+                "side": exit_side,
+                "type": "MARKET",
+                "quantity": str(amount),
+                "reduceOnly": "true"
+            })
+            handle_trade_result(symbol, False)
+            return
+
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
@@ -416,7 +437,43 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         cancel_all_orders_rest(symbol)
         with data_lock:
             active_trade_symbols.discard(symbol)
+            open_position_timestamps.pop(symbol, None)
             dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
+
+# ==========================================
+# GLOBAL POSITION GUARDIAN (WATCHDOG THREAD)
+# ==========================================
+def position_guardian_worker():
+    time.sleep(10)
+    while True:
+        try:
+            pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk")
+            if isinstance(pos_risk, list):
+                now = time.time()
+                for p in pos_risk:
+                    amt = float(p.get("positionAmt", 0))
+                    sym = p.get("symbol")
+                    if amt != 0 and sym:
+                        with data_lock:
+                            open_time = open_position_timestamps.get(sym, 0)
+                        
+                        if open_time > 0 and (now - open_time) > 35:
+                            add_ui_log(f"🛡️ WATCHDOG: [{sym}] Position stuck past 35s limit! Forcing immediate exit.")
+                            cancel_all_orders_rest(sym)
+                            exit_side = "SELL" if amt > 0 else "BUY"
+                            binance_signed_request("POST", "/fapi/v1/order", {
+                                "symbol": sym,
+                                "side": exit_side,
+                                "type": "MARKET",
+                                "quantity": str(abs(amt)),
+                                "reduceOnly": "true"
+                            })
+                            handle_trade_result(sym, False)
+        except Exception:
+            pass
+        time.sleep(2)
+
+threading.Thread(target=position_guardian_worker, daemon=True).start()
 
 # ==========================================
 # DYNAMIC MARKET SCANNER (5-SEC WINDOW)
@@ -601,7 +658,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | SL Error Tracking Fixed)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | TP/SL Retry Fix Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -663,7 +720,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Robust TP & SL Execution Logs!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Enhanced TP/SL Retry Mechanism!")
     
     while True:
         time.sleep(1)
