@@ -35,6 +35,7 @@ THRESHOLD_PCT = 0.008            # 0.8% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
 TP_PCT = 0.015                   # 1.5% Take Profit
+SL_PCT = 0.008                   # 0.8% Real Stop Loss
 HOLD_TIME_SECONDS = 90           # 90 seconds exact hold timeout
 
 MAX_CONCURRENT_TRADES = 1        # Strict max 1 trade limit
@@ -44,6 +45,7 @@ MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Losses Limit
 PAUSE_DURATION_SECONDS = 3 * 3600  # 3 Hours pause after 10 losses
 
 tp_hits_count = 0
+sl_hits_count = 0
 timeout_exits_count = 0
 consecutive_losses = 0
 trading_paused_until = 0
@@ -60,6 +62,7 @@ dashboard_data = {
     "status": "INITIALIZING...",
     "active_trades_count": 0,
     "tp_hits": 0,
+    "sl_hits": 0,
     "timeout_exits": 0,
     "losses": 0,
     "paused_until": 0,
@@ -251,27 +254,32 @@ def get_active_positions_count_from_exchange():
         pass
     return len(active_trade_symbols)
 
-def handle_trade_result(symbol, is_win):
-    global tp_hits_count, timeout_exits_count, consecutive_losses, trading_paused_until
+def handle_trade_result(symbol, result_type):
+    global tp_hits_count, sl_hits_count, timeout_exits_count, consecutive_losses, trading_paused_until
     with data_lock:
         active_trade_symbols.discard(symbol)
         open_position_timestamps.pop(symbol, None)
         dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
-        if is_win:
+        
+        if result_type == "TP":
             tp_hits_count += 1
             consecutive_losses = 0
             dashboard_data['tp_hits'] = tp_hits_count
             dashboard_data['losses'] = consecutive_losses
+            add_ui_log(f"✅ [{symbol}] Trade WON (1.5% TP Hit)! Total TP: {tp_hits_count}")
+        elif result_type == "SL":
+            sl_hits_count += 1
+            consecutive_losses += 1
+            dashboard_data['sl_hits'] = sl_hits_count
+            dashboard_data['losses'] = consecutive_losses
+            add_ui_log(f"🛑 [{symbol}] STOP LOSS HIT (0.8% SL Triggered)! Losses: {consecutive_losses}/10")
         else:
             timeout_exits_count += 1
             consecutive_losses += 1
             dashboard_data['timeout_exits'] = timeout_exits_count
             dashboard_data['losses'] = consecutive_losses
-    
-    if is_win:
-        add_ui_log(f"✅ [{symbol}] Trade WON (1.5% TP Hit)! Total TP: {tp_hits_count}")
-    else:
-        add_ui_log(f"❌ [{symbol}] Trade TIMEOUT (90s Hard Exit)! Losses: {consecutive_losses}/10")
+            add_ui_log(f"❌ [{symbol}] Trade TIMEOUT (90s Hard Exit)! Losses: {consecutive_losses}/10")
+        
         if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
             add_ui_log("🚨 10 Losses! 3-Hour PAUSE triggered.")
@@ -325,24 +333,28 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             except ValueError:
                 pass
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.5% TP order.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing TP & SL orders.")
         
         with data_lock:
             open_position_timestamps[symbol] = time.time()
         
         d_fill = Decimal(str(fill_price_float))
         d_tp_pct = Decimal(str(TP_PCT))
+        d_sl_pct = Decimal(str(SL_PCT))
 
         if trade_side == "BUY":
             tp_raw = d_fill * (Decimal("1") + d_tp_pct)
+            sl_raw = d_fill * (Decimal("1") - d_sl_pct)
             exit_side = "SELL"
         else:
             tp_raw = d_fill * (Decimal("1") - d_tp_pct)
+            sl_raw = d_fill * (Decimal("1") + d_sl_pct)
             exit_side = "BUY"
         
         tp_price = format_price(tp_raw, tick_size)
+        sl_price = format_price(sl_raw, tick_size)
         
-        # Place 1.5% Take Profit Limit Order
+        # 1. Place Take Profit Limit Order (1.5%)
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -356,12 +368,29 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
             tp_id = tp_res.get("orderId")
             add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (1.5%)")
+
+        time.sleep(0.2)
+
+        # 2. Place Real Stop Loss Order (0.8%)
+        sl_id = None
+        sl_res = binance_signed_request("POST", "/fapi/v1/order", {
+            "symbol": symbol,
+            "side": exit_side,
+            "type": "STOP_MARKET",
+            "quantity": str(amount),
+            "stopPrice": str(sl_price),
+            "workingType": "MARK_PRICE",
+            "reduceOnly": "true"
+        })
+        if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
+            sl_id = sl_res.get("orderId")
+            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.8%)")
         
-        is_win = False
+        result_type = "TIMEOUT"
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 90 seconds (Waiting for TP hit or 90s timeout)
+        # Monitor trade for 90 seconds (Waiting for TP/SL hit or 90s timeout)
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(1.0)
             
@@ -381,11 +410,15 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 if tp_id:
                     tp_check = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": tp_id})
                     if isinstance(tp_check, dict) and tp_check.get("status") == "FILLED":
-                        is_win = True
+                        result_type = "TP"
+                if sl_id and result_type != "TP":
+                    sl_check = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": sl_id})
+                    if isinstance(sl_check, dict) and sl_check.get("status") == "FILLED":
+                        result_type = "SL"
                 break
         
         if not trade_closed:
-            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit & Closing TP.")
+            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit.")
             cancel_all_orders_rest(symbol)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -407,10 +440,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                     "quantity": str(abs(current_amt)),
                     "reduceOnly": "true"
                 })
-            is_win = False
+            result_type = "TIMEOUT"
         
         cancel_all_orders_rest(symbol)
-        handle_trade_result(symbol, is_win)
+        handle_trade_result(symbol, result_type)
 
     except Exception as e:
         add_ui_log(f"[{symbol}] Trade Error: {e}")
@@ -451,7 +484,7 @@ def position_guardian_worker():
                                 "quantity": str(abs(amt)),
                                 "reduceOnly": "true"
                             })
-                            handle_trade_result(sym, False)
+                            handle_trade_result(sym, "TIMEOUT")
         except Exception:
             pass
         time.sleep(10)
@@ -628,6 +661,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 
                 document.getElementById("active-trades").innerText = data.active_trades_count + " / 1 Max";
                 document.getElementById("tp-count").innerText = data.tp_hits;
+                document.getElementById("sl-count").innerText = data.sl_hits || 0;
                 document.getElementById("timeout-count").innerText = data.timeout_exits;
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
@@ -644,7 +678,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance REST Polling Scalper Bot<br>($0.35 Margin + 20x | 0.8% & 1 Max Trade & 90s Hold)</h1>
+            <h1 class="title">⚡ Binance REST Polling Scalper Bot<br>($0.35 Margin + 20x | Real SL & 1 Max Trade & 90s Hold)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -660,8 +694,12 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 <div id="tp-count" class="value text-green">0</div>
             </div>
             <div class="stats-box">
+                <div class="label">Total SL Hits (0.8%)</div>
+                <div id="sl-count" class="value text-red">0</div>
+            </div>
+            <div class="stats-box">
                 <div class="label">Timeout Exits (90s)</div>
-                <div id="timeout-count" class="value text-red">0</div>
+                <div id="timeout-count" class="value text-yellow">0</div>
             </div>
         </div>
     </div>
@@ -677,7 +715,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">📋 Execution Ledger & Logs (TP / Timeout Tracker)</div>
+        <div class="label">📋 Execution Ledger & Logs (TP / SL / Timeout Tracker)</div>
         <div id="ledger" class="ledger"></div>
     </div>
 </body>
@@ -706,7 +744,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance REST Polling Scalper Bot initialized successfully!")
+    add_ui_log("⚡ Binance REST Polling Scalper Bot initialized successfully with Real Stop Loss!")
     
     while True:
         time.sleep(1)
