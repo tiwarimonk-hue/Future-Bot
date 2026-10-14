@@ -364,36 +364,22 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         time.sleep(1.0)
         
-        # 2. Place 0.7% Stop Loss using Binance Algo Order endpoint (/fapi/v1/algo/order) to fix error -4120
+        # 2. Place 0.7% Stop Loss Order using STOP_MARKET with closePosition=true & priceProtect=true (Permanent Fix for -4120)
         sl_id = None
-        sl_res = binance_signed_request("POST", "/fapi/v1/algo/order", {
+        sl_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
             "side": exit_side,
             "type": "STOP_MARKET",
-            "quantity": str(amount),
             "stopPrice": str(sl_price),
             "workingType": "MARK_PRICE",
-            "reduceOnly": "true"
+            "closePosition": "true",
+            "priceProtect": "true"
         })
-        if sl_res and isinstance(sl_res, dict) and ("orderId" in sl_res or "algoId" in sl_res or "code" not in sl_res):
-            sl_id = sl_res.get("orderId") or sl_res.get("algoId")
-            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed via Algo API at {sl_price} (0.7%)")
+        if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
+            sl_id = sl_res.get("orderId")
+            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed Successfully at {sl_price} (0.7%)")
         else:
-            # Fallback agar algo endpoint me bhi koi issue aaye toh standard STOP_MARKET try karega
-            sl_res_fallback = binance_signed_request("POST", "/fapi/v1/order", {
-                "symbol": symbol,
-                "side": exit_side,
-                "type": "STOP_MARKET",
-                "quantity": str(amount),
-                "stopPrice": str(sl_price),
-                "workingType": "MARK_PRICE",
-                "reduceOnly": "true"
-            })
-            if sl_res_fallback and isinstance(sl_res_fallback, dict) and "orderId" in sl_res_fallback:
-                sl_id = sl_res_fallback.get("orderId")
-                add_ui_log(f"🛑 [{symbol}] Stop Loss Placed (Fallback) at {sl_price} (0.7%)")
-            else:
-                add_ui_log(f"⚠️ [{symbol}] Stop Loss Warning: {sl_res_fallback}")
+            add_ui_log(f"⚠️ [{symbol}] Stop Loss Warning: {sl_res}")
             
         is_win = False
         trade_closed = False
