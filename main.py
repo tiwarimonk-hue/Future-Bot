@@ -26,7 +26,7 @@ data_lock = threading.Lock()
 session = requests.Session()
 
 # --- STRATEGY & RISK SETTINGS ---
-TRADE_MARGIN_USD = 0.35          # Updated to $0.35 ($7.0 position size) to prevent -4164 error
+TRADE_MARGIN_USD = 0.35  
 LEVERAGE = 20
 POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $7.0 USD
 
@@ -267,8 +267,8 @@ def handle_trade_result(symbol, is_win):
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
+        # Silent validation check: agar valid nahi hai toh bina log ke chupchaap return ho jao
         if not validate_coin_for_trading(symbol):
-            add_ui_log(f"[{symbol}] Skipped: Does not meet requirements.")
             with data_lock:
                 active_trade_symbols.discard(symbol)
                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
@@ -283,11 +283,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         d_entry = Decimal(str(entry_price))
         raw_qty = d_pos_size / d_entry
         
-        # Safety check: Ensure notional is at least 5.2 USDT to prevent -4164 error
-        min_required_notional = Decimal("5.2")
-        if (raw_qty * d_entry) < min_required_notional:
-            raw_qty = min_required_notional / d_entry
-
         calc_qty = max(min_qty, raw_qty)
         amount = format_qty(calc_qty, step_size)
         
@@ -651,7 +646,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | Notional & -4164 Fixed)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | Clean Logs Enabled)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -713,7 +708,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Notional Fix & 0.5% TP/SL!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Clean Logs!")
     
     while True:
         time.sleep(1)
