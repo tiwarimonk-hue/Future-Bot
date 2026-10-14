@@ -35,7 +35,8 @@ THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
 TP_PCT = 0.007                   # 0.7% Take Profit
-HOLD_TIME_SECONDS = 20           # 20 seconds exact hold timeout
+SL_PCT = 0.007                   # 0.7% Stop Loss
+HOLD_TIME_SECONDS = 90           # 90 seconds exact hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes strict cooldown per coin
@@ -260,7 +261,7 @@ def handle_trade_result(symbol, is_win):
     if is_win:
         add_ui_log(f"✅ [{symbol}] Trade WON (0.7% TP Hit)! Total TP: {tp_hits_count}")
     else:
-        add_ui_log(f"❌ [{symbol}] Trade CLOSED (20s Timeout Reached)! Losses: {consecutive_losses}/10")
+        add_ui_log(f"❌ [{symbol}] Trade CLOSED (SL Hit or 90s Timeout)! Losses: {consecutive_losses}/10")
         if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
             add_ui_log("🚨 10 Losses! 3-Hour PAUSE triggered.")
@@ -311,24 +312,28 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if chk and isinstance(chk, dict) and "avgPrice" in chk:
             fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 0.7% TP & starting 20s timer.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing TP & SL orders.")
         
         with data_lock:
             open_position_timestamps[symbol] = time.time()
         
         d_fill = Decimal(str(fill_price_float))
         d_tp_pct = Decimal(str(TP_PCT))
+        d_sl_pct = Decimal(str(SL_PCT))
 
         if trade_side == "BUY":
             tp_raw = d_fill * (Decimal("1") + d_tp_pct)
+            sl_raw = d_fill * (Decimal("1") - d_sl_pct)
             exit_side = "SELL"
         else:
             tp_raw = d_fill * (Decimal("1") - d_tp_pct)
+            sl_raw = d_fill * (Decimal("1") + d_sl_pct)
             exit_side = "BUY"
         
         tp_price = format_price(tp_raw, tick_size)
+        sl_price = format_price(sl_raw, tick_size)
         
-        # Place 0.7% Take Profit Limit Order
+        # 1. Place 0.7% Take Profit Limit Order
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -342,12 +347,32 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
             tp_id = tp_res.get("orderId")
             add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.7%)")
+        
+        # Short pause (2-3 seconds allowed for robust SL placement)
+        time.sleep(1.0)
+        
+        # 2. Place 0.7% Stop Loss Stop-Market Order
+        sl_id = None
+        sl_res = binance_signed_request("POST", "/fapi/v1/order", {
+            "symbol": symbol,
+            "side": exit_side,
+            "type": "STOP_MARKET",
+            "quantity": str(amount),
+            "stopPrice": str(sl_price),
+            "workingType": "MARK_PRICE",
+            "reduceOnly": "true"
+        })
+        if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
+            sl_id = sl_res.get("orderId")
+            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.7%)")
+        else:
+            add_ui_log(f"⚠️ [{symbol}] Stop Loss Warning: {sl_res}")
             
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for exact 20 seconds (Waiting for TP hit or timeout)
+        # Monitor trade for 90 seconds (Waiting for TP, SL hit, or timeout)
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             
@@ -360,7 +385,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         pos_amt = float(p.get("positionAmt", 0))
                         break
             
-            # If position amount is 0, it means TP was hit successfully
+            # If position amount is 0, trade has been closed (either TP or SL hit)
             if pos_amt == 0:
                 trade_closed = True
                 if tp_id:
@@ -369,9 +394,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
-        # If 20 seconds reached and position is still open, force exit and cancel TP
+        # If 90 seconds reached and position is still open, force exit and cancel TP/SL
         if not trade_closed:
-            add_ui_log(f"🔴 [{symbol}] 20s Hold time reached! Force Market Exit & Closing TP.")
+            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit & Closing TP/SL.")
             cancel_all_orders_rest(symbol)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -420,8 +445,8 @@ def position_guardian_worker():
                         with data_lock:
                             open_time = open_position_timestamps.get(sym, 0)
                         
-                        if open_time > 0 and (now - open_time) > 25:
-                            add_ui_log(f"🛡️ WATCHDOG: [{sym}] Position stuck past 25s limit! Forcing immediate exit.")
+                        if open_time > 0 and (now - open_time) > 105:
+                            add_ui_log(f"🛡️ WATCHDOG: [{sym}] Position stuck past 105s limit! Forcing immediate exit.")
                             cancel_all_orders_rest(sym)
                             exit_side = "SELL" if amt > 0 else "BUY"
                             binance_signed_request("POST", "/fapi/v1/order", {
