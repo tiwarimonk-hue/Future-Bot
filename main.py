@@ -94,8 +94,11 @@ def binance_public_get(endpoint, params=None):
         resp = session.get(url, params=params, timeout=5)
         if resp.status_code == 200:
             return resp.json()
+        elif resp.status_code == 429 or resp.status_code == 418:
+            add_ui_log(f"⚠️ Rate limit hit (HTTP {resp.status_code}) on {endpoint}. Sleeping 5s...")
+            time.sleep(5)
     except Exception as e:
-        add_ui_log(f"Public GET Error [{endpoint}]: {e}")
+        pass
     return {}
 
 def binance_signed_request(method, endpoint, params=None):
@@ -117,11 +120,15 @@ def binance_signed_request(method, endpoint, params=None):
             resp = session.delete(full_url, headers=headers, timeout=5)
         
         data = resp.json()
-        if isinstance(data, dict) and "code" in data and data["code"] < 0:
-            add_ui_log(f"⚠️ Binance API Error [{endpoint}]: {data}")
+        if isinstance(data, dict) and "code" in data:
+            if data["code"] < 0:
+                add_ui_log(f"⚠️ Binance API Error [{endpoint}]: {data}")
+                if data["code"] == -1003:
+                    add_ui_log("🚨 IP Rate Limited (-1003). Sleeping for 15 seconds...")
+                    time.sleep(15)
         return data
     except Exception as e:
-        add_ui_log(f"Signed Request Exception [{endpoint}]: {e}")
+        pass
     return {}
 
 def sync_binance_clock():
@@ -137,8 +144,8 @@ def sync_binance_clock():
             clock_offset_ms = estimated_server_time - t_recv
             with data_lock:
                 dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
-    except Exception as e:
-        add_ui_log(f"Clock Sync Error: {e}")
+    except Exception:
+        pass
 
 def get_synced_time_ms():
     return (time.time() * 1000) + clock_offset_ms
@@ -146,19 +153,17 @@ def get_synced_time_ms():
 def cancel_all_orders_rest(symbol):
     try:
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
-    except Exception as e:
-        add_ui_log(f"Cancel Orders Error [{symbol}]: {e}")
+    except Exception:
+        pass
 
 # ==========================================
 # TRADING EXECUTION & STRICT VALIDATION
 # ==========================================
 def set_leverage(symbol):
     try:
-        res = binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
-        if isinstance(res, dict) and "leverage" in res:
-            add_ui_log(f"⚙️ [{symbol}] Leverage set to {LEVERAGE}x successfully.")
-    except Exception as e:
-        add_ui_log(f"Leverage Error [{symbol}]: {e}")
+        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
+    except Exception:
+        pass
 
 def validate_coin_for_trading(symbol):
     try:
@@ -167,7 +172,6 @@ def validate_coin_for_trading(symbol):
             for s in info["symbols"]:
                 if s.get("symbol") == symbol:
                     if s.get("status") != "TRADING":
-                        add_ui_log(f"⚠️ [{symbol}] Skipped: Status is not TRADING.")
                         return False
                     max_lev = 20
                     min_notional = 5.0
@@ -176,12 +180,11 @@ def validate_coin_for_trading(symbol):
                             max_lev = int(f.get("maxLeverage", 20))
                         elif f.get("filterType") == "MIN_NOTIONAL":
                             min_notional = float(f.get("notional", 5.0))
-                    if max_lev < LEVERAGE:
-                        add_ui_log(f"⚠️ [{symbol}] Skipped: Max leverage {max_lev} < required {LEVERAGE}.")
+                    if max_lev < LEVERAGE or min_notional > 5.0:
                         return False
                     return True
-    except Exception as e:
-        add_ui_log(f"Validation Error [{symbol}]: {e}")
+    except Exception:
+        pass
     return False
 
 def fetch_symbol_precision(symbol):
@@ -206,8 +209,8 @@ def fetch_symbol_precision(symbol):
                     res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
                     exchange_info_cache[symbol] = res
                     return res
-    except Exception as e:
-        add_ui_log(f"Precision Fetch Error [{symbol}]: {e}")
+    except Exception:
+        pass
     return Decimal("0.01"), Decimal("0.01"), Decimal("0.01")
 
 def format_price(price, tick_size):
@@ -241,8 +244,11 @@ def get_active_positions_count_from_exchange():
         if isinstance(pos_risk, list):
             count = 0
             for p in pos_risk:
-                if float(p.get("positionAmt", 0)) != 0:
-                    count += 1
+                try:
+                    if float(p.get("positionAmt", 0)) != 0:
+                        count += 1
+                except ValueError:
+                    pass
             return count
     except Exception:
         pass
@@ -276,9 +282,7 @@ def handle_trade_result(symbol, is_win):
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
-        add_ui_log(f"🔍 [{symbol}] Validating coin for trading...")
         if not validate_coin_for_trading(symbol):
-            add_ui_log(f"❌ [{symbol}] Coin validation failed. Aborting trade.")
             with data_lock:
                 active_trade_symbols.discard(symbol)
                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
@@ -306,7 +310,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         })
         
         if not order_res or not isinstance(order_res, dict) or "orderId" not in order_res:
-            add_ui_log(f"❌ [{symbol}] Market Order Failed completely: {order_res}")
+            add_ui_log(f"[{symbol}] Market Order Failed: {order_res}")
             cancel_all_orders_rest(symbol)
             with data_lock:
                 active_trade_symbols.discard(symbol)
@@ -359,8 +363,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
             tp_id = tp_res.get("orderId")
             add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.7%)")
-        else:
-            add_ui_log(f"⚠️ [{symbol}] Take Profit Warning: {tp_res}")
         
         time.sleep(1.0)
         
@@ -387,7 +389,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         # Monitor trade for 90 seconds (Waiting for TP, SL hit, or timeout)
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
-            time.sleep(0.5)
+            time.sleep(1.0)  # Increased sleep to reduce API calls
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_amt = 0.0
@@ -437,7 +439,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         handle_trade_result(symbol, is_win)
 
     except Exception as e:
-        add_ui_log(f"[{symbol}] Trade Exception Error: {e}")
+        add_ui_log(f"[{symbol}] Trade Error: {e}")
         cancel_all_orders_rest(symbol)
         with data_lock:
             active_trade_symbols.discard(symbol)
@@ -448,7 +450,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
 # GLOBAL POSITION GUARDIAN (WATCHDOG THREAD)
 # ==========================================
 def position_guardian_worker():
-    time.sleep(10)
+    time.sleep(15)
     while True:
         try:
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk")
@@ -478,7 +480,7 @@ def position_guardian_worker():
                             handle_trade_result(sym, False)
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(10)  # Increased check interval to prevent rate limit
 
 threading.Thread(target=position_guardian_worker, daemon=True).start()
 
@@ -492,6 +494,11 @@ def dynamic_market_scanner():
     while True:
         try:
             if time.time() < trading_paused_until:
+                time.sleep(5)
+                continue
+
+            tickers = binance_public_get("/fapi/v1/ticker/24hr")
+            if not isinstance(tickers, list):
                 time.sleep(3)
                 continue
 
@@ -500,11 +507,6 @@ def dynamic_market_scanner():
                 dashboard_data['active_trades_count'] = current_active_count
 
             if current_active_count >= MAX_CONCURRENT_TRADES:
-                time.sleep(1)
-                continue
-
-            tickers = binance_public_get("/fapi/v1/ticker/24hr")
-            if not isinstance(tickers, list):
                 time.sleep(2)
                 continue
 
@@ -568,10 +570,10 @@ def dynamic_market_scanner():
                             add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} {move_type} {move_display} in 5s! Triggering {trade_side}.")
                             threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
 
-        except Exception as e:
-            add_ui_log(f"Scanner Loop Error: {e}")
+        except Exception:
+            pass
 
-        time.sleep(1)
+        time.sleep(2)  # Added 2 seconds delay between scan loops to avoid rate limits
 
 threading.Thread(target=dynamic_market_scanner, daemon=True).start()
 
