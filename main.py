@@ -26,17 +26,17 @@ data_lock = threading.Lock()
 session = requests.Session()
 
 # --- STRATEGY & RISK SETTINGS ---
-TRADE_MARGIN_USD = 0.30  
+TRADE_MARGIN_USD = 0.35          # Updated to $0.35 ($7.0 position size) to prevent -4164 error
 LEVERAGE = 20
-POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $6.0 USD
+POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $7.0 USD
 
 MIN_24H_VOLUME_USD = 50_000_000  # Minimum $50M liquidity
 THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
-TP_PCT = 0.01                    # 1.0% Take Profit
-SL_PCT = 0.01                    # 1.0% Stop Loss
-HOLD_TIME_SECONDS = 20           # Updated: Max hold timeout to 20 seconds
+TP_PCT = 0.005                   # 0.5% Take Profit
+SL_PCT = 0.005                   # 0.5% Stop Loss
+HOLD_TIME_SECONDS = 20           # 20 seconds hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
@@ -257,9 +257,9 @@ def handle_trade_result(symbol, is_win):
             dashboard_data['losses'] = consecutive_losses
     
     if is_win:
-        add_ui_log(f"✅ [{symbol}] Trade WON (TP Hit)! Total TP: {tp_hits_count}")
+        add_ui_log(f"✅ [{symbol}] Trade WON (0.5% TP Hit)! Total TP: {tp_hits_count}")
     else:
-        add_ui_log(f"❌ [{symbol}] Trade LOST (SL Hit / Timeout)! Losses: {consecutive_losses}/10")
+        add_ui_log(f"❌ [{symbol}] Trade LOST (0.5% SL / 20s Timeout)! Losses: {consecutive_losses}/10")
         if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
             add_ui_log("🚨 10 Consecutive Stop Losses! 3-Hour PAUSE triggered.")
@@ -282,6 +282,12 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         d_pos_size = Decimal(str(POSITION_SIZE_USD))
         d_entry = Decimal(str(entry_price))
         raw_qty = d_pos_size / d_entry
+        
+        # Safety check: Ensure notional is at least 5.2 USDT to prevent -4164 error
+        min_required_notional = Decimal("5.2")
+        if (raw_qty * d_entry) < min_required_notional:
+            raw_qty = min_required_notional / d_entry
+
         calc_qty = max(min_qty, raw_qty)
         amount = format_qty(calc_qty, step_size)
         
@@ -311,25 +317,27 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if chk and isinstance(chk, dict) and "avgPrice" in chk:
             fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Setting up TP & Internal SL.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Setting up 0.5% TP & SL.")
         
         with data_lock:
             open_position_timestamps[symbol] = time.time()
         
         d_fill = Decimal(str(fill_price_float))
-        
+        d_tp_pct = Decimal(str(TP_PCT))
+        d_sl_pct = Decimal(str(SL_PCT))
+
         if trade_side == "BUY":
-            tp_raw = d_fill * Decimal("1.01")
-            sl_price_target = float(d_fill * Decimal("0.99"))
+            tp_raw = d_fill * (Decimal("1") + d_tp_pct)
+            sl_price_target = float(d_fill * (Decimal("1") - d_sl_pct))
             exit_side = "SELL"
         else:
-            tp_raw = d_fill * Decimal("0.99")
-            sl_price_target = float(d_fill * Decimal("1.01"))
+            tp_raw = d_fill * (Decimal("1") - d_tp_pct)
+            sl_price_target = float(d_fill * (Decimal("1") + d_sl_pct))
             exit_side = "BUY"
         
         tp_price = format_price(tp_raw, tick_size)
         
-        # Place Take Profit Limit Order
+        # Place 0.5% Take Profit Limit Order
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -342,13 +350,13 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         })
         if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
             tp_id = tp_res.get("orderId")
-            add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price}")
+            add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.5%)")
             
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 20 seconds with internal Stop Loss & TP check
+        # Monitor trade for 20 seconds with internal 0.5% Stop Loss & TP check
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             
@@ -362,7 +370,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 sl_triggered = True
                 
             if sl_triggered:
-                add_ui_log(f"❌ [{symbol}] Internal Stop Loss Hit at price {current_price}! Closing position.")
+                add_ui_log(f"❌ [{symbol}] Internal Stop Loss Hit at {current_price} (0.5%)! Closing position.")
                 cancel_all_orders_rest(symbol)
                 binance_signed_request("POST", "/fapi/v1/order", {
                     "symbol": symbol,
@@ -442,7 +450,6 @@ def position_guardian_worker():
                         with data_lock:
                             open_time = open_position_timestamps.get(sym, 0)
                         
-                        # Watchdog timeout updated to 25s (slightly above 20s hold limit)
                         if open_time > 0 and (now - open_time) > 25:
                             add_ui_log(f"🛡️ WATCHDOG: [{sym}] Position stuck past 25s limit! Forcing immediate exit.")
                             cancel_all_orders_rest(sym)
@@ -644,7 +651,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | 20s Timeout Active)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | Notional & -4164 Fixed)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -706,7 +713,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with 20s Hold Limit & Watchdog Active!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Notional Fix & 0.5% TP/SL!")
     
     while True:
         time.sleep(1)
