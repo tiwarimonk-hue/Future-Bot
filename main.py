@@ -480,16 +480,15 @@ def dynamic_market_scanner():
             with data_lock:
                 dashboard_data['active_trades_count'] = current_active_count
 
-            # Agar already ek trade chal rahi hai, toh naye signals ko turant skip karo (No queueing)
+            # Agar already ek trade chal rahi hai, toh naye signals ko turant skip karo
             if current_active_count >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
-                price_history.clear()  # Purani history clear kar do taaki queueing ya stale signals accumulate na hon
+                price_history.clear()
                 time.sleep(1)
                 continue
 
             now = time.time()
 
             for t in tickers:
-                # Live loop ke andar firse check karo taaki iteration ke beech mein position khulne par turant break ho sake
                 if get_active_positions_count_from_exchange() >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
                     break
 
@@ -542,7 +541,7 @@ def dynamic_market_scanner():
                             move_display = f"{pct_change*100:.2f}%"
                             add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} {move_type} {move_display} in 5s! Triggering {trade_side}.")
                             threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
-                            break  # Ek trade trigger hote hi loop break kardo taaki aur signals process na ho
+                            break
 
         except Exception:
             pass
@@ -666,7 +665,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">📊 LIVE PUMP/DUMP RADAR (0.8% / 5s Fresh Only)</div>
+        <div class="label">📊 LIVE PUMP/DUMP RADAR (0.8% / 5s FRESH ONLY)</div>
         <div id="radar-feed" class="ledger text-yellow" style="max-height: 140px; overflow-y: auto;">-</div>
     </div>
 
