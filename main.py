@@ -8,6 +8,7 @@ import uuid
 import threading
 import urllib.parse
 import requests
+import websocket
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -459,97 +460,127 @@ def position_guardian_worker():
 threading.Thread(target=position_guardian_worker, daemon=True).start()
 
 # ==========================================
-# DYNAMIC MARKET SCANNER (RATE-LIMIT PROOF)
+# WEBSOCKET REAL-TIME MARKET STREAM
 # ==========================================
-def dynamic_market_scanner():
-    global active_trade_symbols
-    add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 0.8% Trend-Following | Max 1 Trade | Fresh Only)...")
-    
-    while True:
-        try:
-            if time.time() < trading_paused_until:
-                time.sleep(5)
-                continue
+def on_message(ws, message):
+    try:
+        if time.time() < trading_paused_until:
+            return
 
-            tickers = binance_public_get("/fapi/v1/ticker/24hr")
-            if not isinstance(tickers, list):
-                time.sleep(5)
-                continue
+        current_active_count = get_active_positions_count_from_exchange()
+        with data_lock:
+            dashboard_data['active_trades_count'] = current_active_count
 
-            current_active_count = get_active_positions_count_from_exchange()
-            with data_lock:
-                dashboard_data['active_trades_count'] = current_active_count
+        if current_active_count >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
+            return
 
-            # Fresh only check: Agar pehle se trade chal rahi hai toh queueing avoid karo
-            if current_active_count >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
-                price_history.clear()
-                time.sleep(2)
-                continue
+        data = json.loads(message)
+        # Handle single ticker or stream array
+        tickers = data if isinstance(data, list) else [data]
 
-            now = time.time()
-
-            for t in tickers:
-                if get_active_positions_count_from_exchange() >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
-                    break
-
+        now = time.time()
+        for t in tickers:
+            sym = t.get("s", "")
+            if not sym.endswith("USDT") or "_" in sym:
+                # MiniTicker format uses 's' for symbol, 'c' for close price
                 sym = t.get("symbol", "")
-                if not sym.endswith("USDT") or "_" in sym:
+                if not sym:
                     continue
+            
+            try:
+                price = float(t.get("c", t.get("lastPrice", 0)))
+            except ValueError:
+                continue
 
-                try:
-                    vol = float(t.get("quoteVolume", 0))
-                    price = float(t.get("lastPrice", 0))
-                except ValueError:
-                    continue
+            if price <= 0:
+                continue
 
-                if vol < MIN_24H_VOLUME_USD:
-                    continue
+            # 2-minute strict cooldown check per coin
+            last_trade = coin_last_trade_time.get(sym, 0)
+            if now - last_trade < COIN_COOLDOWN_SECONDS:
+                continue
 
-                # 2-minute strict cooldown check per coin
-                last_trade = coin_last_trade_time.get(sym, 0)
-                if now - last_trade < COIN_COOLDOWN_SECONDS:
-                    continue
+            if sym not in price_history:
+                price_history[sym] = []
 
-                if sym not in price_history:
-                    price_history[sym] = []
+            price_history[sym].append((now, price))
+            price_history[sym] = [(ts, p) for ts, p in price_history[sym] if now - ts <= DROP_TIME_WINDOW_SEC]
 
-                price_history[sym].append((now, price))
-                price_history[sym] = [(ts, p) for ts, p in price_history[sym] if now - ts <= DROP_TIME_WINDOW_SEC]
+            if len(price_history[sym]) >= 2:
+                oldest_price = price_history[sym][0][1]
+                pct_change = (price - oldest_price) / oldest_price
 
-                if len(price_history[sym]) >= 2:
-                    oldest_price = price_history[sym][0][1]
-                    pct_change = (price - oldest_price) / oldest_price
+                trade_side = None
+                if pct_change <= -THRESHOLD_PCT:
+                    trade_side = "SELL"  # Market 0.8% Dump hua -> SELL (Short)
+                elif pct_change >= THRESHOLD_PCT:
+                    trade_side = "BUY"   # Market 0.8% Pump hua -> BUY (Long)
 
-                    trade_side = None
-                    if pct_change <= -THRESHOLD_PCT:
-                        trade_side = "SELL"  # Market 0.8% Dump hua -> SELL (Short)
-                    elif pct_change >= THRESHOLD_PCT:
-                        trade_side = "BUY"   # Market 0.8% Pump hua -> BUY (Long)
+                if trade_side:
+                    with data_lock:
+                        if get_active_positions_count_from_exchange() < MAX_CONCURRENT_TRADES and len(active_trade_symbols) == 0 and sym not in active_trade_symbols:
+                            active_trade_symbols.add(sym)
+                            coin_last_trade_time[sym] = time.time()
+                            dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
+                            trigger_trade = True
+                        else:
+                            trigger_trade = False
 
-                    if trade_side:
-                        with data_lock:
-                            if get_active_positions_count_from_exchange() < MAX_CONCURRENT_TRADES and len(active_trade_symbols) == 0 and sym not in active_trade_symbols:
-                                active_trade_symbols.add(sym)
-                                coin_last_trade_time[sym] = time.time()
-                                dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
-                                trigger_trade = True
-                            else:
-                                trigger_trade = False
+                    if trigger_trade:
+                        move_type = "Dumped" if trade_side == "SELL" else "Pumped"
+                        move_display = f"{pct_change*100:.2f}%"
+                        add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} {move_type} {move_display} in 5s! Triggering {trade_side}.")
+                        threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
+                        break
+    except Exception as e:
+        pass
 
-                        if trigger_trade:
-                            move_type = "Dumped" if trade_side == "SELL" else "Pumped"
-                            move_display = f"{pct_change*100:.2f}%"
-                            add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} {move_type} {move_display} in 5s! Triggering {trade_side}.")
-                            threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
-                            break
+def on_error(ws, error):
+    pass
 
-        except Exception as e:
-            add_ui_log(f"⚠️ Scanner Error: {e}")
-            time.sleep(5)
+def on_close(ws, close_status_code, close_msg):
+    add_ui_log("⚠️ WebSocket closed. Reconnecting in 5s...")
+    time.sleep(5)
+    start_websocket_stream()
 
-        time.sleep(3)  # Rate-limit protection gap
+def on_open(ws):
+    add_ui_log("🚀 Binance WebSocket Live Stream Connected ($50M+ Liq, 0.8% Trend-Following)...")
 
-threading.Thread(target=dynamic_market_scanner, daemon=True).start()
+def start_websocket_stream():
+    try:
+        # Step 1: Fetch $50M+ volume coins via REST API once to subscribe
+        tickers = binance_public_get("/fapi/v1/ticker/24hr")
+        streams = []
+        if isinstance(tickers, list):
+            for t in tickers:
+                sym = t.get("symbol", "").lower()
+                if sym.endswith("usdt") and "_" not in sym:
+                    try:
+                        vol = float(t.get("quoteVolume", 0))
+                        if vol >= MIN_24H_VOLUME_USD:
+                            streams.append(f"{sym}@miniTicker")
+                    except ValueError:
+                        pass
+        
+        if not streams:
+            streams = ["btcusdt@miniTicker", "ethusdt@miniTicker"]
+
+        # Binance combined stream URL (Max 200 streams per connection)
+        stream_path = "/".join(streams[:150])
+        ws_url = f"wss://fstream.binance.com/stream?streams={stream_path}"
+        
+        ws = websocket.WebSocketApp(ws_url,
+                                  on_open=on_open,
+                                  on_message=on_message,
+                                  on_error=on_error,
+                                  on_close=on_close)
+        ws.run_forever(ping_interval=30, ping_timeout=10)
+    except Exception as e:
+        add_ui_log(f"⚠️ WebSocket Error: {e}")
+        time.sleep(5)
+        start_websocket_stream()
+
+threading.Thread(target=start_websocket_stream, daemon=True).start()
 
 # ==========================================
 # EMBEDDED HTTP SERVER & DASHBOARD
@@ -580,7 +611,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HFT Pump/Dump Scalper Bot</title>
+    <title>HFT WebSocket Scalper Bot</title>
     <style>
         body { background-color: #16181c; color: #b7bdc6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
         .card { background-color: #20242d; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
@@ -631,7 +662,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("radar-feed").innerHTML = scansHtml || "Scanning market for 0.8% pumps/dumps in 5s...";
+                document.getElementById("radar-feed").innerHTML = scansHtml || "Streaming WebSocket for 0.8% pumps/dumps...";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -643,7 +674,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | 0.8% & 1 Max Trade & 90s Hold)</h1>
+            <h1 class="title">⚡ Binance WebSocket Scalper Bot<br>($0.35 Margin + 20x | 0.8% & 1 Max Trade & 90s Hold)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -666,7 +697,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
-        <div class="label">📊 LIVE PUMP/DUMP RADAR (0.8% / 5s FRESH ONLY)</div>
+        <div class="label">📊 LIVE WEBSOCKET PUMP/DUMP RADAR (0.8% / 5s)</div>
         <div id="radar-feed" class="ledger text-yellow" style="max-height: 140px; overflow-y: auto;">-</div>
     </div>
 
@@ -705,7 +736,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Rate-Limit Safe Scanner & 90s Hold!")
+    add_ui_log("⚡ Binance WebSocket Scalper Bot initialized successfully!")
     
     while True:
         time.sleep(1)
