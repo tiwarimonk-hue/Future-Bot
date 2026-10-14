@@ -35,9 +35,9 @@ THRESHOLD_PCT = 0.008            # 0.8% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
 TP_PCT = 0.015                   # 1.5% Take Profit
-HOLD_TIME_SECONDS = 90           # 90 seconds exact hold timeout (Hard Exit)
+HOLD_TIME_SECONDS = 90           # 90 seconds exact hold timeout
 
-MAX_CONCURRENT_TRADES = 1        # Strict max 1 trade limit at a time
+MAX_CONCURRENT_TRADES = 1        # Strict max 1 trade limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes strict cooldown per coin
 
 MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Losses Limit
@@ -342,7 +342,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         tp_price = format_price(tp_raw, tick_size)
         
-        # Place 1.5% Take Profit Limit Order
+        # Place 1.5% Take Profit Limit Order (No Stop Loss)
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -480,7 +480,7 @@ def dynamic_market_scanner():
             with data_lock:
                 dashboard_data['active_trades_count'] = current_active_count
 
-            # Agar already ek trade chal rahi hai, toh naye signals ko turant skip karo
+            # Fresh only check: Agar pehle se trade chal rahi hai toh queueing avoid karo
             if current_active_count >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
                 price_history.clear()
                 time.sleep(1)
