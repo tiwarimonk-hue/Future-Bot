@@ -364,23 +364,22 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         time.sleep(1.0)
         
-        # 2. Place 0.7% Stop Loss Order (Fixed for Binance Futures -4120 error by using STOP Market configuration)
+        # 2. Place 0.7% Stop Loss using Binance Algo Order endpoint (/fapi/v1/algo/order) to fix error -4120
         sl_id = None
-        sl_res = binance_signed_request("POST", "/fapi/v1/order", {
+        sl_res = binance_signed_request("POST", "/fapi/v1/algo/order", {
             "symbol": symbol,
             "side": exit_side,
-            "type": "STOP",
+            "type": "STOP_MARKET",
             "quantity": str(amount),
-            "price": str(sl_price),
             "stopPrice": str(sl_price),
             "workingType": "MARK_PRICE",
             "reduceOnly": "true"
         })
-        if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
-            sl_id = sl_res.get("orderId")
-            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.7%)")
+        if sl_res and isinstance(sl_res, dict) and ("orderId" in sl_res or "algoId" in sl_res or "code" not in sl_res):
+            sl_id = sl_res.get("orderId") or sl_res.get("algoId")
+            add_ui_log(f"🛑 [{symbol}] Stop Loss Placed via Algo API at {sl_price} (0.7%)")
         else:
-            # Fallback agar STOP order mein bhi issue aaye toh STOP_MARKET try karega
+            # Fallback agar algo endpoint me bhi koi issue aaye toh standard STOP_MARKET try karega
             sl_res_fallback = binance_signed_request("POST", "/fapi/v1/order", {
                 "symbol": symbol,
                 "side": exit_side,
