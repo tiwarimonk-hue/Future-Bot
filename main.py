@@ -215,11 +215,13 @@ def format_price(price, tick_size):
 def format_qty(qty, step_size):
     try:
         d_qty = Decimal(str(qty))
-        quantized = (d_qty / step_size).quantize(Decimal('1'), rounding=ROUND_DOWN) * step_size
-        step_str = f"{step_size:f}".rstrip("0")
+        d_step = Decimal(str(step_size))
+        quantized = (d_qty // d_step) * d_step
+        
+        step_str = f"{d_step:f}".rstrip("0")
         if "." in step_str:
             decimals = len(step_str.split(".")[1])
-            return f"{quantized.quantize(step_size, rounding=ROUND_DOWN):.{decimals}f}"
+            return f"{quantized:.{decimals}f}"
         else:
             return str(int(quantized))
     except Exception:
@@ -510,7 +512,7 @@ def dynamic_market_scanner():
                         with data_lock:
                             if get_active_positions_count_from_exchange() < MAX_CONCURRENT_TRADES and sym not in active_trade_symbols:
                                 active_trade_symbols.add(sym)
-                                coin_last_trade_time[sym] = time.time()  # <-- Yahan turant lock/cooldown set kar diya gaya hai!
+                                coin_last_trade_time[sym] = time.time()
                                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
                                 trigger_trade = True
                             else:
