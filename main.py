@@ -117,7 +117,6 @@ def binance_signed_request(method, endpoint, params=None):
             resp = session.delete(full_url, headers=headers, timeout=5)
         
         data = resp.json()
-        # Agar Binance se koi error code aaye toh use logs mein print karo
         if isinstance(data, dict) and "code" in data and data["code"] < 0:
             add_ui_log(f"⚠️ Binance API Error [{endpoint}]: {data}")
         return data
