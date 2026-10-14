@@ -34,15 +34,14 @@ MIN_24H_VOLUME_USD = 50_000_000  # Minimum $50M liquidity
 THRESHOLD_PCT = 0.01             # 1.0% price movement (Pump or Dump)
 DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
-TP_PCT = 0.005                   # 0.5% Take Profit
-SL_PCT = 0.005                   # 0.5% Stop Loss
-HOLD_TIME_SECONDS = 20           # 20 seconds hold timeout
+TP_PCT = 0.007                   # 0.7% Take Profit
+HOLD_TIME_SECONDS = 20           # 20 seconds exact hold timeout
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
-COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
+COIN_COOLDOWN_SECONDS = 120      # 2 minutes strict cooldown per coin
 
-MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Stop Losses Limit
-PAUSE_DURATION_SECONDS = 3 * 3600  # 3 Hours pause after 10 consecutive SL hits
+MAX_CONSECUTIVE_LOSSES = 10      # 10 Consecutive Losses Limit
+PAUSE_DURATION_SECONDS = 3 * 3600  # 3 Hours pause after 10 losses
 
 tp_hits_count = 0
 sl_hits_count = 0
@@ -216,12 +215,10 @@ def format_price(price, tick_size):
 def format_qty(qty, step_size):
     try:
         d_qty = Decimal(str(qty))
-        # Perfect step_size alignment and truncation without precision overflow
         quantized = (d_qty / step_size).quantize(Decimal('1'), rounding=ROUND_DOWN) * step_size
         step_str = f"{step_size:f}".rstrip("0")
         if "." in step_str:
             decimals = len(step_str.split(".")[1])
-            # Strict format to avoid scientific notation or extra trailing decimals
             return f"{quantized.quantize(step_size, rounding=ROUND_DOWN):.{decimals}f}"
         else:
             return str(int(quantized))
@@ -259,12 +256,12 @@ def handle_trade_result(symbol, is_win):
             dashboard_data['losses'] = consecutive_losses
     
     if is_win:
-        add_ui_log(f"✅ [{symbol}] Trade WON (0.5% TP Hit)! Total TP: {tp_hits_count}")
+        add_ui_log(f"✅ [{symbol}] Trade WON (0.7% TP Hit)! Total TP: {tp_hits_count}")
     else:
-        add_ui_log(f"❌ [{symbol}] Trade LOST (0.5% SL / 20s Timeout)! Losses: {consecutive_losses}/10")
+        add_ui_log(f"❌ [{symbol}] Trade CLOSED (20s Timeout Reached)! Losses: {consecutive_losses}/10")
         if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
             trading_paused_until = time.time() + PAUSE_DURATION_SECONDS
-            add_ui_log("🚨 10 Consecutive Stop Losses! 3-Hour PAUSE triggered.")
+            add_ui_log("🚨 10 Losses! 3-Hour PAUSE triggered.")
 
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
@@ -276,7 +273,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             return
 
         set_leverage(symbol)
-        coin_last_trade_time[symbol] = time.time()
         
         step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
         
@@ -313,27 +309,24 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if chk and isinstance(chk, dict) and "avgPrice" in chk:
             fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Setting up 0.5% TP & SL.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 0.7% TP & starting 20s timer.")
         
         with data_lock:
             open_position_timestamps[symbol] = time.time()
         
         d_fill = Decimal(str(fill_price_float))
         d_tp_pct = Decimal(str(TP_PCT))
-        d_sl_pct = Decimal(str(SL_PCT))
 
         if trade_side == "BUY":
             tp_raw = d_fill * (Decimal("1") + d_tp_pct)
-            sl_price_target = float(d_fill * (Decimal("1") - d_sl_pct))
             exit_side = "SELL"
         else:
             tp_raw = d_fill * (Decimal("1") - d_tp_pct)
-            sl_price_target = float(d_fill * (Decimal("1") + d_sl_pct))
             exit_side = "BUY"
         
         tp_price = format_price(tp_raw, tick_size)
         
-        # Place 0.5% Take Profit Limit Order
+        # Place 0.7% Take Profit Limit Order
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -346,39 +339,17 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         })
         if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
             tp_id = tp_res.get("orderId")
-            add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.5%)")
+            add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.7%)")
             
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 20 seconds with internal 0.5% Stop Loss & TP check
+        # Monitor trade for exact 20 seconds (Waiting for TP hit or timeout)
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             
-            ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
-            current_price = float(ticker.get("price", fill_price_float)) if ticker and "price" in ticker else fill_price_float
-            
-            sl_triggered = False
-            if trade_side == "BUY" and current_price <= sl_price_target:
-                sl_triggered = True
-            elif trade_side == "SELL" and current_price >= sl_price_target:
-                sl_triggered = True
-                
-            if sl_triggered:
-                add_ui_log(f"❌ [{symbol}] Internal Stop Loss Hit at {current_price} (0.5%)! Closing position.")
-                cancel_all_orders_rest(symbol)
-                binance_signed_request("POST", "/fapi/v1/order", {
-                    "symbol": symbol,
-                    "side": exit_side,
-                    "type": "MARKET",
-                    "quantity": str(amount),
-                    "reduceOnly": "true"
-                })
-                is_win = False
-                trade_closed = True
-                break
-            
+            # Check position risk from exchange
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_amt = 0.0
             if isinstance(pos_risk, list):
@@ -387,6 +358,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         pos_amt = float(p.get("positionAmt", 0))
                         break
             
+            # If position amount is 0, it means TP was hit successfully
             if pos_amt == 0:
                 trade_closed = True
                 if tp_id:
@@ -395,9 +367,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
-        # If hold time (20s) reached and position still open, force exit
+        # If 20 seconds reached and position is still open, force exit and cancel TP
         if not trade_closed:
-            add_ui_log(f"🔴 [{symbol}] Hold time (20s) reached! Force Market Exit.")
+            add_ui_log(f"🔴 [{symbol}] 20s Hold time reached! Force Market Exit & Closing TP.")
             cancel_all_orders_rest(symbol)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -506,6 +478,11 @@ def dynamic_market_scanner():
                 if vol < MIN_24H_VOLUME_USD:
                     continue
 
+                # 2-minute strict cooldown check per coin
+                last_trade = coin_last_trade_time.get(sym, 0)
+                if now - last_trade < COIN_COOLDOWN_SECONDS:
+                    continue
+
                 if sym not in price_history:
                     price_history[sym] = []
 
@@ -530,13 +507,10 @@ def dynamic_market_scanner():
                         if sym in active_trade_symbols:
                             continue
 
-                        last_trade = coin_last_trade_time.get(sym, 0)
-                        if now - last_trade < COIN_COOLDOWN_SECONDS:
-                            continue
-
                         with data_lock:
                             if get_active_positions_count_from_exchange() < MAX_CONCURRENT_TRADES and sym not in active_trade_symbols:
                                 active_trade_symbols.add(sym)
+                                coin_last_trade_time[sym] = time.time()  # <-- Yahan turant lock/cooldown set kar diya gaya hai!
                                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
                                 trigger_trade = True
                             else:
@@ -637,7 +611,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
                 document.getElementById("radar-feed").innerHTML = scansHtml || "Scanning market for 1.0% pumps/dumps in 5s...";
                 
-                let logsHtml = data.logs.log ? data.logs.map(log => `<p>${log}</p>`).join("") : data.logs.map(log => `<p>${log}</p>`).join("");
+                let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
             } catch(e) {}
         }
@@ -647,7 +621,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | Precision Filter Fixed)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | 2M Cooldown Locked)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -709,7 +683,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Precision Format Fixed!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with 2-Minute Strict Coin Cooldown!")
     
     while True:
         time.sleep(1)
