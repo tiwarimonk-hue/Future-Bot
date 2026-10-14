@@ -94,8 +94,8 @@ def binance_public_get(endpoint, params=None):
         resp = session.get(url, params=params, timeout=5)
         if resp.status_code == 200:
             return resp.json()
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"Public GET Error [{endpoint}]: {e}")
     return {}
 
 def binance_signed_request(method, endpoint, params=None):
@@ -116,9 +116,13 @@ def binance_signed_request(method, endpoint, params=None):
         elif method == "DELETE":
             resp = session.delete(full_url, headers=headers, timeout=5)
         
-        return resp.json()
+        data = resp.json()
+        # Agar Binance se koi error code aaye toh use logs mein print karo
+        if isinstance(data, dict) and "code" in data and data["code"] < 0:
+            add_ui_log(f"⚠️ Binance API Error [{endpoint}]: {data}")
+        return data
     except Exception as e:
-        pass
+        add_ui_log(f"Signed Request Exception [{endpoint}]: {e}")
     return {}
 
 def sync_binance_clock():
@@ -134,8 +138,8 @@ def sync_binance_clock():
             clock_offset_ms = estimated_server_time - t_recv
             with data_lock:
                 dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"Clock Sync Error: {e}")
 
 def get_synced_time_ms():
     return (time.time() * 1000) + clock_offset_ms
@@ -143,17 +147,19 @@ def get_synced_time_ms():
 def cancel_all_orders_rest(symbol):
     try:
         binance_signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"Cancel Orders Error [{symbol}]: {e}")
 
 # ==========================================
 # TRADING EXECUTION & STRICT VALIDATION
 # ==========================================
 def set_leverage(symbol):
     try:
-        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
-    except Exception:
-        pass
+        res = binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
+        if isinstance(res, dict) and "leverage" in res:
+            add_ui_log(f"⚙️ [{symbol}] Leverage set to {LEVERAGE}x successfully.")
+    except Exception as e:
+        add_ui_log(f"Leverage Error [{symbol}]: {e}")
 
 def validate_coin_for_trading(symbol):
     try:
@@ -162,6 +168,7 @@ def validate_coin_for_trading(symbol):
             for s in info["symbols"]:
                 if s.get("symbol") == symbol:
                     if s.get("status") != "TRADING":
+                        add_ui_log(f"⚠️ [{symbol}] Skipped: Status is not TRADING.")
                         return False
                     max_lev = 20
                     min_notional = 5.0
@@ -170,11 +177,12 @@ def validate_coin_for_trading(symbol):
                             max_lev = int(f.get("maxLeverage", 20))
                         elif f.get("filterType") == "MIN_NOTIONAL":
                             min_notional = float(f.get("notional", 5.0))
-                    if max_lev < LEVERAGE or min_notional > 5.0:
+                    if max_lev < LEVERAGE:
+                        add_ui_log(f"⚠️ [{symbol}] Skipped: Max leverage {max_lev} < required {LEVERAGE}.")
                         return False
                     return True
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"Validation Error [{symbol}]: {e}")
     return False
 
 def fetch_symbol_precision(symbol):
@@ -199,8 +207,8 @@ def fetch_symbol_precision(symbol):
                     res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
                     exchange_info_cache[symbol] = res
                     return res
-    except Exception:
-        pass
+    except Exception as e:
+        add_ui_log(f"Precision Fetch Error [{symbol}]: {e}")
     return Decimal("0.01"), Decimal("0.01"), Decimal("0.01")
 
 def format_price(price, tick_size):
@@ -269,7 +277,9 @@ def handle_trade_result(symbol, is_win):
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
+        add_ui_log(f"🔍 [{symbol}] Validating coin for trading...")
         if not validate_coin_for_trading(symbol):
+            add_ui_log(f"❌ [{symbol}] Coin validation failed. Aborting trade.")
             with data_lock:
                 active_trade_symbols.discard(symbol)
                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
@@ -297,7 +307,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         })
         
         if not order_res or not isinstance(order_res, dict) or "orderId" not in order_res:
-            add_ui_log(f"[{symbol}] Market Order Failed: {order_res}")
+            add_ui_log(f"❌ [{symbol}] Market Order Failed completely: {order_res}")
             cancel_all_orders_rest(symbol)
             with data_lock:
                 active_trade_symbols.discard(symbol)
@@ -310,7 +320,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
         fill_price_float = entry_price
         if chk and isinstance(chk, dict) and "avgPrice" in chk:
-            fill_price_float = float(chk.get("avgPrice", entry_price))
+            try:
+                fill_price_float = float(chk.get("avgPrice", entry_price))
+            except ValueError:
+                pass
         
         add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing TP & SL orders.")
         
@@ -347,8 +360,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
             tp_id = tp_res.get("orderId")
             add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.7%)")
+        else:
+            add_ui_log(f"⚠️ [{symbol}] Take Profit Warning: {tp_res}")
         
-        # Short pause (2-3 seconds allowed for robust SL placement)
         time.sleep(1.0)
         
         # 2. Place 0.7% Stop Loss Stop-Market Order
@@ -376,16 +390,17 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             
-            # Check position risk from exchange
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_amt = 0.0
             if isinstance(pos_risk, list):
                 for p in pos_risk:
                     if p.get("symbol") == symbol:
-                        pos_amt = float(p.get("positionAmt", 0))
+                        try:
+                            pos_amt = float(p.get("positionAmt", 0))
+                        except ValueError:
+                            pass
                         break
             
-            # If position amount is 0, trade has been closed (either TP or SL hit)
             if pos_amt == 0:
                 trade_closed = True
                 if tp_id:
@@ -394,7 +409,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
-        # If 90 seconds reached and position is still open, force exit and cancel TP/SL
         if not trade_closed:
             add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit & Closing TP/SL.")
             cancel_all_orders_rest(symbol)
@@ -404,7 +418,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             if isinstance(pos_risk, list):
                 for p in pos_risk:
                     if p.get("symbol") == symbol:
-                        current_amt = float(p.get("positionAmt", 0))
+                        try:
+                            current_amt = float(p.get("positionAmt", 0))
+                        except ValueError:
+                            pass
                         break
             if current_amt != 0:
                 market_exit_side = "SELL" if current_amt > 0 else "BUY"
@@ -421,7 +438,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         handle_trade_result(symbol, is_win)
 
     except Exception as e:
-        add_ui_log(f"[{symbol}] Trade Error: {e}")
+        add_ui_log(f"[{symbol}] Trade Exception Error: {e}")
         cancel_all_orders_rest(symbol)
         with data_lock:
             active_trade_symbols.discard(symbol)
@@ -439,7 +456,10 @@ def position_guardian_worker():
             if isinstance(pos_risk, list):
                 now = time.time()
                 for p in pos_risk:
-                    amt = float(p.get("positionAmt", 0))
+                    try:
+                        amt = float(p.get("positionAmt", 0))
+                    except ValueError:
+                        amt = 0.0
                     sym = p.get("symbol")
                     if amt != 0 and sym:
                         with data_lock:
@@ -549,8 +569,8 @@ def dynamic_market_scanner():
                             add_scan(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {sym} {move_type} {move_display} in 5s! Triggering {trade_side}.")
                             threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
 
-        except Exception:
-            pass
+        except Exception as e:
+            add_ui_log(f"Scanner Loop Error: {e}")
 
         time.sleep(1)
 
@@ -714,4 +734,3 @@ if __name__ == "__main__":
     
     while True:
         time.sleep(1)
-
