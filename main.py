@@ -460,7 +460,7 @@ def position_guardian_worker():
 threading.Thread(target=position_guardian_worker, daemon=True).start()
 
 # ==========================================
-# WEBSOCKET REAL-TIME MARKET STREAM
+# WEBSOCKET REAL-TIME MARKET STREAM (!miniTicker@arr)
 # ==========================================
 def on_message(ws, message):
     try:
@@ -475,30 +475,22 @@ def on_message(ws, message):
             return
 
         data = json.loads(message)
-        
-        # Combined stream format handler: {"stream": "...", "data": {...}}
-        if isinstance(data, dict) and "data" in data:
-            tickers = [data["data"]]
-        elif isinstance(data, list):
-            tickers = [item.get("data", item) for item in data]
-        else:
-            tickers = [data]
+        if not isinstance(data, list):
+            return
 
         now = time.time()
-        for t in tickers:
+        for t in data:
             sym = t.get("s", "")
-            if not sym:
-                sym = t.get("symbol", "")
-            
             if not sym or not sym.endswith("USDT") or "_" in sym:
                 continue
             
             try:
-                price = float(t.get("c", t.get("close", t.get("lastPrice", 0))))
+                price = float(t.get("c", 0))
+                vol = float(t.get("q", 0))  # 24h quote volume in USDT
             except ValueError:
                 continue
 
-            if price <= 0:
+            if price <= 0 or vol < MIN_24H_VOLUME_USD:
                 continue
 
             # 2-minute strict cooldown check per coin
@@ -550,30 +542,11 @@ def on_close(ws, close_status_code, close_msg):
     start_websocket_stream()
 
 def on_open(ws):
-    add_ui_log("🚀 Binance WebSocket Live Stream Connected ($50M+ Liq, 0.8% Trend-Following)...")
+    add_ui_log("🚀 Binance WebSocket Live Stream Connected (!miniTicker@arr)...")
 
 def start_websocket_stream():
     try:
-        # Step 1: Fetch $50M+ volume coins via REST API once to subscribe
-        tickers = binance_public_get("/fapi/v1/ticker/24hr")
-        streams = []
-        if isinstance(tickers, list):
-            for t in tickers:
-                sym = t.get("symbol", "").lower()
-                if sym.endswith("usdt") and "_" not in sym:
-                    try:
-                        vol = float(t.get("quoteVolume", 0))
-                        if vol >= MIN_24H_VOLUME_USD:
-                            streams.append(f"{sym}@miniTicker")
-                    except ValueError:
-                        pass
-        
-        if not streams:
-            streams = ["btcusdt@miniTicker", "ethusdt@miniTicker"]
-
-        # Binance combined stream URL (Max 200 streams per connection)
-        stream_path = "/".join(streams[:150])
-        ws_url = f"wss://fstream.binance.com/stream?streams={stream_path}"
+        ws_url = "wss://fstream.binance.com/ws/!miniTicker@arr"
         
         ws = websocket.WebSocketApp(ws_url,
                                   on_open=on_open,
@@ -668,7 +641,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 document.getElementById("drift").innerText = data.clock_offset_ms + " ms";
                 
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
-                document.getElementById("radar-feed").innerHTML = scansHtml || "Streaming WebSocket for 0.8% pumps/dumps...";
+                document.getElementById("radar-feed").innerHTML = scansHtml || "Streaming WebSocket (!miniTicker@arr)...";
                 
                 let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
@@ -742,7 +715,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance WebSocket Scalper Bot initialized successfully!")
+    add_ui_log("⚡ Binance WebSocket Scalper Bot initialized with !miniTicker@arr!")
     
     while True:
         time.sleep(1)
