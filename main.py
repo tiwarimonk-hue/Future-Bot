@@ -475,20 +475,26 @@ def on_message(ws, message):
             return
 
         data = json.loads(message)
-        # Handle single ticker or stream array
-        tickers = data if isinstance(data, list) else [data]
+        
+        # Combined stream format handler: {"stream": "...", "data": {...}}
+        if isinstance(data, dict) and "data" in data:
+            tickers = [data["data"]]
+        elif isinstance(data, list):
+            tickers = [item.get("data", item) for item in data]
+        else:
+            tickers = [data]
 
         now = time.time()
         for t in tickers:
             sym = t.get("s", "")
-            if not sym.endswith("USDT") or "_" in sym:
-                # MiniTicker format uses 's' for symbol, 'c' for close price
+            if not sym:
                 sym = t.get("symbol", "")
-                if not sym:
-                    continue
+            
+            if not sym or not sym.endswith("USDT") or "_" in sym:
+                continue
             
             try:
-                price = float(t.get("c", t.get("lastPrice", 0)))
+                price = float(t.get("c", t.get("close", t.get("lastPrice", 0))))
             except ValueError:
                 continue
 
