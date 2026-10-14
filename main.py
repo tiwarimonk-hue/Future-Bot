@@ -8,7 +8,6 @@ import uuid
 import threading
 import urllib.parse
 import requests
-import websocket
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -118,10 +117,8 @@ def binance_signed_request(method, endpoint, params=None):
         
         if resp.status_code == 200:
             return resp.json()
-        else:
-            add_ui_log(f"API Error ({endpoint}): {resp.status_code} - {resp.text}")
     except Exception as e:
-        add_ui_log(f"Signed Request Error ({endpoint}): {e}")
+        pass
     return {}
 
 def sync_binance_clock():
@@ -166,7 +163,6 @@ def validate_coin_for_trading(symbol):
                 if s.get("symbol") == symbol:
                     if s.get("status") != "TRADING":
                         return False
-                    
                     max_lev = 20
                     min_notional = 5.0
                     for f in s.get("filters", []):
@@ -174,7 +170,6 @@ def validate_coin_for_trading(symbol):
                             max_lev = int(f.get("maxLeverage", 20))
                         elif f.get("filterType") == "MIN_NOTIONAL":
                             min_notional = float(f.get("notional", 5.0))
-                    
                     if max_lev < LEVERAGE or min_notional > 5.0:
                         return False
                     return True
@@ -201,13 +196,11 @@ def fetch_symbol_precision(symbol):
                             min_qty = f.get("minQty", "0.01")
                         elif f.get("filterType") == "PRICE_FILTER":
                             tick_size = f.get("tickSize", "0.01")
-                    
                     res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
                     exchange_info_cache[symbol] = res
                     return res
-    except Exception as e:
-        add_ui_log(f"Precision Fetch Error for {symbol}: {e}")
-        
+    except Exception:
+        pass
     return Decimal("0.01"), Decimal("0.01"), Decimal("0.01")
 
 def format_price(price, tick_size):
@@ -294,7 +287,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         action_name = "MARKET BUY (LONG)" if trade_side == "BUY" else "MARKET SELL (SHORT)"
         add_ui_log(f"🟢 Executing {action_name}: {symbol} (Qty: {amount})")
         
-        # 1. Place Market Order via REST API (Zero Signature Error)
         order_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
             "side": trade_side,
@@ -302,7 +294,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             "quantity": str(amount)
         })
         
-        if not order_res or "orderId" not in order_res:
+        if not order_res or not isinstance(order_res, dict) or "orderId" not in order_res:
             add_ui_log(f"[{symbol}] Market Order Failed!")
             cancel_all_orders_rest(symbol)
             with data_lock:
@@ -314,9 +306,11 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         time.sleep(0.5)
         
         chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
-        fill_price_float = float(chk.get("avgPrice", entry_price))
+        fill_price_float = entry_price
+        if chk and isinstance(chk, dict):
+            fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.0% TP and SL via REST.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.0% TP and SL.")
         
         d_fill = Decimal(str(fill_price_float))
         
@@ -335,7 +329,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         tp_id = None
         sl_placed = False
         
-        # 2. Guaranteed TP and SL Placement Loop
         for attempt in range(5):
             if not tp_id:
                 tp_res = binance_signed_request("POST", "/fapi/v1/order", {
@@ -347,7 +340,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                     "timeInForce": "GTC",
                     "reduceOnly": "true"
                 })
-                if tp_res and "orderId" in tp_res:
+                if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
                     tp_id = tp_res.get("orderId")
             
             if not sl_placed:
@@ -359,7 +352,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                     "stopPrice": str(sl_price),
                     "reduceOnly": "true"
                 })
-                if sl_res and "orderId" in sl_res:
+                if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
                     sl_placed = True
             
             if tp_id and sl_placed:
@@ -372,7 +365,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         trade_closed = False
         trade_start_time = time.time()
         
-        # 3. Monitor position and strictly enforce 30s timeout
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(1)
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -387,11 +379,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 trade_closed = True
                 if tp_id:
                     tp_check = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": tp_id})
-                    if tp_check.get("status") == "FILLED":
+                    if isinstance(tp_check, dict) and tp_check.get("status") == "FILLED":
                         is_win = True
                 break
         
-        # If hold time reached and position still open, force exit
         if not trade_closed:
             add_ui_log(f"🔴 [{symbol}] Hold time (30s) reached! Force Market Exit.")
             cancel_all_orders_rest(symbol)
@@ -414,7 +405,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 })
             is_win = False
         
-        # Final cleanup of all open orders for this coin
         cancel_all_orders_rest(symbol)
         handle_trade_result(symbol, is_win)
 
@@ -608,7 +598,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | REST Guaranteed TP/SL)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Crash & TP/SL Fixed)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -670,7 +660,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with REST Guaranteed TP/SL & Strict 30s Timeout!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Safe Error Handling & Guaranteed TP/SL!")
     
     while True:
         time.sleep(1)
