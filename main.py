@@ -342,7 +342,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         tp_price = format_price(tp_raw, tick_size)
         
-        # Place 1.5% Take Profit Limit Order (No Stop Loss)
+        # Place 1.5% Take Profit Limit Order
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -459,11 +459,11 @@ def position_guardian_worker():
 threading.Thread(target=position_guardian_worker, daemon=True).start()
 
 # ==========================================
-# DYNAMIC MARKET SCANNER (5-SEC WINDOW)
+# DYNAMIC MARKET SCANNER (RATE-LIMIT PROOF)
 # ==========================================
 def dynamic_market_scanner():
     global active_trade_symbols
-    add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 0.8% Trend-Following in 5s | Max 1 Trade | Fresh Only)...")
+    add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 0.8% Trend-Following | Max 1 Trade | Fresh Only)...")
     
     while True:
         try:
@@ -473,7 +473,7 @@ def dynamic_market_scanner():
 
             tickers = binance_public_get("/fapi/v1/ticker/24hr")
             if not isinstance(tickers, list):
-                time.sleep(3)
+                time.sleep(5)
                 continue
 
             current_active_count = get_active_positions_count_from_exchange()
@@ -483,7 +483,7 @@ def dynamic_market_scanner():
             # Fresh only check: Agar pehle se trade chal rahi hai toh queueing avoid karo
             if current_active_count >= MAX_CONCURRENT_TRADES or len(active_trade_symbols) > 0:
                 price_history.clear()
-                time.sleep(1)
+                time.sleep(2)
                 continue
 
             now = time.time()
@@ -543,10 +543,11 @@ def dynamic_market_scanner():
                             threading.Thread(target=execute_scalp_trade, args=(sym, price, trade_side), daemon=True).start()
                             break
 
-        except Exception:
-            pass
+        except Exception as e:
+            add_ui_log(f"⚠️ Scanner Error: {e}")
+            time.sleep(5)
 
-        time.sleep(1)
+        time.sleep(3)  # Rate-limit protection gap
 
 threading.Thread(target=dynamic_market_scanner, daemon=True).start()
 
@@ -704,7 +705,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with 0.8% Threshold, Max 1 Trade, 90s Hold & Fresh-Only Filter!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Rate-Limit Safe Scanner & 90s Hold!")
     
     while True:
         time.sleep(1)
