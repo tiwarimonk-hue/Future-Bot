@@ -333,7 +333,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         tp_price = format_price(tp_raw, tick_size)
         sl_price = format_price(sl_raw, tick_size)
         
-        # 1. Place 0.7% Take Profit Limit Order
+        # 1. Place Take Profit Limit Order
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -348,10 +348,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             tp_id = tp_res.get("orderId")
             add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price} (0.7%)")
         
-        # Short pause for SL placement
-        time.sleep(1.0)
+        time.sleep(0.5)
         
-        # 2. Place 0.7% Stop Loss with Fallback Retry Mechanism
+        # 2. Place Stop Loss with Multi-Endpoint Fallback (STOP_MARKET -> STOP -> Algo Endpoint)
         sl_id = None
         try:
             sl_res = binance_signed_request("POST", "/fapi/v1/order", {
@@ -367,8 +366,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 sl_id = sl_res.get("orderId")
                 add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.7%)")
             else:
-                # Fallback: Agar standard STOP_MARKET fail ho toh alternative endpoint ya parameters se try karein
-                add_ui_log(f"⚠️ [{symbol}] Standard SL rejected, trying fallback Stop Order...")
+                # Fallback 1: STOP order type
                 fallback_res = binance_signed_request("POST", "/fapi/v1/order", {
                     "symbol": symbol,
                     "side": exit_side,
@@ -381,17 +379,30 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 })
                 if fallback_res and isinstance(fallback_res, dict) and "orderId" in fallback_res:
                     sl_id = fallback_res.get("orderId")
-                    add_ui_log(f"🛑 [{symbol}] Stop Loss Placed via Fallback at {sl_price} (0.7%)")
+                    add_ui_log(f"🛑 [{symbol}] Stop Loss Placed via Fallback STOP at {sl_price}")
                 else:
-                    add_ui_log(f"❌ [{symbol}] Fallback Stop Loss Error: {fallback_res}")
+                    # Fallback 2: Algo Endpoint
+                    algo_res = binance_signed_request("POST", "/fapi/v1/algo/order", {
+                        "symbol": symbol,
+                        "side": exit_side,
+                        "type": "STOP_MARKET",
+                        "quantity": str(amount),
+                        "stopPrice": str(sl_price),
+                        "reduceOnly": "true"
+                    })
+                    if algo_res and isinstance(algo_res, dict) and "algoId" in algo_res:
+                        sl_id = algo_res.get("algoId")
+                        add_ui_log(f"🛑 [{symbol}] Stop Loss Placed via Algo API at {sl_price}")
+                    else:
+                        add_ui_log(f"❌ [{symbol}] All SL Methods Failed, relying on 90s timer safeguard.")
         except Exception as e:
-            add_ui_log(f"⚠️ [{symbol}] Stop Loss Exception Handled: {e}")
+            add_ui_log(f"⚠️ [{symbol}] Stop Loss Exception: {e}")
             
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 90 seconds (Waiting for TP hit, SL, or timeout)
+        # Monitor trade strictly up to 90 seconds
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             
@@ -411,8 +422,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
+        # 90-second Hard Exit if position is still open
         if not trade_closed:
-            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Force Market Exit & Closing Orders.")
+            add_ui_log(f"🔴 [{symbol}] 90s Hold time reached! Forcing Hard Market Exit.")
             cancel_all_orders_rest(symbol)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
