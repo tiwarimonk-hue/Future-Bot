@@ -115,8 +115,7 @@ def binance_signed_request(method, endpoint, params=None):
         elif method == "DELETE":
             resp = session.delete(full_url, headers=headers, timeout=5)
         
-        if resp.status_code == 200:
-            return resp.json()
+        return resp.json()
     except Exception as e:
         pass
     return {}
@@ -295,7 +294,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         })
         
         if not order_res or not isinstance(order_res, dict) or "orderId" not in order_res:
-            add_ui_log(f"[{symbol}] Market Order Failed!")
+            add_ui_log(f"[{symbol}] Market Order Failed: {order_res}")
             cancel_all_orders_rest(symbol)
             with data_lock:
                 active_trade_symbols.discard(symbol)
@@ -307,10 +306,10 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
         fill_price_float = entry_price
-        if chk and isinstance(chk, dict):
+        if chk and isinstance(chk, dict) and "avgPrice" in chk:
             fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.0% TP and SL.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Placing 1.0% TP & SL.")
         
         d_fill = Decimal(str(fill_price_float))
         
@@ -342,6 +341,8 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 })
                 if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
                     tp_id = tp_res.get("orderId")
+                else:
+                    add_ui_log(f"[{symbol}] TP Attempt {attempt+1} Error: {tp_res}")
             
             if not sl_placed:
                 sl_res = binance_signed_request("POST", "/fapi/v1/order", {
@@ -354,6 +355,8 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                 })
                 if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
                     sl_placed = True
+                else:
+                    add_ui_log(f"[{symbol}] SL Attempt {attempt+1} Error: {sl_res}")
             
             if tp_id and sl_placed:
                 add_ui_log(f"✅ [{symbol}] TP (1.0%) & SL (1.0%) Successfully Active.")
@@ -598,7 +601,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Crash & TP/SL Fixed)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | SL Error Tracking Fixed)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -660,7 +663,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Safe Error Handling & Guaranteed TP/SL!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Robust TP & SL Execution Logs!")
     
     while True:
         time.sleep(1)
