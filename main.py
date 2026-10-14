@@ -311,7 +311,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         if chk and isinstance(chk, dict) and "avgPrice" in chk:
             fill_price_float = float(chk.get("avgPrice", entry_price))
         
-        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Forcing 1.0% TP & SL placement.")
+        add_ui_log(f"⚡ [{symbol}] Market Order FILLED at {fill_price_float}! Setting up TP & Internal SL.")
         
         with data_lock:
             open_position_timestamps[symbol] = time.time()
@@ -320,77 +320,66 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         if trade_side == "BUY":
             tp_raw = d_fill * Decimal("1.01")
-            sl_raw = d_fill * Decimal("0.99")
+            sl_price_target = float(d_fill * Decimal("0.99"))
             exit_side = "SELL"
         else:
             tp_raw = d_fill * Decimal("0.99")
-            sl_raw = d_fill * Decimal("1.01")
+            sl_price_target = float(d_fill * Decimal("1.01"))
             exit_side = "BUY"
         
         tp_price = format_price(tp_raw, tick_size)
-        sl_price = format_price(sl_raw, tick_size)
         
+        # Place Take Profit Limit Order
         tp_id = None
-        sl_placed = False
-        
-        # Robust Retry Loop to ensure TP and SL both are successfully accepted by Binance
-        for attempt in range(8):
-            if not tp_id:
-                tp_res = binance_signed_request("POST", "/fapi/v1/order", {
-                    "symbol": symbol,
-                    "side": exit_side,
-                    "type": "LIMIT",
-                    "quantity": str(amount),
-                    "price": str(tp_price),
-                    "timeInForce": "GTC",
-                    "reduceOnly": "true"
-                })
-                if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
-                    tp_id = tp_res.get("orderId")
-                    add_ui_log(f"✅ [{symbol}] TP Successfully Placed at {tp_price}")
-                else:
-                    add_ui_log(f"⚠️ [{symbol}] TP Retry {attempt+1} Failed: {tp_res}")
-            
-            if not sl_placed:
-                sl_res = binance_signed_request("POST", "/fapi/v1/order", {
-                    "symbol": symbol,
-                    "side": exit_side,
-                    "type": "STOP_MARKET",
-                    "quantity": str(amount),
-                    "stopPrice": str(sl_price),
-                    "reduceOnly": "true"
-                })
-                if sl_res and isinstance(sl_res, dict) and "orderId" in sl_res:
-                    sl_placed = True
-                    add_ui_log(f"✅ [{symbol}] SL Successfully Placed at {sl_price}")
-                else:
-                    add_ui_log(f"⚠️ [{symbol}] SL Retry {attempt+1} Failed: {sl_res}")
-            
-            if tp_id and sl_placed:
-                break
-            
-            time.sleep(0.3)
-            
-        # SAFETY BACKUP: If either TP or SL failed after all retries, force close immediately to protect capital
-        if not tp_id or not sl_placed:
-            add_ui_log(f"🚨 [{symbol}] CRITICAL: TP or SL missing after retries! Force closing position for absolute safety.")
-            cancel_all_orders_rest(symbol)
-            binance_signed_request("POST", "/fapi/v1/order", {
+        for attempt in range(5):
+            tp_res = binance_signed_request("POST", "/fapi/v1/order", {
                 "symbol": symbol,
                 "side": exit_side,
-                "type": "MARKET",
+                "type": "LIMIT",
                 "quantity": str(amount),
+                "price": str(tp_price),
+                "timeInForce": "GTC",
                 "reduceOnly": "true"
             })
-            handle_trade_result(symbol, False)
-            return
-
+            if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
+                tp_id = tp_res.get("orderId")
+                add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price}")
+                break
+            time.sleep(0.3)
+            
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
+        # Monitor trade for 30 seconds with internal Stop Loss & TP check
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(1)
+            
+            # Check current price and position status
+            ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
+            current_price = float(ticker.get("price", fill_price_float)) if ticker and "price" in ticker else fill_price_float
+            
+            # Internal Stop Loss trigger condition
+            sl_triggered = False
+            if trade_side == "BUY" and current_price <= sl_price_target:
+                sl_triggered = True
+            elif trade_side == "SELL" and current_price >= sl_price_target:
+                sl_triggered = True
+                
+            if sl_triggered:
+                add_ui_log(f"❌ [{symbol}] Internal Stop Loss Hit at price {current_price}! Closing position.")
+                cancel_all_orders_rest(symbol)
+                binance_signed_request("POST", "/fapi/v1/order", {
+                    "symbol": symbol,
+                    "side": exit_side,
+                    "type": "MARKET",
+                    "quantity": str(amount),
+                    "reduceOnly": "true"
+                })
+                is_win = False
+                trade_closed = True
+                break
+            
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_amt = 0.0
             if isinstance(pos_risk, list):
@@ -407,6 +396,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
+        # If hold time reached and position still open, force exit
         if not trade_closed:
             add_ui_log(f"🔴 [{symbol}] Hold time (30s) reached! Force Market Exit.")
             cancel_all_orders_rest(symbol)
@@ -658,7 +648,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | TP/SL Retry Fix Active)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Internal SL Bypass Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -720,7 +710,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Enhanced TP/SL Retry Mechanism!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Internal Stop Loss & 30s Safety Watchdog!")
     
     while True:
         time.sleep(1)
