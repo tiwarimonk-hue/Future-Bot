@@ -216,11 +216,13 @@ def format_price(price, tick_size):
 def format_qty(qty, step_size):
     try:
         d_qty = Decimal(str(qty))
-        quantized = (d_qty // step_size) * step_size
+        # Perfect step_size alignment and truncation without precision overflow
+        quantized = (d_qty / step_size).quantize(Decimal('1'), rounding=ROUND_DOWN) * step_size
         step_str = f"{step_size:f}".rstrip("0")
         if "." in step_str:
             decimals = len(step_str.split(".")[1])
-            return f"{quantized:.{decimals}f}"
+            # Strict format to avoid scientific notation or extra trailing decimals
+            return f"{quantized.quantize(step_size, rounding=ROUND_DOWN):.{decimals}f}"
         else:
             return str(int(quantized))
     except Exception:
@@ -267,7 +269,6 @@ def handle_trade_result(symbol, is_win):
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
-        # Silent validation check: agar valid nahi hai toh bina log ke chupchaap return ho jao
         if not validate_coin_for_trading(symbol):
             with data_lock:
                 active_trade_symbols.discard(symbol)
@@ -636,7 +637,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
                 let scansHtml = data.scans.map(s => `<p>${s}</p>`).join("");
                 document.getElementById("radar-feed").innerHTML = scansHtml || "Scanning market for 1.0% pumps/dumps in 5s...";
                 
-                let logsHtml = data.logs.map(log => `<p>${log}</p>`).join("");
+                let logsHtml = data.logs.log ? data.logs.map(log => `<p>${log}</p>`).join("") : data.logs.map(log => `<p>${log}</p>`).join("");
                 document.getElementById("ledger").innerHTML = logsHtml;
             } catch(e) {}
         }
@@ -646,7 +647,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | Clean Logs Enabled)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.35 Margin + 20x | Precision Filter Fixed)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -708,7 +709,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Clean Logs!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Precision Format Fixed!")
     
     while True:
         time.sleep(1)
