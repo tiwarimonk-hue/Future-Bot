@@ -31,7 +31,7 @@ dashboard_data = {
     "action_direction": "--",
     "status": "Initializing Binance WS-FAPI Engine...",
     "target_settlement": "-- IST",
-    "entry_target": "-- IST (T + 900ms)",
+    "entry_target": "-- IST (T + 950ms)",
     "exit_target": "-- IST (T + 8000ms)",
     "clock_offset_ms": 0.0,
     "logs": [],
@@ -58,7 +58,7 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET')
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 MIN_FUNDING_RATE_THRESHOLD = -0.004
-ENTRY_MARGIN_USD = 2.0
+ENTRY_MARGIN_USD = 1.0
 
 clock_offset_ms = 0.0
 
@@ -282,7 +282,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance WS-FAPI Funding Engine ($2 Margin + Max 25x Leverage)</h1>
+    <h1>⚡ Binance WS-FAPI Funding Engine ($1 Margin + Max 25x Leverage)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -435,7 +435,7 @@ def scan_best_funding_opportunity():
 
     return None
 
-def set_max_leverage_and_get_qty(symbol, price, margin_usd=2.0):
+def set_max_leverage_and_get_qty(symbol, price, margin_usd=1.0):
     target_leverage = 25
     try:
         brackets = binance_signed_request("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
@@ -550,11 +550,11 @@ def run_funding_capture_engine():
                 dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
                 dashboard_data['funding_rate'] = rate_percent
                 dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-                dashboard_data['action_direction'] = "LONG CAPTURE ($2 MARGIN)"
+                dashboard_data['action_direction'] = "LONG CAPTURE ($1 MARGIN)"
 
             t_rescan_15s = settle_epoch - 15000
             t_recheck = settle_epoch - 2000
-            t_entry = settle_epoch + 900
+            t_entry = settle_epoch + 950
             t_exit = settle_epoch + 8000
             t_emergency_sweep = settle_epoch + 10000
 
@@ -562,11 +562,11 @@ def run_funding_capture_engine():
             exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
 
             with data_lock:
-                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 900ms)"
+                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 950ms)"
                 dashboard_data['exit_target'] = f"{exit_ist} IST (T + 8000ms)"
                 dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
 
-            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+900ms")
+            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T+950ms")
 
             last_scan_time = time.time()
             interrupted = False
@@ -662,9 +662,9 @@ def run_funding_capture_engine():
             except Exception as e:
                 add_ui_log(f"Order prep warning: {e}")
 
-            # --- PHASE 3: T+900ms Market Buy Entry Execution ---
+            # --- PHASE 3: T+950ms Market Buy Entry Execution ---
             precision_wait_until(t_entry)
-            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]  # <--- FIXED HERE
+            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             order_accepted = False
 
             try:
@@ -784,4 +784,3 @@ def run_funding_capture_engine():
 
 if __name__ == '__main__':
     run_funding_capture_engine()
-
