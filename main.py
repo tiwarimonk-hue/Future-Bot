@@ -95,9 +95,8 @@ def binance_public_get(endpoint, params=None):
         if resp.status_code == 200:
             return resp.json()
         elif resp.status_code == 429 or resp.status_code == 418:
-            add_ui_log(f"⚠️ Rate limit hit (HTTP {resp.status_code}) on {endpoint}. Sleeping 5s...")
             time.sleep(5)
-    except Exception as e:
+    except Exception:
         pass
     return {}
 
@@ -124,10 +123,9 @@ def binance_signed_request(method, endpoint, params=None):
             if data["code"] < 0:
                 add_ui_log(f"⚠️ Binance API Error [{endpoint}]: {data}")
                 if data["code"] == -1003:
-                    add_ui_log("🚨 IP Rate Limited (-1003). Sleeping for 15 seconds...")
                     time.sleep(15)
         return data
-    except Exception as e:
+    except Exception:
         pass
     return {}
 
@@ -366,13 +364,14 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         time.sleep(1.0)
         
-        # 2. Place 0.7% Stop Loss Stop-Market Order
+        # 2. Place 0.7% Stop Loss Order (Fixed for Binance Futures -4120 error by using STOP Market configuration)
         sl_id = None
         sl_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
             "side": exit_side,
-            "type": "STOP_MARKET",
+            "type": "STOP",
             "quantity": str(amount),
+            "price": str(sl_price),
             "stopPrice": str(sl_price),
             "workingType": "MARK_PRICE",
             "reduceOnly": "true"
@@ -381,7 +380,21 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             sl_id = sl_res.get("orderId")
             add_ui_log(f"🛑 [{symbol}] Stop Loss Placed at {sl_price} (0.7%)")
         else:
-            add_ui_log(f"⚠️ [{symbol}] Stop Loss Warning: {sl_res}")
+            # Fallback agar STOP order mein bhi issue aaye toh STOP_MARKET try karega
+            sl_res_fallback = binance_signed_request("POST", "/fapi/v1/order", {
+                "symbol": symbol,
+                "side": exit_side,
+                "type": "STOP_MARKET",
+                "quantity": str(amount),
+                "stopPrice": str(sl_price),
+                "workingType": "MARK_PRICE",
+                "reduceOnly": "true"
+            })
+            if sl_res_fallback and isinstance(sl_res_fallback, dict) and "orderId" in sl_res_fallback:
+                sl_id = sl_res_fallback.get("orderId")
+                add_ui_log(f"🛑 [{symbol}] Stop Loss Placed (Fallback) at {sl_price} (0.7%)")
+            else:
+                add_ui_log(f"⚠️ [{symbol}] Stop Loss Warning: {sl_res_fallback}")
             
         is_win = False
         trade_closed = False
@@ -389,7 +402,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         # Monitor trade for 90 seconds (Waiting for TP, SL hit, or timeout)
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
-            time.sleep(1.0)  # Increased sleep to reduce API calls
+            time.sleep(1.0)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
             pos_amt = 0.0
@@ -480,7 +493,7 @@ def position_guardian_worker():
                             handle_trade_result(sym, False)
         except Exception:
             pass
-        time.sleep(10)  # Increased check interval to prevent rate limit
+        time.sleep(10)
 
 threading.Thread(target=position_guardian_worker, daemon=True).start()
 
@@ -573,7 +586,7 @@ def dynamic_market_scanner():
         except Exception:
             pass
 
-        time.sleep(2)  # Added 2 seconds delay between scan loops to avoid rate limits
+        time.sleep(2)
 
 threading.Thread(target=dynamic_market_scanner, daemon=True).start()
 
