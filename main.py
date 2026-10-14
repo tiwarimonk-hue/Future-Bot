@@ -36,7 +36,7 @@ DROP_TIME_WINDOW_SEC = 5         # 5 seconds window
 
 TP_PCT = 0.01                    # 1.0% Take Profit
 SL_PCT = 0.01                    # 1.0% Stop Loss
-HOLD_TIME_SECONDS = 30           # Max hold timeout
+HOLD_TIME_SECONDS = 20           # Updated: Max hold timeout to 20 seconds
 
 MAX_CONCURRENT_TRADES = 3        # Strict max 3 trades limit
 COIN_COOLDOWN_SECONDS = 120      # 2 minutes cooldown per coin
@@ -304,7 +304,7 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             return
         
         order_id = order_res.get("orderId")
-        time.sleep(0.5)
+        time.sleep(0.3)
         
         chk = binance_signed_request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
         fill_price_float = entry_price
@@ -331,35 +331,30 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         # Place Take Profit Limit Order
         tp_id = None
-        for attempt in range(5):
-            tp_res = binance_signed_request("POST", "/fapi/v1/order", {
-                "symbol": symbol,
-                "side": exit_side,
-                "type": "LIMIT",
-                "quantity": str(amount),
-                "price": str(tp_price),
-                "timeInForce": "GTC",
-                "reduceOnly": "true"
-            })
-            if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
-                tp_id = tp_res.get("orderId")
-                add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price}")
-                break
-            time.sleep(0.3)
+        tp_res = binance_signed_request("POST", "/fapi/v1/order", {
+            "symbol": symbol,
+            "side": exit_side,
+            "type": "LIMIT",
+            "quantity": str(amount),
+            "price": str(tp_price),
+            "timeInForce": "GTC",
+            "reduceOnly": "true"
+        })
+        if tp_res and isinstance(tp_res, dict) and "orderId" in tp_res:
+            tp_id = tp_res.get("orderId")
+            add_ui_log(f"✅ [{symbol}] Take Profit Placed at {tp_price}")
             
         is_win = False
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 30 seconds with internal Stop Loss & TP check
+        # Monitor trade for 20 seconds with internal Stop Loss & TP check
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
-            time.sleep(1)
+            time.sleep(0.5)
             
-            # Check current price and position status
             ticker = binance_public_get("/fapi/v1/ticker/price", {"symbol": symbol})
             current_price = float(ticker.get("price", fill_price_float)) if ticker and "price" in ticker else fill_price_float
             
-            # Internal Stop Loss trigger condition
             sl_triggered = False
             if trade_side == "BUY" and current_price <= sl_price_target:
                 sl_triggered = True
@@ -396,9 +391,9 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
-        # If hold time reached and position still open, force exit
+        # If hold time (20s) reached and position still open, force exit
         if not trade_closed:
-            add_ui_log(f"🔴 [{symbol}] Hold time (30s) reached! Force Market Exit.")
+            add_ui_log(f"🔴 [{symbol}] Hold time (20s) reached! Force Market Exit.")
             cancel_all_orders_rest(symbol)
             
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -447,8 +442,9 @@ def position_guardian_worker():
                         with data_lock:
                             open_time = open_position_timestamps.get(sym, 0)
                         
-                        if open_time > 0 and (now - open_time) > 35:
-                            add_ui_log(f"🛡️ WATCHDOG: [{sym}] Position stuck past 35s limit! Forcing immediate exit.")
+                        # Watchdog timeout updated to 25s (slightly above 20s hold limit)
+                        if open_time > 0 and (now - open_time) > 25:
+                            add_ui_log(f"🛡️ WATCHDOG: [{sym}] Position stuck past 25s limit! Forcing immediate exit.")
                             cancel_all_orders_rest(sym)
                             exit_side = "SELL" if amt > 0 else "BUY"
                             binance_signed_request("POST", "/fapi/v1/order", {
@@ -648,7 +644,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | Internal SL Bypass Active)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.30 Margin + 20x | 20s Timeout Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -710,7 +706,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Internal Stop Loss & 30s Safety Watchdog!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with 20s Hold Limit & Watchdog Active!")
     
     while True:
         time.sleep(1)
