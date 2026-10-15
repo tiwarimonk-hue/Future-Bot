@@ -3,7 +3,6 @@ import time
 import json
 import hmac
 import hashlib
-import uuid
 import math
 import threading
 import websocket
@@ -87,7 +86,7 @@ class BinanceHTTP:
 
         url_pr = f"{self.base_url}/fapi/v1/ticker/price"
         pr_data = self.session.get(url_pr).json()
-        price_map = {item["symbol"]: float(item["price"]) for item in pr_data}
+        price_map = {item["symbol"]: float(item["price"]) for item in pr_data} if isinstance(pr_data, list) else {}
 
         list_items = []
         if isinstance(pi_data, list):
@@ -391,91 +390,35 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 
 # ==========================================
-# 4. WEBSOCKET FAST-LANE PIPELINE
+# 4. WEBSOCKET FAST-LANE PIPELINE (FIXED)
 # ==========================================
 
 API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold requested
+MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold
 INITIAL_ENTRY_MARGIN_USD = 1.0      # $1 Initial Entry Margin
 
 ws_client = None
-ws_ready = False
-
-
-def get_binance_listen_key():
-    try:
-        url = "https://fapi.binance.com/fapi/v1/listenKey"
-        headers = {"X-MBX-APIKEY": API_KEY}
-        resp = requests.post(url, headers=headers).json()
-        return resp.get("listenKey")
-    except Exception:
-        return None
-
-
-def on_ws_message(ws, message):
-    try:
-        data = json.loads(message)
-    except Exception:
-        return
-    global ws_ready
-    ws_ready = True
-    with data_lock:
-        dashboard_data['status'] = "WS AUTHENTICATED (READY)"
-    add_ui_log("WebSocket Trade Pipeline Connected & LIVE")
-
-
-def on_ws_open(ws):
-    global ws_ready
-    ws_ready = True
-    add_ui_log("WebSocket Connection Opened.")
-
-
-def on_ws_close(ws, code, msg):
-    global ws_ready
-    ws_ready = False
-    with data_lock:
-        dashboard_data["status"] = "WS DISCONNECTED"
-
-
-def on_ws_error(ws, error):
-    global ws_ready
-    ws_ready = False
-
-
-def start_heartbeat(ws):
-    def run():
-        while True:
-            time.sleep(30)
-            try:
-                ws.send(json.dumps({"method": "PING"}))
-            except Exception:
-                break
-    threading.Thread(target=run, daemon=True).start()
+ws_ready = True  # Keep True as engine relies on REST execution pipeline
 
 
 def connect_websocket():
-    global ws_client
+    # WebSocket background connection handler
     while True:
-        listen_key = get_binance_listen_key()
-        if not listen_key:
-            time.sleep(5)
-            continue
         try:
-            ws_url = f"wss://fstream.binance.com/ws/{listen_key}"
+            ws_url = "wss://fstream.binance.com/ws/!miniTicker@arr"
             ws_client = websocket.WebSocketApp(
                 ws_url,
-                on_open=on_ws_open,
-                on_message=on_ws_message,
-                on_close=on_ws_close,
-                on_error=on_ws_error
+                on_open=lambda ws: add_ui_log("Market Stream WebSocket Connected."),
+                on_message=lambda ws, msg: None,
+                on_error=lambda ws, err: None,
+                on_close=lambda ws, c, m: None
             )
-            start_heartbeat(ws_client)
             ws_client.run_forever()
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(5)
 
 
 threading.Thread(target=connect_websocket, daemon=True).start()
@@ -601,10 +544,7 @@ def cancel_all_open_orders(http_client, symbol):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Dynamic Funding Engine Active ($1 Margin | Threshold: -0.3%). Waiting for WS...")
-
-    while not ws_ready:
-        time.sleep(0.1)
+    add_ui_log("Dynamic Funding Engine Active ($1 Margin | Threshold: -0.3%). Scanner Starting...")
 
     while True:
         sync_binance_clock(http_client)
