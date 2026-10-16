@@ -396,15 +396,14 @@ threading.Thread(target=run_web_server, daemon=True).start()
 API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold
+MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold requested
 INITIAL_ENTRY_MARGIN_USD = 1.0      # $1 Initial Entry Margin
 
 ws_client = None
-ws_ready = True  # Keep True as engine relies on REST execution pipeline
+ws_ready = True
 
 
 def connect_websocket():
-    # WebSocket background connection handler
     while True:
         try:
             ws_url = "wss://fstream.binance.com/ws/!miniTicker@arr"
@@ -699,6 +698,10 @@ def run_funding_capture_engine():
                 pct = spec["offset"]
                 order_margin = spec["margin"]
                 dca_target_price = round(current_avg_price * (1.0 - pct), price_decimals)
+                
+                # Safety check to prevent ZeroDivisionError
+                if dca_target_price <= 0 or qty_step <= 0:
+                    continue
                 
                 notional = order_margin * leverage
                 calc_dca_qty = max(min_qty, math.floor((notional / dca_target_price) / qty_step) * qty_step)
