@@ -499,6 +499,8 @@ def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
         tick_size = float(price_filter.get("tickSize", "0.0001"))
         lot_filter = inst_info['lotSizeFilter']
         qty_step = float(lot_filter["qtyStep"])
+        if qty_step <= 0:
+            qty_step = 1.0
         min_qty = float(lot_filter['minOrderQty'])
     except Exception:
         max_leverage = 20.0
@@ -699,12 +701,14 @@ def run_funding_capture_engine():
                 order_margin = spec["margin"]
                 dca_target_price = round(current_avg_price * (1.0 - pct), price_decimals)
                 
-                # Safety check to prevent ZeroDivisionError
-                if dca_target_price <= 0 or qty_step <= 0:
+                # Strict check to prevent ZeroDivisionError
+                if dca_target_price <= 0:
                     continue
                 
+                safe_qty_step = qty_step if (qty_step and qty_step > 0) else 1.0
+                
                 notional = order_margin * leverage
-                calc_dca_qty = max(min_qty, math.floor((notional / dca_target_price) / qty_step) * qty_step)
+                calc_dca_qty = max(min_qty, math.floor((notional / dca_target_price) / safe_qty_step) * safe_qty_step)
                 dca_qty = f"{calc_dca_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_dca_qty))
 
                 try:
