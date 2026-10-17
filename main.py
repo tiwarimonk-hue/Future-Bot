@@ -605,12 +605,40 @@ def run_funding_capture_engine():
                 sync_binance_clock(http_client)
                 new_opp = scan_best_funding_opportunity(http_client)
                 
-                if new_opp and new_opp['symbol'] != symbol:
-                    new_win = new_opp['window_type']
-                    if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
-                        add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_opp['funding_rate']*100:.4f}%)")
-                        interrupted = True
-                        break
+                if new_opp:
+                    if new_opp['symbol'] != symbol:
+                        new_win = new_opp['window_type']
+                        if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
+                            add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_opp['funding_rate']*100:.4f}%)")
+                            interrupted = True
+                            break
+                    else:
+                        # Same symbol: Re-arm and update funding rate/milestones dynamically
+                        opportunity = new_opp
+                        rate = opportunity['funding_rate']
+                        settle_epoch = opportunity['next_funding_time']
+                        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+                        rate_percent = f"{rate * 100:+.4f}%"
+                        window_type = opportunity['window_type']
+
+                        t_rescan = settle_epoch - 65000
+                        t_entry = settle_epoch - 50000
+                        t_cancel = settle_epoch + 7000
+                        t_exit = settle_epoch + 8000
+                        t_emergency = settle_epoch + 10000
+
+                        entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+                        exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+
+                        with data_lock:
+                            dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
+                            dashboard_data['funding_rate'] = rate_percent
+                            dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
+                            dashboard_data['entry_target'] = f"{entry_ist} IST (T - 50000ms)"
+                            dashboard_data['exit_target'] = f"{exit_ist} IST (Emergency T+10s)"
+                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
+
+                        add_ui_log(f"🔄 15-MIN RE-ARM & FUNDING UPDATE [{window_type}]: {symbol} | Rate: {rate_percent}")
 
         if interrupted:
             continue
@@ -626,9 +654,17 @@ def run_funding_capture_engine():
                 opportunity = final_opp
                 symbol = opportunity['symbol']
                 rate = opportunity['funding_rate']
+                settle_epoch = opportunity['next_funding_time']
+                settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+                rate_percent = f"{rate * 100:+.4f}%"
+                window_type = opportunity['window_type']
             elif final_opp['symbol'] == symbol:
                 opportunity = final_opp
                 rate = opportunity['funding_rate']
+                settle_epoch = opportunity['next_funding_time']
+                settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+                rate_percent = f"{rate * 100:+.4f}%"
+                window_type = opportunity['window_type']
 
         if rate > MIN_FUNDING_RATE_THRESHOLD:
             add_ui_log(f"⚠ THRESHOLD BREACH / WEAK RATE: {symbol} rate is now {rate*100:+.4f}% (Above -0.3%). Skipping trade & restarting scan...")
@@ -701,7 +737,6 @@ def run_funding_capture_engine():
                 order_margin = spec["margin"]
                 dca_target_price = round(current_avg_price * (1.0 - pct), price_decimals)
                 
-                # Strict check to prevent ZeroDivisionError
                 if dca_target_price <= 0:
                     continue
                 
