@@ -317,7 +317,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Dynamic Funding Engine ($1 Initial + Dynamic DCA)</h1>
+    <h1>⚡ Binance Dynamic Funding Engine ($5 Initial + Dynamic DCA)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -397,7 +397,7 @@ API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 
 MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold requested
-INITIAL_ENTRY_MARGIN_USD = 1.0      # $1 Initial Entry Margin
+INITIAL_ENTRY_MARGIN_USD = 5.0      # $5 Initial Entry Margin
 
 ws_client = None
 ws_ready = True
@@ -489,7 +489,7 @@ def scan_best_funding_opportunity(http_client):
     return None
 
 
-def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
+def calculate_qty_for_price(http_client, symbol, price, margin_usd=5.0):
     try:
         inst_info = http_client.get_instruments_info(category="linear", symbol=symbol)["result"]["list"][0]
         exchange_max_lev = float(inst_info.get("leverageFilter", {}).get("maxLeverage", 20))
@@ -545,7 +545,7 @@ def cancel_all_open_orders(http_client, symbol):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Dynamic Funding Engine Active ($1 Margin | Threshold: -0.3%). Scanner Starting...")
+    add_ui_log("Dynamic Funding Engine Active ($5 Margin | Threshold: -0.3%). Scanner Starting...")
 
     while True:
         sync_binance_clock(http_client)
@@ -571,7 +571,7 @@ def run_funding_capture_engine():
             dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
             dashboard_data['funding_rate'] = rate_percent
             dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-            dashboard_data['action_direction'] = "LONG CAPTURE + $1 DCA"
+            dashboard_data['action_direction'] = "LONG CAPTURE + $5 DCA"
 
         t_rescan = settle_epoch - 65000
         t_entry = settle_epoch - 50000
@@ -613,7 +613,6 @@ def run_funding_capture_engine():
                             interrupted = True
                             break
                     else:
-                        # Same symbol: Re-arm and update funding rate/milestones dynamically
                         opportunity = new_opp
                         rate = opportunity['funding_rate']
                         settle_epoch = opportunity['next_funding_time']
@@ -687,7 +686,7 @@ def run_funding_capture_engine():
         entry_success = False
         try:
             http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
-            add_ui_log(f"🚀 INITIAL ENTRY EXECUTED (BUY): {initial_qty} {symbol} ($1 Margin @ {leverage}x)")
+            add_ui_log(f"🚀 INITIAL ENTRY EXECUTED (BUY): {initial_qty} {symbol} ($5 Margin @ {leverage}x)")
             entry_success = True
         except Exception as e:
             add_ui_log(f"Initial entry failed: {e}")
@@ -723,15 +722,15 @@ def run_funding_capture_engine():
             dca6_offset = dca5_offset + 0.005
 
             dca_orders_spec = [
-                {"offset": dca1_offset, "margin": 1.0, "label": "90% Funding"},
-                {"offset": dca2_offset, "margin": 1.0, "label": "+0.3%"},
-                {"offset": dca3_offset, "margin": 1.0, "label": "+0.3%"},
-                {"offset": dca4_offset, "margin": 1.0, "label": "+0.3%"},
-                {"offset": dca5_offset, "margin": 1.0, "label": "+0.3%"},
-                {"offset": dca6_offset, "margin": 1.0, "label": "+0.5%"}
+                {"offset": dca1_offset, "margin": 5.0, "label": "90% Funding"},
+                {"offset": dca2_offset, "margin": 5.0, "label": "+0.3%"},
+                {"offset": dca3_offset, "margin": 5.0, "label": "+0.3%"},
+                {"offset": dca4_offset, "margin": 5.0, "label": "+0.3%"},
+                {"offset": dca5_offset, "margin": 5.0, "label": "+0.3%"},
+                {"offset": dca6_offset, "margin": 5.0, "label": "+0.5%"}
             ]
 
-            add_ui_log("📐 PLACING 6 DYNAMIC DCA LIMIT ORDERS ($1 EACH)...")
+            add_ui_log("📐 PLACING 6 DYNAMIC DCA LIMIT ORDERS ($5 EACH)...")
             for spec in dca_orders_spec:
                 pct = spec["offset"]
                 order_margin = spec["margin"]
