@@ -9,7 +9,7 @@ import websocket
 import requests
 from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 
 # ==========================================
@@ -266,7 +266,7 @@ def precision_wait_until(target_time_ms):
 
 
 # ==========================================
-# 3. WEB DASHBOARD
+# 3. WEB DASHBOARD (THREADED HTTP SERVER)
 # ==========================================
 
 class FundingDashboardHandler(BaseHTTPRequestHandler):
@@ -382,7 +382,8 @@ updateDashboard();
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), FundingDashboardHandler)
+    # Using ThreadingHTTPServer to prevent request locking and freezing
+    server = ThreadingHTTPServer(('0.0.0.0', port), FundingDashboardHandler)
     server.serve_forever()
 
 
