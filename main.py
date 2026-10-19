@@ -390,14 +390,14 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 
 # ==========================================
-# 4. WEBSOCKET FAST-LANE PIPELINE (FIXED)
+# 4. WEBSOCKET FAST-LANE PIPELINE
 # ==========================================
 
 API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.003  # -0.3% Threshold requested
-INITIAL_ENTRY_MARGIN_USD = 5.0      # $5 Initial Entry Margin
+MIN_FUNDING_RATE_THRESHOLD = -0.0045  # Updated to -0.45% Threshold
+INITIAL_ENTRY_MARGIN_USD = 5.0        # $5 Initial Entry Margin
 
 ws_client = None
 ws_ready = True
@@ -424,8 +424,10 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 
 
 # ==========================================
-# 5. MARKET SCANNER & ORDER CALCULATIONS
+# 5. MARKET SCANNER & ORDER CALCULATIONS (TRADFI BLACKLISTED)
 # ==========================================
+
+TRADFI_BLACKLIST = ["UNITREE", "TSLA", "AAPL", "NVDA", "AMZN", "MSFT", "GOOG", "META", "SPX", "NDX", "XAU", "XAG"]
 
 def scan_best_funding_opportunity(http_client):
     try:
@@ -442,6 +444,12 @@ def scan_best_funding_opportunity(http_client):
         sym = t.get("symbol", "")
         if not sym.endswith("USDT"):
             continue
+            
+        # Ignore TradFi / Off-Hours restricted tokens
+        base_name = sym.replace("USDT", "")
+        if any(black in base_name for black in TRADFI_BLACKLIST):
+            continue
+
         raw_rate = t.get("fundingRate", "")
         raw_next = t.get("nextFundingTime", "")
         if not raw_rate or not raw_next:
@@ -540,325 +548,329 @@ def cancel_all_open_orders(http_client, symbol):
 
 
 # ==========================================
-# 6. DYNAMIC DCA ENGINE MAIN LOOP
+# 6. DYNAMIC DCA ENGINE MAIN LOOP (CRASH-PROOF)
 # ==========================================
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Dynamic Funding Engine Active ($5 Margin | Threshold: -0.3%). Scanner Starting...")
+    add_ui_log("Dynamic Funding Engine Active ($5 Margin | Threshold: -0.45%). Scanner Starting...")
 
     while True:
-        sync_binance_clock(http_client)
-        opportunity = scan_best_funding_opportunity(http_client)
+        try:
+            sync_binance_clock(http_client)
+            opportunity = scan_best_funding_opportunity(http_client)
 
-        if not opportunity:
+            if not opportunity:
+                with data_lock:
+                    dashboard_data['target_symbol'] = "Scanning..."
+                    dashboard_data['funding_rate'] = "0.00%"
+                    dashboard_data['action_direction'] = "--"
+                    dashboard_data['status'] = "SCANNING: No coin <= -0.45% found"
+                time.sleep(3)
+                continue
+
+            symbol = opportunity['symbol']
+            rate = opportunity['funding_rate']
+            settle_epoch = opportunity['next_funding_time']
+            settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+            rate_percent = f"{rate * 100:+.4f}%"
+            window_type = opportunity['window_type']
+
             with data_lock:
-                dashboard_data['target_symbol'] = "Scanning..."
-                dashboard_data['funding_rate'] = "0.00%"
-                dashboard_data['action_direction'] = "--"
-                dashboard_data['status'] = "SCANNING: No coin <= -0.3% found"
-            time.sleep(3)
-            continue
+                dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
+                dashboard_data['funding_rate'] = rate_percent
+                dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
+                dashboard_data['action_direction'] = "LONG CAPTURE + $5 DCA"
 
-        symbol = opportunity['symbol']
-        rate = opportunity['funding_rate']
-        settle_epoch = opportunity['next_funding_time']
-        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-        rate_percent = f"{rate * 100:+.4f}%"
-        window_type = opportunity['window_type']
+            t_rescan = settle_epoch - 65000
+            t_entry = settle_epoch - 50000
+            t_cancel = settle_epoch + 7000
+            t_exit = settle_epoch + 8000
+            t_emergency = settle_epoch + 10000
 
-        with data_lock:
-            dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
-            dashboard_data['funding_rate'] = rate_percent
-            dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-            dashboard_data['action_direction'] = "LONG CAPTURE + $5 DCA"
+            entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+            exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
 
-        t_rescan = settle_epoch - 65000
-        t_entry = settle_epoch - 50000
-        t_cancel = settle_epoch + 7000
-        t_exit = settle_epoch + 8000
-        t_emergency = settle_epoch + 10000
+            with data_lock:
+                dashboard_data['entry_target'] = f"{entry_ist} IST (T - 50000ms)"
+                dashboard_data['exit_target'] = f"{exit_ist} IST (Emergency T+10s)"
+                dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
 
-        entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-        exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+            add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T-50s")
 
-        with data_lock:
-            dashboard_data['entry_target'] = f"{entry_ist} IST (T - 50000ms)"
-            dashboard_data['exit_target'] = f"{exit_ist} IST (Emergency T+10s)"
-            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
-
-        add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T-50s")
-
-        last_scan_time = time.time()
-        interrupted = False
-
-        while True:
-            now_ms = get_synced_time_ms()
-            if now_ms >= t_rescan:
-                break
-
-            time.sleep(2.0)
-            
-            if time.time() - last_scan_time >= 900:
-                last_scan_time = time.time()
-                add_ui_log("🔍 Performing scheduled 15-minute background market rescan...")
-                sync_binance_clock(http_client)
-                new_opp = scan_best_funding_opportunity(http_client)
-                
-                if new_opp:
-                    if new_opp['symbol'] != symbol:
-                        new_win = new_opp['window_type']
-                        if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
-                            add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_opp['funding_rate']*100:.4f}%)")
-                            interrupted = True
-                            break
-                    else:
-                        opportunity = new_opp
-                        rate = opportunity['funding_rate']
-                        settle_epoch = opportunity['next_funding_time']
-                        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-                        rate_percent = f"{rate * 100:+.4f}%"
-                        window_type = opportunity['window_type']
-
-                        t_rescan = settle_epoch - 65000
-                        t_entry = settle_epoch - 50000
-                        t_cancel = settle_epoch + 7000
-                        t_exit = settle_epoch + 8000
-                        t_emergency = settle_epoch + 10000
-
-                        entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-                        exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-
-                        with data_lock:
-                            dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
-                            dashboard_data['funding_rate'] = rate_percent
-                            dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-                            dashboard_data['entry_target'] = f"{entry_ist} IST (T - 50000ms)"
-                            dashboard_data['exit_target'] = f"{exit_ist} IST (Emergency T+10s)"
-                            dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
-
-                        add_ui_log(f"🔄 15-MIN RE-ARM & FUNDING UPDATE [{window_type}]: {symbol} | Rate: {rate_percent}")
-
-        if interrupted:
-            continue
-
-        precision_wait_until(t_rescan)
-        add_ui_log("⚡ T-65s Pre-Entry Final Rescan running...")
-        sync_binance_clock(http_client)
-        final_opp = scan_best_funding_opportunity(http_client)
-
-        if final_opp:
-            if final_opp['symbol'] != symbol and final_opp['funding_rate'] < rate:
-                add_ui_log(f"🔄 PRE-ENTRY SWITCH: Upgraded to {final_opp['symbol']} ({final_opp['funding_rate']*100:.4f}%)")
-                opportunity = final_opp
-                symbol = opportunity['symbol']
-                rate = opportunity['funding_rate']
-                settle_epoch = opportunity['next_funding_time']
-                settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-                rate_percent = f"{rate * 100:+.4f}%"
-                window_type = opportunity['window_type']
-            elif final_opp['symbol'] == symbol:
-                opportunity = final_opp
-                rate = opportunity['funding_rate']
-                settle_epoch = opportunity['next_funding_time']
-                settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-                rate_percent = f"{rate * 100:+.4f}%"
-                window_type = opportunity['window_type']
-
-        if rate > MIN_FUNDING_RATE_THRESHOLD:
-            add_ui_log(f"⚠ THRESHOLD BREACH / WEAK RATE: {symbol} rate is now {rate*100:+.4f}% (Above -0.3%). Skipping trade & restarting scan...")
-            time.sleep(2)
-            continue
-
-        precision_wait_until(t_entry)
-        entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-        
-        try:
-            live_ticker = http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
-            live_price = float(live_ticker.get("lastPrice", opportunity['last_price']))
-        except Exception:
-            live_price = opportunity['last_price']
-
-        initial_qty, leverage, price_decimals, qty_step, min_qty, qty_decimals = calculate_qty_for_price(
-            http_client, symbol, live_price, INITIAL_ENTRY_MARGIN_USD
-        )
-        
-        entry_success = False
-        try:
-            http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
-            add_ui_log(f"🚀 INITIAL ENTRY EXECUTED (BUY): {initial_qty} {symbol} ($5 Margin @ {leverage}x)")
-            entry_success = True
-        except Exception as e:
-            add_ui_log(f"Initial entry failed: {e}")
-
-        if entry_success:
-            time.sleep(0.3)
-            current_avg_price = live_price
-            try:
-                pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-                current_avg_price = float(pos_info.get("avgPrice", current_avg_price))
-            except Exception:
-                pass
-
-            tp_price = round(current_avg_price * 1.01, price_decimals)
-            try:
-                http_client.set_trading_stop(
-                    category="linear",
-                    symbol=symbol,
-                    takeProfit=f"{tp_price:.{price_decimals}f}",
-                    tpTriggerBy="LastPrice",
-                    positionIdx=0
-                )
-                add_ui_log(f"🎯 INITIAL TP SET AT: {tp_price:.{price_decimals}f} (+1.0%)")
-            except Exception as e:
-                add_ui_log(f"TP Set Failed: {e}")
-
-            abs_funding_pct = abs(rate)
-            dca1_offset = abs_funding_pct * 0.90
-            dca2_offset = dca1_offset + 0.003
-            dca3_offset = dca2_offset + 0.003
-            dca4_offset = dca3_offset + 0.003
-            dca5_offset = dca4_offset + 0.003
-            dca6_offset = dca5_offset + 0.005
-
-            dca_orders_spec = [
-                {"offset": dca1_offset, "margin": 5.0, "label": "90% Funding"},
-                {"offset": dca2_offset, "margin": 5.0, "label": "+0.3%"},
-                {"offset": dca3_offset, "margin": 5.0, "label": "+0.3%"},
-                {"offset": dca4_offset, "margin": 5.0, "label": "+0.3%"},
-                {"offset": dca5_offset, "margin": 5.0, "label": "+0.3%"},
-                {"offset": dca6_offset, "margin": 5.0, "label": "+0.5%"}
-            ]
-
-            add_ui_log("📐 PLACING 6 DYNAMIC DCA LIMIT ORDERS ($5 EACH)...")
-            for spec in dca_orders_spec:
-                pct = spec["offset"]
-                order_margin = spec["margin"]
-                dca_target_price = round(current_avg_price * (1.0 - pct), price_decimals)
-                
-                if dca_target_price <= 0:
-                    continue
-                
-                safe_qty_step = qty_step if (qty_step and qty_step > 0) else 1.0
-                
-                notional = order_margin * leverage
-                calc_dca_qty = max(min_qty, math.floor((notional / dca_target_price) / safe_qty_step) * safe_qty_step)
-                dca_qty = f"{calc_dca_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_dca_qty))
-
-                try:
-                    http_client.place_order(
-                        category="linear",
-                        symbol=symbol,
-                        side="Buy",
-                        orderType="Limit",
-                        price=f"{dca_target_price:.{price_decimals}f}",
-                        qty=dca_qty,
-                        positionIdx=0
-                    )
-                    add_ui_log(f" └─ Limit Order ({spec['label']}) Placed at {dca_target_price:.{price_decimals}f} (-{pct*100:.2f}%) | ${order_margin} Margin | Qty: {dca_qty}")
-                except Exception as e:
-                    add_ui_log(f"Limit Order (-{pct*100:.2f}%) Failed: {e}")
-
-            last_known_avg = current_avg_price
-            cancelled_at_7s = False
+            last_scan_time = time.time()
+            interrupted = False
 
             while True:
                 now_ms = get_synced_time_ms()
-                
-                if now_ms >= t_cancel and not cancelled_at_7s:
-                    cancel_all_open_orders(http_client, symbol)
-                    cancelled_at_7s = True
-
-                if now_ms >= t_exit:
+                if now_ms >= t_rescan:
                     break
 
+                time.sleep(2.0)
+                
+                if time.time() - last_scan_time >= 900:
+                    last_scan_time = time.time()
+                    add_ui_log("🔍 Performing scheduled 15-minute background market rescan...")
+                    sync_binance_clock(http_client)
+                    new_opp = scan_best_funding_opportunity(http_client)
+                    
+                    if new_opp:
+                        if new_opp['symbol'] != symbol:
+                            new_win = new_opp['window_type']
+                            if (window_type == '8H' and new_win in ['1H', '4H']) or (window_type == '4H' and new_win == '1H') or (new_opp['funding_rate'] < rate):
+                                add_ui_log(f"⚡ SWITCHING TARGET: Found better coin {new_opp['symbol']} ({new_opp['funding_rate']*100:.4f}%)")
+                                interrupted = True
+                                break
+                        else:
+                            opportunity = new_opp
+                            rate = opportunity['funding_rate']
+                            settle_epoch = opportunity['next_funding_time']
+                            settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+                            rate_percent = f"{rate * 100:+.4f}%"
+                            window_type = opportunity['window_type']
+
+                            t_rescan = settle_epoch - 65000
+                            t_entry = settle_epoch - 50000
+                            t_cancel = settle_epoch + 7000
+                            t_exit = settle_epoch + 8000
+                            t_emergency = settle_epoch + 10000
+
+                            entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+                            exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+
+                            with data_lock:
+                                dashboard_data['target_symbol'] = f"{symbol} ({window_type})"
+                                dashboard_data['funding_rate'] = rate_percent
+                                dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
+                                dashboard_data['entry_target'] = f"{entry_ist} IST (T - 50000ms)"
+                                dashboard_data['exit_target'] = f"{exit_ist} IST (Emergency T+10s)"
+                                dashboard_data['status'] = f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent}"
+
+                            add_ui_log(f"🔄 15-MIN RE-ARM & FUNDING UPDATE [{window_type}]: {symbol} | Rate: {rate_percent}")
+
+            if interrupted:
+                continue
+
+            precision_wait_until(t_rescan)
+            add_ui_log("⚡ T-65s Pre-Entry Final Rescan running...")
+            sync_binance_clock(http_client)
+            final_opp = scan_best_funding_opportunity(http_client)
+
+            if final_opp:
+                if final_opp['symbol'] != symbol and final_opp['funding_rate'] < rate:
+                    add_ui_log(f"🔄 PRE-ENTRY SWITCH: Upgraded to {final_opp['symbol']} ({final_opp['funding_rate']*100:.4f}%)")
+                    opportunity = final_opp
+                    symbol = opportunity['symbol']
+                    rate = opportunity['funding_rate']
+                    settle_epoch = opportunity['next_funding_time']
+                    settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+                    rate_percent = f"{rate * 100:+.4f}%"
+                    window_type = opportunity['window_type']
+                elif final_opp['symbol'] == symbol:
+                    opportunity = final_opp
+                    rate = opportunity['funding_rate']
+                    settle_epoch = opportunity['next_funding_time']
+                    settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+                    rate_percent = f"{rate * 100:+.4f}%"
+                    window_type = opportunity['window_type']
+
+            if rate > MIN_FUNDING_RATE_THRESHOLD:
+                add_ui_log(f"⚠ THRESHOLD BREACH / WEAK RATE: {symbol} rate is now {rate*100:+.4f}% (Above -0.45%). Skipping trade & restarting scan...")
+                time.sleep(2)
+                continue
+
+            precision_wait_until(t_entry)
+            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            
+            try:
+                live_ticker = http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
+                live_price = float(live_ticker.get("lastPrice", opportunity['last_price']))
+            except Exception:
+                live_price = opportunity['last_price']
+
+            initial_qty, leverage, price_decimals, qty_step, min_qty, qty_decimals = calculate_qty_for_price(
+                http_client, symbol, live_price, INITIAL_ENTRY_MARGIN_USD
+            )
+            
+            entry_success = False
+            try:
+                http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
+                add_ui_log(f"🚀 INITIAL ENTRY EXECUTED (BUY): {initial_qty} {symbol} ($5 Margin @ {leverage}x)")
+                entry_success = True
+            except Exception as e:
+                add_ui_log(f"Initial entry failed: {e}")
+
+            if entry_success:
+                time.sleep(0.3)
+                current_avg_price = live_price
                 try:
                     pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-                    pos_size = float(pos_info.get("size", 0))
-
-                    if pos_size == 0:
-                        add_ui_log("✅ TAKE PROFIT HIT! Position closed. Cancelling remaining orders...")
-                        cancel_all_open_orders(http_client, symbol)
-                        break
-
-                    new_avg = float(pos_info.get("avgPrice", last_known_avg))
-                    
-                    if new_avg > 0 and abs(new_avg - last_known_avg) > (10 ** -price_decimals):
-                        last_known_avg = new_avg
-                        new_tp_price = round(new_avg * 1.01, price_decimals)
-                        
-                        http_client.set_trading_stop(
-                            category="linear",
-                            symbol=symbol,
-                            takeProfit=f"{new_tp_price:.{price_decimals}f}",
-                            tpTriggerBy="LastPrice",
-                            positionIdx=0
-                        )
-                        add_ui_log(f"🔄 DCA FILLED! New Avg Price: {new_avg:.{price_decimals}f} | Updated TP: {new_tp_price:.{price_decimals}f} (+1.0%)")
-
+                    current_avg_price = float(pos_info.get("avgPrice", current_avg_price))
                 except Exception:
                     pass
 
-                time.sleep(0.5)
+                tp_price = round(current_avg_price * 1.01, price_decimals)
+                try:
+                    http_client.set_trading_stop(
+                        category="linear",
+                        symbol=symbol,
+                        takeProfit=f"{tp_price:.{price_decimals}f}",
+                        tpTriggerBy="LastPrice",
+                        positionIdx=0
+                    )
+                    add_ui_log(f"🎯 INITIAL TP SET AT: {tp_price:.{price_decimals}f} (+1.0%)")
+                except Exception as e:
+                    add_ui_log(f"TP Set Failed: {e}")
 
-        precision_wait_until(t_exit)
-        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-        
-        status_text = "SAFE EXIT FAILED"
-        status_class = "status-cancel"
+                abs_funding_pct = abs(rate)
+                dca1_offset = abs_funding_pct * 0.90
+                dca2_offset = dca1_offset + 0.003
+                dca3_offset = dca2_offset + 0.003
+                dca4_offset = dca3_offset + 0.003
+                dca5_offset = dca4_offset + 0.003
+                dca6_offset = dca5_offset + 0.005
 
-        try:
-            pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-            pos_qty = float(pos_info.get("size", 0))
+                dca_orders_spec = [
+                    {"offset": dca1_offset, "margin": 5.0, "label": "90% Funding"},
+                    {"offset": dca2_offset, "margin": 5.0, "label": "+0.3%"},
+                    {"offset": dca3_offset, "margin": 5.0, "label": "+0.3%"},
+                    {"offset": dca4_offset, "margin": 5.0, "label": "+0.3%"},
+                    {"offset": dca5_offset, "margin": 5.0, "label": "+0.3%"},
+                    {"offset": dca6_offset, "margin": 5.0, "label": "+0.5%"}
+                ]
 
-            if pos_qty > 0:
-                cancel_all_open_orders(http_client, symbol)
-                http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-                add_ui_log(f"⏰ HARD EXIT DISPATCHED (SELL MARKET): {pos_qty} {symbol} at {exit_time_str}")
-                status_text = "HARD EXIT (T+8s)"
-                status_class = "status-cancel"
-            else:
-                status_text = "TP 1.0% HIT"
-                status_class = "status-profit"
-        except Exception as e:
-            add_ui_log(f"Exit check failed: {e}")
+                add_ui_log("📐 PLACING 6 DYNAMIC DCA LIMIT ORDERS ($5 EACH)...")
+                for spec in dca_orders_spec:
+                    pct = spec["offset"]
+                    order_margin = spec["margin"]
+                    dca_target_price = round(current_avg_price * (1.0 - pct), price_decimals)
+                    
+                    if dca_target_price <= 0:
+                        continue
+                    
+                    safe_qty_step = qty_step if (qty_step and qty_step > 0) else 1.0
+                    
+                    notional = order_margin * leverage
+                    calc_dca_qty = max(min_qty, math.floor((notional / dca_target_price) / safe_qty_step) * safe_qty_step)
+                    dca_qty = f"{calc_dca_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_dca_qty))
 
-        precision_wait_until(t_emergency)
-        try:
-            pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-            pos_qty = float(pos_info.get("size", 0))
-
-            if pos_qty > 0:
-                add_ui_log(f"🚨 EMERGENCY FALLBACK EXIT (T+10s): Position still open ({pos_qty} {symbol}). Forcing clean close...")
-                cancel_all_open_orders(http_client, symbol)
-                
-                for attempt in range(3):
                     try:
-                        http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-                        time.sleep(0.3)
-                        check_pos = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-                        if float(check_pos.get("size", 0)) == 0:
-                            add_ui_log(f"✅ Emergency cleanup successful on attempt {attempt+1}")
+                        http_client.place_order(
+                            category="linear",
+                            symbol=symbol,
+                            side="Buy",
+                            orderType="Limit",
+                            price=f"{dca_target_price:.{price_decimals}f}",
+                            qty=dca_qty,
+                            positionIdx=0
+                        )
+                        add_ui_log(f" └─ Limit Order ({spec['label']}) Placed at {dca_target_price:.{price_decimals}f} (-{pct*100:.2f}%) | ${order_margin} Margin | Qty: {dca_qty}")
+                    except Exception as e:
+                        add_ui_log(f"Limit Order (-{pct*100:.2f}%) Failed: {e}")
+
+                last_known_avg = current_avg_price
+                cancelled_at_7s = False
+
+                while True:
+                    now_ms = get_synced_time_ms()
+                    
+                    if now_ms >= t_cancel and not cancelled_at_7s:
+                        cancel_all_open_orders(http_client, symbol)
+                        cancelled_at_7s = True
+
+                    if now_ms >= t_exit:
+                        break
+
+                    try:
+                        pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
+                        pos_size = float(pos_info.get("size", 0))
+
+                        if pos_size == 0:
+                            add_ui_log("✅ TAKE PROFIT HIT! Position closed. Cancelling remaining orders...")
+                            cancel_all_open_orders(http_client, symbol)
                             break
-                    except Exception as inner_e:
-                        add_ui_log(f"Emergency order attempt {attempt+1} failed: {inner_e}")
-                        time.sleep(0.5)
+
+                        new_avg = float(pos_info.get("avgPrice", last_known_avg))
                         
-                status_text = "EMERGENCY CLEANUP (T+10s)"
-                status_class = "status-cancel"
-        except Exception as e:
-            add_ui_log(f"Emergency exit check failed: {e}")
+                        if new_avg > 0 and abs(new_avg - last_known_avg) > (10 ** -price_decimals):
+                            last_known_avg = new_avg
+                            new_tp_price = round(new_avg * 1.01, price_decimals)
+                            
+                            http_client.set_trading_stop(
+                                category="linear",
+                                symbol=symbol,
+                                takeProfit=f"{new_tp_price:.{price_decimals}f}",
+                                tpTriggerBy="LastPrice",
+                                positionIdx=0
+                            )
+                            add_ui_log(f"🔄 DCA FILLED! New Avg Price: {new_avg:.{price_decimals}f} | Updated TP: {new_tp_price:.{price_decimals}f} (+1.0%)")
 
-        add_ledger_entry({
-            "coin": f"{symbol} ({window_type})",
-            "rate": rate_percent,
-            "entry_time": entry_time_str,
-            "exit_time": exit_time_str,
-            "status_text": status_text,
-            "status_class": status_class
-        })
+                    except Exception:
+                        pass
 
-        time.sleep(3)
+                    time.sleep(0.5)
+
+            precision_wait_until(t_exit)
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            
+            status_text = "SAFE EXIT FAILED"
+            status_class = "status-cancel"
+
+            try:
+                pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
+                pos_qty = float(pos_info.get("size", 0))
+
+                if pos_qty > 0:
+                    cancel_all_open_orders(http_client, symbol)
+                    http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
+                    add_ui_log(f"⏰ HARD EXIT DISPATCHED (SELL MARKET): {pos_qty} {symbol} at {exit_time_str}")
+                    status_text = "HARD EXIT (T+8s)"
+                    status_class = "status-cancel"
+                else:
+                    status_text = "TP 1.0% HIT"
+                    status_class = "status-profit"
+            except Exception as e:
+                add_ui_log(f"Exit check failed: {e}")
+
+            precision_wait_until(t_emergency)
+            try:
+                pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
+                pos_qty = float(pos_info.get("size", 0))
+
+                if pos_qty > 0:
+                    add_ui_log(f"🚨 EMERGENCY FALLBACK EXIT (T+10s): Position still open ({pos_qty} {symbol}). Forcing clean close...")
+                    cancel_all_open_orders(http_client, symbol)
+                    
+                    for attempt in range(3):
+                        try:
+                            http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
+                            time.sleep(0.3)
+                            check_pos = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
+                            if float(check_pos.get("size", 0)) == 0:
+                                add_ui_log(f"✅ Emergency cleanup successful on attempt {attempt+1}")
+                                break
+                        except Exception as inner_e:
+                            add_ui_log(f"Emergency order attempt {attempt+1} failed: {inner_e}")
+                            time.sleep(0.5)
+                            
+                    status_text = "EMERGENCY CLEANUP (T+10s)"
+                    status_class = "status-cancel"
+            except Exception as e:
+                add_ui_log(f"Emergency exit check failed: {e}")
+
+            add_ledger_entry({
+                "coin": f"{symbol} ({window_type})",
+                "rate": rate_percent,
+                "entry_time": entry_time_str,
+                "exit_time": exit_time_str,
+                "status_text": status_text,
+                "status_class": status_class
+            })
+
+            time.sleep(3)
+        except Exception as outer_e:
+            add_ui_log(f"⚠ Main loop exception caught (Prevented Crash): {outer_e}")
+            time.sleep(3)
 
 
 if __name__ == '__main__':
