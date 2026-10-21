@@ -23,10 +23,6 @@ data_lock = threading.Lock()
 session = requests.Session()
 
 # --- STRATEGY & RISK SETTINGS ---
-TRADE_MARGIN_USD = 0.50  
-LEVERAGE = 20
-POSITION_SIZE_USD = TRADE_MARGIN_USD * LEVERAGE  # $10.0 USD
-
 MIN_24H_VOLUME_USD = 50_000_000  
 THRESHOLD_PCT = 0.015            # 1.5% price movement
 DROP_TIME_WINDOW_SEC = 1         # 1 second window
@@ -142,35 +138,7 @@ def cancel_all_orders_rest(symbol):
     except Exception:
         pass
 
-def set_leverage(symbol):
-    try:
-        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": LEVERAGE})
-    except Exception:
-        pass
-
-def validate_coin_for_trading(symbol):
-    try:
-        info = binance_public_get("/fapi/v1/exchangeInfo")
-        if isinstance(info, dict) and "symbols" in info:
-            for s in info["symbols"]:
-                if s.get("symbol") == symbol:
-                    if s.get("status") != "TRADING":
-                        return False
-                    max_lev = 20
-                    min_notional = 5.0
-                    for f in s.get("filters", []):
-                        if f.get("filterType") == "LEVERAGE_FILTER":
-                            max_lev = int(f.get("maxLeverage", 20))
-                        elif f.get("filterType") == "MIN_NOTIONAL":
-                            min_notional = float(f.get("notional", 5.0))
-                    if max_lev < LEVERAGE or min_notional > 5.0:
-                        return False
-                    return True
-    except Exception:
-        pass
-    return False
-
-def fetch_symbol_precision(symbol):
+def fetch_symbol_details(symbol):
     global exchange_info_cache
     if symbol in exchange_info_cache:
         return exchange_info_cache[symbol]
@@ -183,18 +151,21 @@ def fetch_symbol_precision(symbol):
                     step_size = "0.01"
                     min_qty = "0.01"
                     tick_size = "0.01"
+                    max_lev = 20
                     for f in s.get("filters", []):
                         if f.get("filterType") == "LOT_SIZE":
                             step_size = f.get("stepSize", "0.01")
                             min_qty = f.get("minQty", "0.01")
                         elif f.get("filterType") == "PRICE_FILTER":
                             tick_size = f.get("tickSize", "0.01")
-                    res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size))
+                        elif f.get("filterType") == "LEVERAGE_FILTER":
+                            max_lev = int(f.get("maxLeverage", 20))
+                    res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size), max_lev)
                     exchange_info_cache[symbol] = res
                     return res
     except Exception:
         pass
-    return Decimal("0.01"), Decimal("0.01"), Decimal("0.01")
+    return Decimal("0.01"), Decimal("0.01"), Decimal("0.01"), 20
 
 def format_price(price, tick_size):
     try:
@@ -260,26 +231,36 @@ def handle_trade_result(symbol, is_win):
 def execute_scalp_trade(symbol, entry_price, trade_side):
     global trading_paused_until
     try:
-        if not validate_coin_for_trading(symbol):
-            add_ui_log(f"[{symbol}] Skipped: Requirements not met.")
+        step_size, min_qty, tick_size, max_lev = fetch_symbol_details(symbol)
+        
+        # Dynamic Leverage & Margin selection
+        if max_lev <= 5:
+            add_ui_log(f"[{symbol}] Skipped: Max leverage is {max_lev}x (<= 5x).")
             with data_lock:
                 active_trade_symbols.discard(symbol)
                 dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
             return
-
-        set_leverage(symbol)
+        elif max_lev < 20:
+            leverage = 10
+            trade_margin_usd = 0.60
+        else:
+            leverage = 20
+            trade_margin_usd = 0.30
+            
+        position_size_usd = trade_margin_usd * leverage
+        
+        # Set leverage on exchange
+        binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
         coin_last_trade_time[symbol] = time.time()
         
-        step_size, min_qty, tick_size = fetch_symbol_precision(symbol)
-        
-        d_pos_size = Decimal(str(POSITION_SIZE_USD))
+        d_pos_size = Decimal(str(position_size_usd))
         d_entry = Decimal(str(entry_price))
         raw_qty = d_pos_size / d_entry
         calc_qty = max(min_qty, raw_qty)
         amount = format_qty(calc_qty, step_size)
         
         action_name = "MARKET BUY (LONG)" if trade_side == "BUY" else "MARKET SELL (SHORT)"
-        add_ui_log(f"🟢 Executing {action_name}: {symbol} (Qty: {amount})")
+        add_ui_log(f"🟢 Executing {action_name}: {symbol} ({leverage}x, Margin: ${trade_margin_usd}, Qty: {amount})")
         
         order_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -611,7 +592,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>($0.50 Margin + 20x | 1s Drop & 8s/10s Emergency Exit)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Dynamic Leverage & Margin Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -673,7 +654,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with 1.5% Drop in 1s & 8s/10s Emergency Exit!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Dynamic Leverage & Margin Selection!")
     
     while True:
         time.sleep(1)
