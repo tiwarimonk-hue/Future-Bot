@@ -180,7 +180,7 @@ def format_price(price, tick_size):
 def format_qty(qty, step_size):
     try:
         d_qty = Decimal(str(qty))
-        quantized = (d_qty // step_size) * step_size
+        quantized = d_qty.quantize(step_size, rounding=ROUND_DOWN)
         step_str = f"{step_size:f}".rstrip("0")
         if "." in step_str:
             decimals = len(step_str.split(".")[1])
@@ -233,7 +233,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
     try:
         step_size, min_qty, tick_size, max_lev = fetch_symbol_details(symbol)
         
-        # Dynamic Leverage & Margin selection
         if max_lev <= 5:
             add_ui_log(f"[{symbol}] Skipped: Max leverage is {max_lev}x (<= 5x).")
             with data_lock:
@@ -249,7 +248,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             
         position_size_usd = trade_margin_usd * leverage
         
-        # Set leverage on exchange
         binance_signed_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
         coin_last_trade_time[symbol] = time.time()
         
@@ -301,7 +299,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         
         tp_price = format_price(tp_raw, tick_size)
         
-        # Place Take Profit Limit Order
         tp_id = None
         tp_res = binance_signed_request("POST", "/fapi/v1/order", {
             "symbol": symbol,
@@ -320,7 +317,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
         trade_closed = False
         trade_start_time = time.time()
         
-        # Monitor trade for 8 seconds target exit
         while time.time() - trade_start_time < HOLD_TIME_SECONDS:
             time.sleep(0.5)
             pos_risk = binance_signed_request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
@@ -339,7 +335,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
                         is_win = True
                 break
         
-        # If not closed within 8s, wait up to 10s for emergency forceful close
         if not trade_closed:
             elapsed = time.time() - trade_start_time
             if elapsed < EMERGENCY_EXIT_SECONDS:
@@ -377,9 +372,6 @@ def execute_scalp_trade(symbol, entry_price, trade_side):
             open_position_timestamps.pop(symbol, None)
             dashboard_data['active_trades_count'] = get_active_positions_count_from_exchange()
 
-# ==========================================
-# GLOBAL POSITION GUARDIAN (WATCHDOG THREAD)
-# ==========================================
 def position_guardian_worker():
     time.sleep(5)
     while True:
@@ -412,9 +404,6 @@ def position_guardian_worker():
 
 threading.Thread(target=position_guardian_worker, daemon=True).start()
 
-# ==========================================
-# DYNAMIC MARKET SCANNER (1-SEC WINDOW)
-# ==========================================
 def dynamic_market_scanner():
     global active_trade_symbols
     add_ui_log("🚀 Dynamic Market Scanner Active ($50M+ Liq, 1.5% Drop in 1s | Max 3 Trades)...")
@@ -465,7 +454,7 @@ def dynamic_market_scanner():
                     pct_change = (price - oldest_price) / oldest_price
 
                     trade_side = None
-                    if pct_change <= -THRESHOLD_PCT:  # 1.5% Drop detected
+                    if pct_change <= -THRESHOLD_PCT:
                         trade_side = "BUY"
 
                     if trade_side:
@@ -500,9 +489,6 @@ def dynamic_market_scanner():
 
 threading.Thread(target=dynamic_market_scanner, daemon=True).start()
 
-# ==========================================
-# EMBEDDED HTTP SERVER & DASHBOARD
-# ==========================================
 class BotDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
@@ -592,7 +578,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Dynamic Leverage & Margin Active)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Precision Fix Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -654,7 +640,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Dynamic Leverage & Margin Selection!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Quantity Precision Fix!")
     
     while True:
         time.sleep(1)
