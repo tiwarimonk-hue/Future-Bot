@@ -180,7 +180,8 @@ def format_price(price, tick_size):
 def format_qty(qty, step_size):
     try:
         d_qty = Decimal(str(qty))
-        quantized = d_qty.quantize(step_size, rounding=ROUND_DOWN)
+        # Ensure proper multiple calculation based on step_size
+        quantized = (d_qty / step_size).quantize(Decimal('1'), rounding=ROUND_DOWN) * step_size
         step_str = f"{step_size:f}".rstrip("0")
         if "." in step_str:
             decimals = len(step_str.split(".")[1])
@@ -578,7 +579,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Precision Fix Active)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Strict Step-Size Qty Precision Fix)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -640,7 +641,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Quantity Precision Fix!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Strict Quantity Precision Fix!")
     
     while True:
         time.sleep(1)
