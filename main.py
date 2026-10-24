@@ -109,7 +109,7 @@ def binance_signed_request(method, endpoint, params=None):
             resp = session.delete(full_url, headers=headers, timeout=5)
         
         return resp.json()
-    except Exception:
+    except Exception as e:
         pass
     return {}
 
@@ -148,19 +148,19 @@ def fetch_symbol_details(symbol):
         if isinstance(info, dict) and "symbols" in info:
             for s in info["symbols"]:
                 if s.get("symbol") == symbol:
-                    step_size = "0.01"
-                    min_qty = "0.01"
-                    tick_size = "0.01"
+                    step_size = Decimal("0.01")
+                    min_qty = Decimal("0.01")
+                    tick_size = Decimal("0.01")
                     max_lev = 20
                     for f in s.get("filters", []):
                         if f.get("filterType") == "LOT_SIZE":
-                            step_size = f.get("stepSize", "0.01")
-                            min_qty = f.get("minQty", "0.01")
+                            step_size = Decimal(str(f.get("stepSize", "0.01")))
+                            min_qty = Decimal(str(f.get("minQty", "0.01")))
                         elif f.get("filterType") == "PRICE_FILTER":
-                            tick_size = f.get("tickSize", "0.01")
+                            tick_size = Decimal(str(f.get("tickSize", "0.01")))
                         elif f.get("filterType") == "LEVERAGE_FILTER":
                             max_lev = int(f.get("maxLeverage", 20))
-                    res = (Decimal(step_size), Decimal(min_qty), Decimal(tick_size), max_lev)
+                    res = (step_size, min_qty, tick_size, max_lev)
                     exchange_info_cache[symbol] = res
                     return res
     except Exception:
@@ -170,17 +170,19 @@ def fetch_symbol_details(symbol):
 def format_price(price, tick_size):
     try:
         d_price = Decimal(str(price))
-        quantized = d_price.quantize(tick_size, rounding=ROUND_DOWN)
+        quantized = (d_price / tick_size).quantize(Decimal('1'), rounding=ROUND_DOWN) * tick_size
         tick_str = f"{tick_size:f}".rstrip("0")
-        decimals = len(tick_str.split(".")[1]) if "." in tick_str else 0
-        return f"{quantized:.{decimals}f}"
+        if "." in tick_str:
+            decimals = len(tick_str.split(".")[1])
+            return f"{quantized:.{decimals}f}"
+        else:
+            return str(int(quantized))
     except Exception:
         return str(price)
 
 def format_qty(qty, step_size):
     try:
         d_qty = Decimal(str(qty))
-        # Ensure proper multiple calculation based on step_size
         quantized = (d_qty / step_size).quantize(Decimal('1'), rounding=ROUND_DOWN) * step_size
         step_str = f"{step_size:f}".rstrip("0")
         if "." in step_str:
@@ -579,7 +581,7 @@ class BotDashboardHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card header-card">
         <div class="title-box">
-            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Strict Step-Size Qty Precision Fix)</h1>
+            <h1 class="title">⚡ Binance Scalper Bot Dashboard<br>(Absolute Precision Match Active)</h1>
         </div>
         <div id="status-box" class="status-badge">LOADING...</div>
     </div>
@@ -641,7 +643,7 @@ if __name__ == "__main__":
     
     add_ui_log("Syncing clock and exchange settings...")
     sync_binance_clock()
-    add_ui_log("⚡ Binance Scalper Bot initialized with Strict Quantity Precision Fix!")
+    add_ui_log("⚡ Binance Scalper Bot initialized with Absolute Precision Match Fix!")
     
     while True:
         time.sleep(1)
