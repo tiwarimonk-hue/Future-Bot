@@ -79,11 +79,11 @@ class BinanceHTTP:
     def get_tickers(self, category="linear"):
         try:
             url_pi = f"{self.base_url}/fapi/v1/premiumIndex"
-            pi_resp = self.session.get(url_pi)
+            pi_resp = self.session.get(url_pi, timeout=10)
             pi_data = pi_resp.json()
 
             url_pr = f"{self.base_url}/fapi/v1/ticker/price"
-            pr_resp = self.session.get(url_pr)
+            pr_resp = self.session.get(url_pr, timeout=10)
             pr_data = pr_resp.json()
 
             price_map = {}
@@ -103,6 +103,9 @@ class BinanceHTTP:
                         "nextFundingTime": next_funding_time,
                         "lastPrice": str(last_price)
                     })
+                add_ui_log(f"📊 Fetched {len(list_items)} tickers successfully.")
+            else:
+                add_ui_log(f"⚠ API Error response: {pi_data}")
             return {"result": {"list": list_items}}
         except Exception as e:
             add_ui_log(f"⚠ Error in get_tickers: {e}")
@@ -407,7 +410,11 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 def scan_top_funding_opportunities(http_client, limit=3):
     try:
         tickers = http_client.get_tickers(category="linear")["result"]["list"]
-    except Exception:
+    except Exception as e:
+        add_ui_log(f"⚠ Scan exception: {e}")
+        return []
+
+    if not tickers:
         return []
 
     now_ms = int(get_synced_time_ms())
@@ -648,7 +655,7 @@ def run_funding_capture_engine():
                     dashboard_data['funding_rate'] = "0.00%"
                     dashboard_data['action_direction'] = "--"
                     dashboard_data['status'] = "SCANNING: No coin <= -0.45% found"
-                time.sleep(30)
+                time.sleep(15) # Fast retry interval if no coins found
                 continue
 
             coins_str = ", ".join([f"{o['symbol']} ({o['funding_rate']*100:+.2f}%)" for o in opportunities])
@@ -669,7 +676,7 @@ def run_funding_capture_engine():
             time.sleep(300)
         except Exception as outer_e:
             add_ui_log(f"⚠ Main loop exception caught (Prevented Crash): {outer_e}")
-            time.sleep(30)
+            time.sleep(15)
 
 if __name__ == '__main__':
     run_funding_capture_engine()
