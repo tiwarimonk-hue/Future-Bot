@@ -540,18 +540,17 @@ def cancel_all_open_orders(http_client, symbol):
 
 
 # ==========================================
-# 6. INDIVIDUAL COIN TRADE WORKER
+# 6. INDIVIDUAL COIN TRADE WORKER (WITH 15-MIN RE-ARM & FUNDING UPDATE)
 # ==========================================
 
 def run_trade_worker(http_client, opportunity):
     symbol = opportunity['symbol']
     rate = opportunity['funding_rate']
     settle_epoch = opportunity['next_funding_time']
-    settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-    rate_percent = f"{rate * 100:+.4f}%"
     window_type = opportunity['window_type']
+    
+    rate_percent = f"{rate * 100:+.4f}%"
 
-    # Register active trade on dashboard UI
     with data_lock:
         dashboard_data['active_trades'].append({
             "symbol": symbol,
@@ -560,27 +559,49 @@ def run_trade_worker(http_client, opportunity):
         })
 
     try:
-        t_rescan = settle_epoch - 65000
-        t_entry = settle_epoch - 5000     # T - 5 seconds
-        t_cancel = settle_epoch + 7000
-        t_exit = settle_epoch + 8000
-        t_emergency = settle_epoch + 10000
-
-        entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-        add_ui_log(f"🎯 TARGET ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T-5s")
-
         last_scan_time = time.time()
+
         while True:
             now_ms = get_synced_time_ms()
+            t_rescan = settle_epoch - 65000
+            t_entry = settle_epoch - 5000  # T - 5 seconds
+
             if now_ms >= t_rescan:
                 break
+
             time.sleep(2.0)
-            
+
+            # Har 15 minute (900 seconds) me funding rate aur settlement time ko update (re-arm) karein
             if time.time() - last_scan_time >= 900:
                 last_scan_time = time.time()
-                add_ui_log(f"🔍 Background 15-min check for {symbol}...")
+                add_ui_log(f"🔄 15-MIN RE-ARM & FUNDING UPDATE for {symbol}...")
                 sync_binance_clock(http_client)
+                try:
+                    tickers = http_client.get_tickers(category="linear")["result"]["list"]
+                    for t in tickers:
+                        if t.get("symbol") == symbol:
+                            new_rate = float(t.get("fundingRate", rate))
+                            new_next = int(t.get("nextFundingTime", settle_epoch))
+                            if new_next > 0:
+                                rate = new_rate
+                                settle_epoch = new_next
+                                rate_percent = f"{rate * 100:+.4f}%"
+                                
+                                # Dashboard par rate update karein
+                                with data_lock:
+                                    for tr in dashboard_data['active_trades']:
+                                        if tr['symbol'] == symbol:
+                                            tr['rate'] = rate_percent
+                                add_ui_log(f"🔄 Re-armed & Updated [{window_type}]: {symbol} | Rate: {rate_percent}")
+                            break
+                except Exception as e:
+                    add_ui_log(f"⚠ Failed to re-arm funding for {symbol}: {e}")
 
+        # T-65s pre-entry final rescan check
+        precision_wait_until(settle_epoch - 65000)
+        sync_binance_clock(http_client)
+
+        t_entry = settle_epoch - 5000
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
@@ -638,6 +659,9 @@ def run_trade_worker(http_client, opportunity):
 
             last_known_avg = current_avg_price
             stop_loss_placed = False
+            t_cancel = settle_epoch + 7000
+            t_exit = settle_epoch + 8000
+            t_emergency = settle_epoch + 10000
             cancelled_at_7s = False
 
             while True:
@@ -679,7 +703,7 @@ def run_trade_worker(http_client, opportunity):
 
                 time.sleep(0.2)
 
-        precision_wait_until(t_exit)
+        precision_wait_until(settle_epoch + 8000)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
         status_text = "SAFE EXIT FAILED"
@@ -701,7 +725,7 @@ def run_trade_worker(http_client, opportunity):
         except Exception as e:
             add_ui_log(f"[{symbol}] Exit check failed: {e}")
 
-        precision_wait_until(t_emergency)
+        precision_wait_until(settle_epoch + 10000)
         try:
             pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
             pos_qty = float(pos_info.get("size", 0))
@@ -735,7 +759,6 @@ def run_trade_worker(http_client, opportunity):
     except Exception as e:
         add_ui_log(f"⚠ Worker exception for {symbol}: {e}")
     finally:
-        # Remove from active trades UI when worker finishes
         with data_lock:
             dashboard_data['active_trades'] = [t for t in dashboard_data['active_trades'] if t['symbol'] != symbol]
 
@@ -746,7 +769,7 @@ def run_trade_worker(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | Instant Stop Loss)...")
+    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | 15-min Re-arm)...")
 
     active_symbols = set()
 
