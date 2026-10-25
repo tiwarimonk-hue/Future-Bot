@@ -49,8 +49,31 @@ def add_ledger_entry(trade_info):
 
 
 # ==========================================
-# 2. BINANCE HTTP CLIENT & CLOCK SYNCHRONIZATION
+# 2. CLOCK SYNCHRONIZATION GLOBALS & HTTP CLIENT
 # ==========================================
+
+clock_offset_ms = 0.0
+
+def get_synced_time_ms():
+    return (time.time() * 1000) + clock_offset_ms
+
+def sync_binance_clock(http_client):
+    global clock_offset_ms
+    try:
+        t_send = time.time() * 1000
+        server_time_resp = http_client.get_server_time_raw()
+        t_recv = time.time() * 1000
+
+        server_time = float(server_time_resp['result']['timeNano']) / 1e6
+        rtt = t_recv - t_send
+        estimated_server_time = server_time + (rtt / 2.0)
+        clock_offset_ms = estimated_server_time - t_recv
+        
+        with data_lock:
+            dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
+    except Exception:
+        pass
+
 
 class BinanceHTTP:
     def __init__(self, api_key, api_secret, testnet=False):
@@ -72,7 +95,7 @@ class BinanceHTTP:
         ).hexdigest()
         return query_string + "&signature=" + signature
 
-    def get_server_time(self):
+    def get_server_time_raw(self):
         url = f"{self.base_url}/fapi/v1/time"
         resp = self.session.get(url).json()
         server_time_ms = resp.get("serverTime", int(time.time() * 1000))
@@ -137,7 +160,7 @@ class BinanceHTTP:
         params = {
             "symbol": symbol,
             "leverage": lev,
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(get_synced_time_ms())
         }
         signed_query = self._sign(params)
         resp = self.session.post(f"{url}?{signed_query}")
@@ -147,7 +170,7 @@ class BinanceHTTP:
         url = f"{self.base_url}/fapi/v1/allOpenOrders"
         params = {
             "symbol": symbol,
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(get_synced_time_ms())
         }
         signed_query = self._sign(params)
         resp = self.session.delete(f"{url}?{signed_query}")
@@ -160,7 +183,7 @@ class BinanceHTTP:
             "side": str(side).upper(),
             "type": str(orderType).upper(),
             "quantity": str(qty),
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(get_synced_time_ms())
         }
         if str(orderType).upper() == "LIMIT":
             params["price"] = str(price)
@@ -175,7 +198,7 @@ class BinanceHTTP:
     def get_positions(self, category="linear", symbol=None):
         url = f"{self.base_url}/fapi/v2/positionRisk"
         params = {
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(get_synced_time_ms())
         }
         signed_query = self._sign(params)
         resp = self.session.get(f"{url}?{signed_query}").json()
@@ -199,14 +222,14 @@ class BinanceHTTP:
     def set_stop_loss(self, category="linear", symbol=None, stopPrice=None, positionIdx=0):
         try:
             open_orders_url = f"{self.base_url}/fapi/v1/openOrders"
-            op_params = {"symbol": symbol, "timestamp": int(time.time() * 1000)}
+            op_params = {"symbol": symbol, "timestamp": int(get_synced_time_ms())}
             op_signed = self._sign(op_params)
             open_orders = self.session.get(f"{open_orders_url}?{op_signed}").json()
             if isinstance(open_orders, list):
                 for ord in open_orders:
                     if ord.get("type") in ["TAKE_PROFIT_MARKET", "STOP_MARKET"]:
                         cancel_url = f"{self.base_url}/fapi/v1/order"
-                        c_params = {"symbol": symbol, "orderId": ord["orderId"], "timestamp": int(time.time() * 1000)}
+                        c_params = {"symbol": symbol, "orderId": ord["orderId"], "timestamp": int(get_synced_time_ms())}
                         c_signed = self._sign(c_params)
                         self.session.delete(f"{cancel_url}?{c_signed}")
         except Exception:
@@ -220,35 +243,11 @@ class BinanceHTTP:
             "stopPrice": str(stopPrice),
             "closePosition": "true",
             "workingType": "MARK_PRICE",
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(get_synced_time_ms())
         }
         signed_query = self._sign(params)
         resp = self.session.post(f"{url}?{signed_query}")
         return resp.json()
-
-
-clock_offset_ms = 0.0
-
-def sync_binance_clock(http_client):
-    global clock_offset_ms
-    try:
-        t_send = time.time() * 1000
-        server_time_resp = http_client.get_server_time()
-        t_recv = time.time() * 1000
-
-        server_time = float(server_time_resp['result']['timeNano']) / 1e6
-        rtt = t_recv - t_send
-        estimated_server_time = server_time + (rtt / 2.0)
-        clock_offset_ms = estimated_server_time - t_recv
-        
-        with data_lock:
-            dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
-    except Exception:
-        pass
-
-
-def get_synced_time_ms():
-    return (time.time() * 1000) + clock_offset_ms
 
 
 def precision_wait_until(target_time_ms):
@@ -294,7 +293,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
 body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
 .container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 16px; }
 .header { background: #1e2329; padding: 18px 24px; border-radius: 12px; border: 1px solid #2b313a; display: flex; justify-content: space-between; align-items: center; }
-.header h1 { font-size: 16px; color: #f7a600; }
+.header h1 { font-size: 15px; color: #f7a600; }
 .badge { background: rgba(14, 203, 129, 0.15); color: #0ecb81; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
 .card { background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; }
@@ -317,7 +316,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Multi-Coin Funding Engine</h1>
+    <h1>⚡ Multi-Coin Funding Engine (1H Priority Fix)</h1>
     <div class="badge" id="ws-status">RUNNING</div>
   </div>
   <div class="grid">
@@ -435,7 +434,7 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 
 
 # ==========================================
-# 5. MARKET SCANNER & ORDER CALCULATIONS
+# 5. MARKET SCANNER WITH STRICT 1H -> 4H -> 8H WINDOW PRIORITY
 # ==========================================
 
 TRADFI_BLACKLIST = ["UNITREE", "TSLA", "AAPL", "NVDA", "AMZN", "MSFT", "GOOG", "META", "SPX", "NDX", "XAU", "XAG"]
@@ -447,7 +446,9 @@ def scan_top_funding_opportunities(http_client, max_count=3):
         return []
 
     now_ms = int(get_synced_time_ms())
-    candidates = []
+    candidates_1h = []
+    candidates_4h = []
+    candidates_8h = []
 
     for t in tickers:
         sym = t.get("symbol", "")
@@ -471,17 +472,30 @@ def scan_top_funding_opportunities(http_client, max_count=3):
         time_diff = next_time_ms - now_ms
         
         if 0 < time_diff <= 8 * 3600 * 1000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
-            window_type = '1H' if time_diff <= 1.5 * 3600 * 1000 else ('4H' if time_diff <= 4.5 * 3600 * 1000 else '8H')
-            candidates.append({
+            coin_data = {
                 "symbol": sym,
                 "funding_rate": rate,
                 "next_funding_time": next_time_ms,
-                "last_price": float(t.get("lastPrice", 0)),
-                "window_type": window_type
-            })
+                "last_price": float(t.get("lastPrice", 0))
+            }
+            if time_diff <= 1.5 * 3600 * 1000:
+                coin_data['window_type'] = '1H'
+                candidates_1h.append(coin_data)
+            elif time_diff <= 4.5 * 3600 * 1000:
+                coin_data['window_type'] = '4H'
+                candidates_4h.append(coin_data)
+            else:
+                coin_data['window_type'] = '8H'
+                candidates_8h.append(coin_data)
 
-    candidates.sort(key=lambda x: x['funding_rate'])
-    return candidates[:max_count]
+    # Within each window, sort by most negative funding rate
+    candidates_1h.sort(key=lambda x: x['funding_rate'])
+    candidates_4h.sort(key=lambda x: x['funding_rate'])
+    candidates_8h.sort(key=lambda x: x['funding_rate'])
+
+    # STRICT PRIORITY: 1H coins first, then 4H, then 8H up to max_count (3)
+    all_candidates = candidates_1h + candidates_4h + candidates_8h
+    return all_candidates[:max_count]
 
 
 def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
@@ -536,11 +550,11 @@ def cancel_all_open_orders(http_client, symbol):
         http_client.cancel_all_orders(category="linear", symbol=symbol)
         add_ui_log(f"🛑 ALL PENDING LIMIT ORDERS CANCELLED for {symbol}")
     except Exception as e:
-        add_ui_log(f"⚠ Failed to cancel open orders: {e}")
+        add_ui_log(f"⚠ Failed to cancel open orders for {symbol}: {e}")
 
 
 # ==========================================
-# 6. INDIVIDUAL COIN TRADE WORKER (WITH 15-MIN RE-ARM & FUNDING UPDATE)
+# 6. INDIVIDUAL COIN TRADE WORKER
 # ==========================================
 
 def run_trade_worker(http_client, opportunity):
@@ -564,14 +578,13 @@ def run_trade_worker(http_client, opportunity):
         while True:
             now_ms = get_synced_time_ms()
             t_rescan = settle_epoch - 65000
-            t_entry = settle_epoch - 5000  # T - 5 seconds
 
             if now_ms >= t_rescan:
                 break
 
             time.sleep(2.0)
 
-            # Har 15 minute (900 seconds) me funding rate aur settlement time ko update (re-arm) karein
+            # Har 15 minute me funding rate aur settlement time ko update (re-arm) karein
             if time.time() - last_scan_time >= 900:
                 last_scan_time = time.time()
                 add_ui_log(f"🔄 15-MIN RE-ARM & FUNDING UPDATE for {symbol}...")
@@ -587,7 +600,6 @@ def run_trade_worker(http_client, opportunity):
                                 settle_epoch = new_next
                                 rate_percent = f"{rate * 100:+.4f}%"
                                 
-                                # Dashboard par rate update karein
                                 with data_lock:
                                     for tr in dashboard_data['active_trades']:
                                         if tr['symbol'] == symbol:
@@ -597,7 +609,6 @@ def run_trade_worker(http_client, opportunity):
                 except Exception as e:
                     add_ui_log(f"⚠ Failed to re-arm funding for {symbol}: {e}")
 
-        # T-65s pre-entry final rescan check
         precision_wait_until(settle_epoch - 65000)
         sync_binance_clock(http_client)
 
@@ -617,11 +628,14 @@ def run_trade_worker(http_client, opportunity):
         
         entry_success = False
         try:
-            http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
-            add_ui_log(f"🚀 INITIAL MARKET ENTRY (T-5s) [BUY]: {initial_qty} {symbol} ($1 Margin @ {leverage}x)")
-            entry_success = True
+            resp = http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
+            if "orderId" in resp or "code" not in resp or resp.get("code") == 200:
+                add_ui_log(f"🚀 INITIAL MARKET ENTRY (T-5s) [BUY]: {initial_qty} {symbol} ($1 Margin @ {leverage}x)")
+                entry_success = True
+            else:
+                add_ui_log(f"⚠ Initial entry rejected for {symbol}: {resp}")
         except Exception as e:
-            add_ui_log(f"Initial entry failed for {symbol}: {e}")
+            add_ui_log(f"⚠ Initial entry exception for {symbol}: {e}")
 
         if entry_success:
             time.sleep(0.3)
@@ -644,7 +658,7 @@ def run_trade_worker(http_client, opportunity):
                 dca_qty = f"{calc_dca_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_dca_qty))
 
                 try:
-                    http_client.place_order(
+                    limit_resp = http_client.place_order(
                         category="linear",
                         symbol=symbol,
                         side="Buy",
@@ -689,7 +703,7 @@ def run_trade_worker(http_client, opportunity):
                         last_known_avg = new_avg
                         sl_price = round(new_avg * 0.99, price_decimals)
                         
-                        http_client.set_stop_loss(
+                        sl_resp = http_client.set_stop_loss(
                             category="linear",
                             symbol=symbol,
                             stopPrice=f"{sl_price:.{price_decimals}f}",
@@ -703,6 +717,7 @@ def run_trade_worker(http_client, opportunity):
 
                 time.sleep(0.2)
 
+        # T+8s HARD EXIT CHECK
         precision_wait_until(settle_epoch + 8000)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
@@ -715,37 +730,45 @@ def run_trade_worker(http_client, opportunity):
 
             if pos_qty > 0:
                 cancel_all_open_orders(http_client, symbol)
-                http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-                add_ui_log(f"⏰ [{symbol}] HARD EXIT DISPATCHED (SELL MARKET): {pos_qty} at {exit_time_str}")
+                sync_binance_clock(http_client)
+                exit_resp = http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
+                add_ui_log(f"⏰ [{symbol}] HARD EXIT DISPATCHED (T+8s): {pos_qty} | Resp: {exit_resp}")
                 status_text = "HARD EXIT (T+8s)"
                 status_class = "status-cancel"
             else:
                 status_text = "EXITED SUCCESSFULLY"
                 status_class = "status-profit"
         except Exception as e:
-            add_ui_log(f"[{symbol}] Exit check failed: {e}")
+            add_ui_log(f"⚠ [{symbol}] Hard exit exception at T+8s: {e}")
 
+        # T+10s EMERGENCY FALLBACK EXIT LOOP
         precision_wait_until(settle_epoch + 10000)
         try:
             pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
             pos_qty = float(pos_info.get("size", 0))
 
             if pos_qty > 0:
-                add_ui_log(f"🚨 [{symbol}] EMERGENCY FALLBACK EXIT (T+10s): Forcing clean close...")
+                add_ui_log(f"🚨 [{symbol}] EMERGENCY FALLBACK EXIT (T+10s): Position still open ({pos_qty}). Forcing clean close...")
                 cancel_all_open_orders(http_client, symbol)
-                for attempt in range(3):
+                
+                for attempt in range(5):
                     try:
-                        http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
+                        sync_binance_clock(http_client)
+                        em_resp = http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
+                        add_ui_log(f"Emergency attempt {attempt+1} resp: {em_resp}")
                         time.sleep(0.3)
                         check_pos = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
                         if float(check_pos.get("size", 0)) == 0:
+                            add_ui_log(f"✅ [{symbol}] Emergency cleanup successful on attempt {attempt+1}")
                             break
-                    except Exception:
+                    except Exception as inner_e:
+                        add_ui_log(f"⚠ Emergency attempt {attempt+1} failed: {inner_e}")
                         time.sleep(0.5)
+                        
                 status_text = "EMERGENCY CLEANUP"
                 status_class = "status-cancel"
-        except Exception:
-            pass
+        except Exception as e:
+            add_ui_log(f"⚠ [{symbol}] Emergency exit check failed: {e}")
 
         add_ledger_entry({
             "coin": f"{symbol} ({window_type})",
@@ -769,7 +792,7 @@ def run_trade_worker(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | 15-min Re-arm)...")
+    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | 1H Priority Fix)...")
 
     active_symbols = set()
 
@@ -803,7 +826,7 @@ def run_funding_capture_engine():
                             active_symbols.discard(s)
 
                     threading.Thread(target=worker_wrapper, daemon=True).start()
-                    add_ui_log(f"🚀 Spawned dedicated thread for {sym} ({opp['funding_rate']*100:+.4f}%)")
+                    add_ui_log(f"🚀 Spawned dedicated thread for {sym} ({opp['window_type']} | {opp['funding_rate']*100:+.4f}%)")
 
             time.sleep(5)
         except Exception as outer_e:
