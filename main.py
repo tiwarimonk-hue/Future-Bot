@@ -291,7 +291,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Multi-Coin Funding Engine ($1 Margin + 110% Limit + 1% SL)</h1>
+    <h1>⚡ Binance Multi-Coin Funding Engine (1H Priority + $1 Margin)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -366,6 +366,14 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 MIN_FUNDING_RATE_THRESHOLD = -0.0045   # -0.45% Threshold
 INITIAL_ENTRY_MARGIN_USD = 1.0         # $1 Initial Margin
 
+def get_window_priority(window_type):
+    if window_type == "1H":
+        return 0  # Highest priority
+    elif window_type == "4H":
+        return 1
+    else:
+        return 2
+
 def scan_top_funding_opportunities(http_client, limit=3):
     try:
         tickers = http_client.get_tickers(category="linear")["result"]["list"]
@@ -396,17 +404,18 @@ def scan_top_funding_opportunities(http_client, limit=3):
 
         time_diff = next_time_ms - now_ms
         
-        # Fixed condition: accepting any upcoming settlement where rate <= -0.45%
         if time_diff > 0 and rate <= MIN_FUNDING_RATE_THRESHOLD:
+            window_type = "1H" if time_diff <= 1.5 * 3600 * 1000 else ("4H" if time_diff <= 4.5 * 3600 * 1000 else "8H")
             candidates.append({
                 "symbol": sym,
                 "funding_rate": rate,
                 "next_funding_time": next_time_ms,
                 "last_price": float(t.get("lastPrice", 0)),
-                "window_type": "1H" if time_diff <= 1.5 * 3600 * 1000 else ("4H" if time_diff <= 4.5 * 3600 * 1000 else "8H")
+                "window_type": window_type
             })
 
-    candidates.sort(key=lambda x: x['funding_rate'])
+    # Sorting with 1H Priority first, then most negative funding rate
+    candidates.sort(key=lambda x: (get_window_priority(x['window_type']), x['funding_rate']))
     return candidates[:limit]
 
 def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
@@ -591,7 +600,7 @@ def execute_single_coin_trade(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Funding Engine Active. Scanner Starting...")
+    add_ui_log("Funding Engine Active (1H Priority). Scanner Starting...")
 
     processed_trades = set()
 
