@@ -316,7 +316,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Multi-Coin Funding Engine (1H Priority Fix)</h1>
+    <h1>⚡ Multi-Coin Funding Engine (Exact Exit Loop Integrated)</h1>
     <div class="badge" id="ws-status">RUNNING</div>
   </div>
   <div class="grid">
@@ -434,7 +434,7 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 
 
 # ==========================================
-# 5. MARKET SCANNER WITH STRICT 1H -> 4H -> 8H WINDOW PRIORITY
+# 5. MARKET SCANNER WITH STRICT 1H -> 4H -> 8H PRIORITY
 # ==========================================
 
 TRADFI_BLACKLIST = ["UNITREE", "TSLA", "AAPL", "NVDA", "AMZN", "MSFT", "GOOG", "META", "SPX", "NDX", "XAU", "XAG"]
@@ -488,12 +488,10 @@ def scan_top_funding_opportunities(http_client, max_count=3):
                 coin_data['window_type'] = '8H'
                 candidates_8h.append(coin_data)
 
-    # Within each window, sort by most negative funding rate
     candidates_1h.sort(key=lambda x: x['funding_rate'])
     candidates_4h.sort(key=lambda x: x['funding_rate'])
     candidates_8h.sort(key=lambda x: x['funding_rate'])
 
-    # STRICT PRIORITY: 1H coins first, then 4H, then 8H up to max_count (3)
     all_candidates = candidates_1h + candidates_4h + candidates_8h
     return all_candidates[:max_count]
 
@@ -554,7 +552,7 @@ def cancel_all_open_orders(http_client, symbol):
 
 
 # ==========================================
-# 6. INDIVIDUAL COIN TRADE WORKER
+# 6. INDIVIDUAL COIN WORKER (WITH EXPLICIT AAPKA EXIT LOOP)
 # ==========================================
 
 def run_trade_worker(http_client, opportunity):
@@ -584,7 +582,6 @@ def run_trade_worker(http_client, opportunity):
 
             time.sleep(2.0)
 
-            # Har 15 minute me funding rate aur settlement time ko update (re-arm) karein
             if time.time() - last_scan_time >= 900:
                 last_scan_time = time.time()
                 add_ui_log(f"🔄 15-MIN RE-ARM & FUNDING UPDATE for {symbol}...")
@@ -613,6 +610,10 @@ def run_trade_worker(http_client, opportunity):
         sync_binance_clock(http_client)
 
         t_entry = settle_epoch - 5000
+        t_cancel = settle_epoch + 7000
+        t_exit = settle_epoch + 8000
+        t_emergency = settle_epoch + 10000
+
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
@@ -673,18 +674,18 @@ def run_trade_worker(http_client, opportunity):
 
             last_known_avg = current_avg_price
             stop_loss_placed = False
-            t_cancel = settle_epoch + 7000
-            t_exit = settle_epoch + 8000
-            t_emergency = settle_epoch + 10000
             cancelled_at_7s = False
 
+            # AAPKA EXACT TESTED EXIT MONITORING LOOP
             while True:
                 now_ms = get_synced_time_ms()
                 
+                # T + 7s: Cancel open limit orders
                 if now_ms >= t_cancel and not cancelled_at_7s:
                     cancel_all_open_orders(http_client, symbol)
                     cancelled_at_7s = True
 
+                # T + 8s: Exit loop to dispatch hard exit market order
                 if now_ms >= t_exit:
                     break
 
@@ -693,12 +694,13 @@ def run_trade_worker(http_client, opportunity):
                     pos_size = float(pos_info.get("size", 0))
 
                     if pos_size == 0:
-                        add_ui_log(f"✅ [{symbol}] POSITION CLOSED! Cancelling remaining orders...")
+                        add_ui_log(f"✅ [{symbol}] POSITION CLOSED ALREADY! Cancelling remaining orders...")
                         cancel_all_open_orders(http_client, symbol)
                         break
 
                     new_avg = float(pos_info.get("avgPrice", last_known_avg))
                     
+                    # On DCA limit order fill: Set instant -1% Stop Loss
                     if not stop_loss_placed and new_avg > 0 and abs(new_avg - last_known_avg) > (10 ** -price_decimals):
                         last_known_avg = new_avg
                         sl_price = round(new_avg * 0.99, price_decimals)
@@ -717,8 +719,8 @@ def run_trade_worker(http_client, opportunity):
 
                 time.sleep(0.2)
 
-        # T+8s HARD EXIT CHECK
-        precision_wait_until(settle_epoch + 8000)
+        # AAPKA T+8s HARD EXIT EXECUTION STEP
+        precision_wait_until(t_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
         status_text = "SAFE EXIT FAILED"
@@ -732,7 +734,7 @@ def run_trade_worker(http_client, opportunity):
                 cancel_all_open_orders(http_client, symbol)
                 sync_binance_clock(http_client)
                 exit_resp = http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-                add_ui_log(f"⏰ [{symbol}] HARD EXIT DISPATCHED (T+8s): {pos_qty} | Resp: {exit_resp}")
+                add_ui_log(f"⏰ [{symbol}] HARD EXIT DISPATCHED (SELL MARKET T+8s): {pos_qty} at {exit_time_str} | Resp: {exit_resp}")
                 status_text = "HARD EXIT (T+8s)"
                 status_class = "status-cancel"
             else:
@@ -741,8 +743,8 @@ def run_trade_worker(http_client, opportunity):
         except Exception as e:
             add_ui_log(f"⚠ [{symbol}] Hard exit exception at T+8s: {e}")
 
-        # T+10s EMERGENCY FALLBACK EXIT LOOP
-        precision_wait_until(settle_epoch + 10000)
+        # AAPKA T+10s EMERGENCY FALLBACK CLEANUP LOOP (5 RETRIES)
+        precision_wait_until(t_emergency)
         try:
             pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
             pos_qty = float(pos_info.get("size", 0))
@@ -755,17 +757,17 @@ def run_trade_worker(http_client, opportunity):
                     try:
                         sync_binance_clock(http_client)
                         em_resp = http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-                        add_ui_log(f"Emergency attempt {attempt+1} resp: {em_resp}")
+                        add_ui_log(f"Emergency order attempt {attempt+1} resp: {em_resp}")
                         time.sleep(0.3)
                         check_pos = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
                         if float(check_pos.get("size", 0)) == 0:
                             add_ui_log(f"✅ [{symbol}] Emergency cleanup successful on attempt {attempt+1}")
                             break
                     except Exception as inner_e:
-                        add_ui_log(f"⚠ Emergency attempt {attempt+1} failed: {inner_e}")
+                        add_ui_log(f"⚠ Emergency order attempt {attempt+1} failed: {inner_e}")
                         time.sleep(0.5)
                         
-                status_text = "EMERGENCY CLEANUP"
+                status_text = "EMERGENCY CLEANUP (T+10s)"
                 status_class = "status-cancel"
         except Exception as e:
             add_ui_log(f"⚠ [{symbol}] Emergency exit check failed: {e}")
@@ -792,7 +794,7 @@ def run_trade_worker(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | 1H Priority Fix)...")
+    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | Bulletproof Exit Loop)...")
 
     active_symbols = set()
 
