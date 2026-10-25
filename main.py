@@ -291,7 +291,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Multi-Coin Funding Engine (1H Priority + $1 Margin)</h1>
+    <h1>⚡ Binance Multi-Coin Funding Engine (Instant Pre-Cached Entry)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -368,57 +368,13 @@ INITIAL_ENTRY_MARGIN_USD = 1.0         # $1 Initial Margin
 
 def get_window_priority(window_type):
     if window_type == "1H":
-        return 0  # Highest priority
+        return 0
     elif window_type == "4H":
         return 1
     else:
         return 2
 
-def scan_top_funding_opportunities(http_client, limit=3):
-    try:
-        tickers = http_client.get_tickers(category="linear")["result"]["list"]
-    except Exception as e:
-        add_ui_log(f"Scan exception: {e}")
-        return []
-
-    if not tickers:
-        return []
-
-    now_ms = int(get_synced_time_ms())
-    candidates = []
-
-    for t in tickers:
-        sym = t.get("symbol", "")
-        if not sym.endswith("USDT"):
-            continue
-            
-        raw_rate = t.get("fundingRate", "")
-        raw_next = t.get("nextFundingTime", "")
-        if not raw_rate or not raw_next:
-            continue
-        try:
-            rate = float(raw_rate)
-            next_time_ms = int(raw_next)
-        except ValueError:
-            continue
-
-        time_diff = next_time_ms - now_ms
-        
-        if time_diff > 0 and rate <= MIN_FUNDING_RATE_THRESHOLD:
-            window_type = "1H" if time_diff <= 1.5 * 3600 * 1000 else ("4H" if time_diff <= 4.5 * 3600 * 1000 else "8H")
-            candidates.append({
-                "symbol": sym,
-                "funding_rate": rate,
-                "next_funding_time": next_time_ms,
-                "last_price": float(t.get("lastPrice", 0)),
-                "window_type": window_type
-            })
-
-    # Sorting with 1H Priority first, then most negative funding rate
-    candidates.sort(key=lambda x: (get_window_priority(x['window_type']), x['funding_rate']))
-    return candidates[:limit]
-
-def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
+def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
     try:
         inst_info = http_client.get_instruments_info(category="linear", symbol=symbol)["result"]["list"][0]
         exchange_max_lev = float(inst_info.get("leverageFilter", {}).get("maxLeverage", 20))
@@ -457,13 +413,71 @@ def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
     calc_qty = max(min_qty, math.floor((notional / price) / qty_step) * qty_step)
     qty_formatted = f"{calc_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_qty))
 
-    return qty_formatted, max_leverage, price_decimals, qty_step, min_qty, qty_decimals
+    return {
+        "qty": qty_formatted,
+        "max_leverage": max_leverage,
+        "price_decimals": price_decimals,
+        "qty_step": qty_step,
+        "min_qty": min_qty,
+        "qty_decimals": qty_decimals
+    }
+
+def scan_top_funding_opportunities(http_client, limit=3):
+    try:
+        tickers = http_client.get_tickers(category="linear")["result"]["list"]
+    except Exception as e:
+        add_ui_log(f"Scan exception: {e}")
+        return []
+
+    if not tickers:
+        return []
+
+    now_ms = int(get_synced_time_ms())
+    candidates = []
+
+    for t in tickers:
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT"):
+            continue
+            
+        raw_rate = t.get("fundingRate", "")
+        raw_next = t.get("nextFundingTime", "")
+        if not raw_rate or not raw_next:
+            continue
+        try:
+            rate = float(raw_rate)
+            next_time_ms = int(raw_next)
+        except ValueError:
+            continue
+
+        time_diff = next_time_ms - now_ms
+        
+        if time_diff > 0 and rate <= MIN_FUNDING_RATE_THRESHOLD:
+            window_type = "1H" if time_diff <= 1.5 * 3600 * 1000 else ("4H" if time_diff <= 4.5 * 3600 * 1000 else "8H")
+            last_price = float(t.get("lastPrice", 0))
+            
+            # Pre-cache trade parameters during scan phase so entry is instant!
+            add_ui_log(f"Pre-caching parameters for {sym}...")
+            params = prepare_coin_parameters(http_client, sym, last_price, INITIAL_ENTRY_MARGIN_USD)
+
+            candidates.append({
+                "symbol": sym,
+                "funding_rate": rate,
+                "next_funding_time": next_time_ms,
+                "last_price": last_price,
+                "window_type": window_type,
+                "params": params
+            })
+
+    candidates.sort(key=lambda x: (get_window_priority(x['window_type']), x['funding_rate']))
+    return candidates[:limit]
 
 def execute_single_coin_trade(http_client, opportunity):
     symbol = opportunity['symbol']
     rate = opportunity['funding_rate']
     settle_epoch = opportunity['next_funding_time']
     window_type = opportunity['window_type']
+    params = opportunity['params']
     rate_percent = f"{rate * 100:+.4f}%"
     
     t_entry = settle_epoch - 5000       # T - 5s
@@ -483,6 +497,7 @@ def execute_single_coin_trade(http_client, opportunity):
     precision_wait_until(t_entry)
     entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
     
+    # Instant price fetch at T-5s just for limit offset calculation
     try:
         live_ticker = http_client.get_tickers(category="linear")["result"]["list"]
         live_price = opportunity['last_price']
@@ -493,15 +508,14 @@ def execute_single_coin_trade(http_client, opportunity):
     except Exception:
         live_price = opportunity['last_price']
 
-    qty, leverage, price_decimals, qty_step, min_qty, qty_decimals = calculate_qty_for_price(
-        http_client, symbol, live_price, INITIAL_ENTRY_MARGIN_USD
-    )
+    qty = params['qty']
+    price_decimals = params['price_decimals']
     
     abs_funding_pct = abs(rate)
     limit_offset = abs_funding_pct * 1.10
     limit_price = round(live_price * (1.0 - limit_offset), price_decimals)
     
-    add_ui_log(f"PLACING 110% LIMIT BUY: {symbol} at {limit_price:.{price_decimals}f} (-{limit_offset*100:.2f}%) | Qty: {qty}")
+    add_ui_log(f"PLACING INSTANT LIMIT BUY: {symbol} at {limit_price:.{price_decimals}f} | Qty: {qty}")
 
     try:
         http_client.place_order(
@@ -513,7 +527,7 @@ def execute_single_coin_trade(http_client, opportunity):
             qty=qty,
             positionIdx=0
         )
-        add_ui_log(f"LIMIT ORDER PLACED: {qty} {symbol} @ {limit_price:.{price_decimals}f}")
+        add_ui_log(f"LIMIT ORDER PLACED INSTANTLY: {qty} {symbol} @ {limit_price:.{price_decimals}f}")
     except Exception as e:
         add_ui_log(f"Limit order failed for {symbol}: {e}")
         return
@@ -600,7 +614,7 @@ def execute_single_coin_trade(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Funding Engine Active (1H Priority). Scanner Starting...")
+    add_ui_log("Funding Engine Active (Pre-Cached Instant Entry). Scanner Starting...")
 
     processed_trades = set()
 
