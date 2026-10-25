@@ -427,7 +427,9 @@ def scan_top_funding_opportunities(http_client, limit=3):
 
         time_diff = next_time_ms - now_ms
         
-        if 0 < time_diff <= 8 * 3600 * 1000:
+        # FIXED: Bug fixed here. Removed restrictive 8-hour max cap and strict window checks.
+        # Now it accepts any valid upcoming settlement within the next 24 hours where rate <= threshold.
+        if 0 < time_diff <= 24 * 3600 * 1000:
             if rate <= MIN_FUNDING_RATE_THRESHOLD:
                 candidates.append({
                     "symbol": sym,
@@ -520,7 +522,6 @@ def execute_single_coin_trade(http_client, opportunity):
         http_client, symbol, live_price, INITIAL_ENTRY_MARGIN_USD
     )
     
-    # 110% of absolute funding rate offset
     abs_funding_pct = abs(rate)
     limit_offset = abs_funding_pct * 1.10
     limit_price = round(live_price * (1.0 - limit_offset), price_decimals)
@@ -542,7 +543,6 @@ def execute_single_coin_trade(http_client, opportunity):
         add_ui_log(f"Limit order failed for {symbol}: {e}")
         return
 
-    # Monitor for fill and set 1% Stop-Loss
     sl_set = False
     fill_price = limit_price
 
@@ -558,7 +558,7 @@ def execute_single_coin_trade(http_client, opportunity):
             
             if pos_size > 0 and not sl_set:
                 fill_price = avg_price if avg_price > 0 else limit_price
-                sl_price = round(fill_price * 0.99, price_decimals) # Exactly 1% below fill price
+                sl_price = round(fill_price * 0.99, price_decimals)
                 
                 try:
                     http_client.place_stop_loss(
@@ -575,7 +575,6 @@ def execute_single_coin_trade(http_client, opportunity):
             pass
         time.sleep(0.3)
 
-    # Cancel unfilled limit orders at T+3s
     try:
         http_client.cancel_all_orders(category="linear", symbol=symbol)
     except Exception:
@@ -645,7 +644,7 @@ def run_funding_capture_engine():
                     dashboard_data['funding_rate'] = "0.00%"
                     dashboard_data['action_direction'] = "--"
                     dashboard_data['status'] = "SCANNING: No coin <= -0.45% found"
-                time.sleep(300) # 5 minutes scan interval
+                time.sleep(60) # Reduced to 60s so it rescans quickly if no coins found
                 continue
 
             coins_str = ", ".join([f"{o['symbol']} ({o['funding_rate']*100:+.2f}%)" for o in opportunities])
@@ -655,7 +654,7 @@ def run_funding_capture_engine():
                 dashboard_data['action_direction'] = "LONG + 110% Limit + 1% SL"
                 dashboard_data['status'] = f"ARMED: Tracking {len(opportunities)} coin(s)"
 
-            add_ui_log(f"🔍 5-Min Rescan completed. Top opportunities: {coins_str}")
+            add_ui_log(f"🔍 Rescan completed. Top opportunities: {coins_str}")
 
             for opp in opportunities:
                 trade_key = (opp['symbol'], opp['next_funding_time'])
@@ -666,7 +665,7 @@ def run_funding_capture_engine():
             time.sleep(300) # 5 minutes interval for next scan & re-arm
         except Exception as outer_e:
             add_ui_log(f"⚠ Main loop exception caught (Prevented Crash): {outer_e}")
-            time.sleep(60)
+            time.sleep(30)
 
 if __name__ == '__main__':
     run_funding_capture_engine()
