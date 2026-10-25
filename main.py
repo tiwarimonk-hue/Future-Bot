@@ -77,27 +77,38 @@ class BinanceHTTP:
         return {"result": {"timeNano": int(server_time_ms * 1e6)}}
 
     def get_tickers(self, category="linear"):
-        url_pi = f"{self.base_url}/fapi/v1/premiumIndex"
-        pi_data = self.session.get(url_pi).json()
+        try:
+            url_pi = f"{self.base_url}/fapi/v1/premiumIndex"
+            pi_resp = self.session.get(url_pi)
+            pi_data = pi_resp.json()
 
-        url_pr = f"{self.base_url}/fapi/v1/ticker/price"
-        pr_data = self.session.get(url_pr).json()
-        price_map = {item["symbol"]: float(item["price"]) for item in pr_data} if isinstance(pr_data, list) else {}
+            url_pr = f"{self.base_url}/fapi/v1/ticker/price"
+            pr_resp = self.session.get(url_pr)
+            pr_data = pr_resp.json()
 
-        list_items = []
-        if isinstance(pi_data, list):
-            for item in pi_data:
-                sym = item.get("symbol", "")
-                funding_rate = item.get("lastFundingRate", "0")
-                next_funding_time = item.get("nextFundingTime", 0)
-                last_price = price_map.get(sym, 0.0)
-                list_items.append({
-                    "symbol": sym,
-                    "fundingRate": str(funding_rate),
-                    "nextFundingTime": next_funding_time,
-                    "lastPrice": str(last_price)
-                })
-        return {"result": {"list": list_items}}
+            price_map = {}
+            if isinstance(pr_data, list):
+                price_map = {item["symbol"]: float(item["price"]) for item in pr_data}
+
+            list_items = []
+            if isinstance(pi_data, list):
+                for item in pi_data:
+                    sym = item.get("symbol", "")
+                    funding_rate = item.get("lastFundingRate", "0")
+                    next_funding_time = item.get("nextFundingTime", 0)
+                    last_price = price_map.get(sym, 0.0)
+                    list_items.append({
+                        "symbol": sym,
+                        "fundingRate": str(funding_rate),
+                        "nextFundingTime": next_funding_time,
+                        "lastPrice": str(last_price)
+                    })
+            else:
+                add_ui_log(f"⚠ Warning: premiumIndex response is not a list: {pi_data}")
+            return {"result": {"list": list_items}}
+        except Exception as e:
+            add_ui_log(f"⚠ Error in get_tickers: {e}")
+            return {"result": {"list": []}}
 
     def get_instruments_info(self, category="linear", symbol=None):
         url = f"{self.base_url}/fapi/v1/exchangeInfo"
@@ -370,7 +381,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.0045   # -0.45% Threshold Restored
+MIN_FUNDING_RATE_THRESHOLD = -0.0045   # -0.45% Threshold
 INITIAL_ENTRY_MARGIN_USD = 1.0         # $1 Initial Margin
 
 def connect_websocket():
@@ -397,8 +408,14 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 
 def scan_top_funding_opportunities(http_client, limit=3):
     try:
-        tickers = http_client.get_tickers(category="linear")["result"]["list"]
-    except Exception:
+        tickers_resp = http_client.get_tickers(category="linear")
+        tickers = tickers_resp.get("result", {}).get("list", [])
+    except Exception as e:
+        add_ui_log(f"⚠ Exception in scan_top_funding_opportunities: {e}")
+        return []
+
+    if not tickers:
+        add_ui_log("⚠ No tickers returned from Binance API.")
         return []
 
     now_ms = int(get_synced_time_ms())
@@ -421,7 +438,7 @@ def scan_top_funding_opportunities(http_client, limit=3):
 
         time_diff = next_time_ms - now_ms
         
-        # Threshold restored to -0.45%, Blacklist filter completely removed
+        # Checking valid upcoming funding within 24 hours and rate <= -0.45%
         if 0 < time_diff <= 24 * 3600 * 1000:
             if rate <= MIN_FUNDING_RATE_THRESHOLD:
                 candidates.append({
@@ -621,7 +638,7 @@ def execute_single_coin_trade(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Blacklist Removed | 5-Min Scan). Scanner Starting...")
+    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Robust Parsing | 5-Min Scan). Scanner Starting...")
 
     processed_trades = set()
 
@@ -636,7 +653,7 @@ def run_funding_capture_engine():
                     dashboard_data['funding_rate'] = "0.00%"
                     dashboard_data['action_direction'] = "--"
                     dashboard_data['status'] = "SCANNING: No coin <= -0.45% found"
-                time.sleep(60)
+                time.sleep(10) # 10 seconds check interval until coins are found
                 continue
 
             coins_str = ", ".join([f"{o['symbol']} ({o['funding_rate']*100:+.2f}%)" for o in opportunities])
@@ -657,7 +674,7 @@ def run_funding_capture_engine():
             time.sleep(300)
         except Exception as outer_e:
             add_ui_log(f"⚠ Main loop exception caught (Prevented Crash): {outer_e}")
-            time.sleep(30)
+            time.sleep(10)
 
 if __name__ == '__main__':
     run_funding_capture_engine()
