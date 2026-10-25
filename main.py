@@ -294,15 +294,17 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
 body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
 .container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 16px; }
 .header { background: #1e2329; padding: 18px 24px; border-radius: 12px; border: 1px solid #2b313a; display: flex; justify-content: space-between; align-items: center; }
-.header h1 { font-size: 18px; color: #f7a600; }
-.badge { background: rgba(14, 203, 129, 0.15); color: #0ecb81; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+.header h1 { font-size: 16px; color: #f7a600; }
+.badge { background: rgba(14, 203, 129, 0.15); color: #0ecb81; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
 .card { background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; }
 .card-title { font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 6px; }
 .card-value { font-size: 18px; font-weight: 700; color: #f7a600; }
 .section-card { background: #1e2329; padding: 18px; border-radius: 12px; border: 1px solid #2b313a; }
-#log-box { background: #0b0e11; border: 1px solid #2b313a; border-radius: 8px; padding: 14px; height: 220px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; color: #0ecb81; line-height: 1.5; }
-.ledger-container { max-height: 350px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+#log-box { background: #0b0e11; border: 1px solid #2b313a; border-radius: 8px; padding: 14px; height: 180px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; color: #0ecb81; line-height: 1.5; }
+.coin-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.coin-chip { background: #181c22; border: 1px solid #2b313a; border-radius: 8px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.ledger-container { max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .ledger-item { background: #181c22; border: 1px solid #2b313a; border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .ledger-info { display: flex; flex-direction: column; gap: 4px; }
 .coin-name { font-weight: 700; color: #f7a600; font-size: 14px; }
@@ -315,18 +317,25 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Multi-Coin Funding Engine ($1 Initial + 110% Limit + Instant Stop Loss)</h1>
-    <div class="badge" id="ws-status">INITIALIZING</div>
+    <h1>⚡ Multi-Coin Funding Engine</h1>
+    <div class="badge" id="ws-status">RUNNING</div>
   </div>
   <div class="grid">
     <div class="card"><div class="card-title">Active Slots</div><div class="card-value" id="slots">0 / 3 Max</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
   </div>
+
+  <div class="section-card">
+    <div style="font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #f7a600;">🔥 Currently Active Coins / Trades</div>
+    <div class="coin-list" id="active-coins-box">
+      <div style="color: #848e9c; font-size: 12px; text-align: center; padding: 10px;">No active trades right now.</div>
+    </div>
+  </div>
   
   <div class="section-card">
     <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">📋 Execution Ledger</div>
     <div class="ledger-container" id="ledger-box">
-      <div style="color: #848e9c; text-align: center; padding: 20px;">No trades executed yet.</div>
+      <div style="color: #848e9c; text-align: center; padding: 15px;">No trades executed yet.</div>
     </div>
   </div>
 
@@ -340,10 +349,21 @@ async function updateDashboard() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    document.getElementById('ws-status').innerText = data.status;
     document.getElementById('slots').innerText = data.active_slots;
     document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
     
+    const activeCoinsBox = document.getElementById('active-coins-box');
+    if (data.active_trades && data.active_trades.length > 0) {
+      activeCoinsBox.innerHTML = data.active_trades.map(t => `
+        <div class="coin-chip">
+          <div><span style="font-weight:700; color:#f7a600;">${t.symbol}</span> <span style="font-size:11px; color:#848e9c;">(${t.window})</span></div>
+          <div style="color: #0ecb81; font-weight: 600;">Rate: ${t.rate}</div>
+        </div>
+      `).join('');
+    } else {
+      activeCoinsBox.innerHTML = '<div style="color: #848e9c; font-size: 12px; text-align: center; padding: 10px;">No active trades right now.</div>';
+    }
+
     const logBox = document.getElementById('log-box');
     logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
     logBox.scrollTop = logBox.scrollHeight;
@@ -354,7 +374,7 @@ async function updateDashboard() {
         <div class="ledger-item">
           <div class="ledger-info">
             <div class="coin-name">${item.coin} <span class="rate-tag">(${item.rate})</span></div>
-            <div style="color: #848e9c; font-size: 11px;">Entry Sent: ${item.entry_time} | Exit Closed: ${item.exit_time}</div>
+            <div style="color: #848e9c; font-size: 11px;">Entry: ${item.entry_time} | Exit: ${item.exit_time}</div>
           </div>
           <div class="ledger-status ${item.status_class}">${item.status_text}</div>
         </div>
@@ -524,14 +544,22 @@ def cancel_all_open_orders(http_client, symbol):
 # ==========================================
 
 def run_trade_worker(http_client, opportunity):
-    try:
-        symbol = opportunity['symbol']
-        rate = opportunity['funding_rate']
-        settle_epoch = opportunity['next_funding_time']
-        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-        rate_percent = f"{rate * 100:+.4f}%"
-        window_type = opportunity['window_type']
+    symbol = opportunity['symbol']
+    rate = opportunity['funding_rate']
+    settle_epoch = opportunity['next_funding_time']
+    settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+    rate_percent = f"{rate * 100:+.4f}%"
+    window_type = opportunity['window_type']
 
+    # Register active trade on dashboard UI
+    with data_lock:
+        dashboard_data['active_trades'].append({
+            "symbol": symbol,
+            "window": window_type,
+            "rate": rate_percent
+        })
+
+    try:
         t_rescan = settle_epoch - 65000
         t_entry = settle_epoch - 5000     # T - 5 seconds
         t_cancel = settle_epoch + 7000
@@ -583,8 +611,6 @@ def run_trade_worker(http_client, opportunity):
             except Exception:
                 pass
 
-            # NOTE: Take Profit completely removed as requested.
-
             # 1 LIMIT ORDER AT 110% OF FUNDING RATE OFFSET
             abs_funding_pct = abs(rate)
             dca_offset = abs_funding_pct * 1.10
@@ -635,7 +661,6 @@ def run_trade_worker(http_client, opportunity):
 
                     new_avg = float(pos_info.get("avgPrice", last_known_avg))
                     
-                    # Jaise hi limit order fill hoga aur average price change hogi, turant bina deri ke -1% par Stop Loss lag jayega
                     if not stop_loss_placed and new_avg > 0 and abs(new_avg - last_known_avg) > (10 ** -price_decimals):
                         last_known_avg = new_avg
                         sl_price = round(new_avg * 0.99, price_decimals)
@@ -708,7 +733,11 @@ def run_trade_worker(http_client, opportunity):
         })
 
     except Exception as e:
-        add_ui_log(f"⚠ Worker exception for {opportunity.get('symbol')}: {e}")
+        add_ui_log(f"⚠ Worker exception for {symbol}: {e}")
+    finally:
+        # Remove from active trades UI when worker finishes
+        with data_lock:
+            dashboard_data['active_trades'] = [t for t in dashboard_data['active_trades'] if t['symbol'] != symbol]
 
 
 # ==========================================
