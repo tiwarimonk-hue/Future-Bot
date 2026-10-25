@@ -370,7 +370,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.0045   # -0.45% Threshold
+MIN_FUNDING_RATE_THRESHOLD = -0.0045   # -0.45% Threshold Restored
 INITIAL_ENTRY_MARGIN_USD = 1.0         # $1 Initial Margin
 
 def connect_websocket():
@@ -395,8 +395,6 @@ threading.Thread(target=connect_websocket, daemon=True).start()
 # 5. MARKET SCANNER & QUANTITY CALCULATIONS
 # ==========================================
 
-TRADFI_BLACKLIST = ["UNITREE", "TSLA", "AAPL", "NVDA", "AMZN", "MSFT", "GOOG", "META", "SPX", "NDX", "XAU", "XAG"]
-
 def scan_top_funding_opportunities(http_client, limit=3):
     try:
         tickers = http_client.get_tickers(category="linear")["result"]["list"]
@@ -411,10 +409,6 @@ def scan_top_funding_opportunities(http_client, limit=3):
         if not sym.endswith("USDT"):
             continue
             
-        base_name = sym.replace("USDT", "")
-        if any(black in base_name for black in TRADFI_BLACKLIST):
-            continue
-
         raw_rate = t.get("fundingRate", "")
         raw_next = t.get("nextFundingTime", "")
         if not raw_rate or not raw_next:
@@ -427,8 +421,7 @@ def scan_top_funding_opportunities(http_client, limit=3):
 
         time_diff = next_time_ms - now_ms
         
-        # FIXED: Bug fixed here. Removed restrictive 8-hour max cap and strict window checks.
-        # Now it accepts any valid upcoming settlement within the next 24 hours where rate <= threshold.
+        # Threshold restored to -0.45%, Blacklist filter completely removed
         if 0 < time_diff <= 24 * 3600 * 1000:
             if rate <= MIN_FUNDING_RATE_THRESHOLD:
                 candidates.append({
@@ -439,7 +432,6 @@ def scan_top_funding_opportunities(http_client, limit=3):
                     "window_type": "1H" if time_diff <= 1.5 * 3600 * 1000 else ("4H" if time_diff <= 4.5 * 3600 * 1000 else "8H")
                 })
 
-    # Sort by most negative funding rate first
     candidates.sort(key=lambda x: x['funding_rate'])
     return candidates[:limit]
 
@@ -629,7 +621,7 @@ def execute_single_coin_trade(http_client, opportunity):
 
 def run_funding_capture_engine():
     http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Max 3 Coins | 5-Min Scan). Scanner Starting...")
+    add_ui_log("Multi-Coin Funding Engine Active ($1 Margin | Threshold: -0.45% | Blacklist Removed | 5-Min Scan). Scanner Starting...")
 
     processed_trades = set()
 
@@ -644,7 +636,7 @@ def run_funding_capture_engine():
                     dashboard_data['funding_rate'] = "0.00%"
                     dashboard_data['action_direction'] = "--"
                     dashboard_data['status'] = "SCANNING: No coin <= -0.45% found"
-                time.sleep(60) # Reduced to 60s so it rescans quickly if no coins found
+                time.sleep(60)
                 continue
 
             coins_str = ", ".join([f"{o['symbol']} ({o['funding_rate']*100:+.2f}%)" for o in opportunities])
@@ -662,7 +654,7 @@ def run_funding_capture_engine():
                     processed_trades.add(trade_key)
                     threading.Thread(target=execute_single_coin_trade, args=(http_client, opp), daemon=True).start()
 
-            time.sleep(300) # 5 minutes interval for next scan & re-arm
+            time.sleep(300)
         except Exception as outer_e:
             add_ui_log(f"⚠ Main loop exception caught (Prevented Crash): {outer_e}")
             time.sleep(30)
