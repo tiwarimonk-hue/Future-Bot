@@ -1,27 +1,26 @@
 import os
 import time
 import json
-import hmac
-import hashlib
 import math
 import threading
-import websocket
-import requests
-from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta
+from pybit.unified_trading import HTTP
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+# ==========================================
+# 1. TIMEZONE & DASHBOARD TELEMETRY STATE
+# ==========================================
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
 dashboard_data = {
-    "target_symbol": "Scanning Market...",
-    "funding_rate": "0.00%",
+    "target_symbol": "BLURUSDT (11:50 PM TEST)",
+    "funding_rate": "-2.00% (Simulated/Live)",
     "action_direction": "--",
-    "status": "Initializing Funding Scanner...",
+    "status": "Initializing 11:50 PM Test Engine...",
     "target_settlement": "-- IST",
-    "entry_target": "-- IST (T - 5000ms)",
-    "exit_target": "-- IST (T + 8000ms / Emergency T+10s)",
+    "entry_target": "-- IST (T + 10ms Short)",
+    "exit_target": "-- IST (Hard Exit T + 705ms)",
     "clock_offset_ms": 0.0,
     "logs": [],
     "ledger": []
@@ -33,216 +32,67 @@ def add_ui_log(message):
     print(line)
     with data_lock:
         dashboard_data['logs'].append(line)
-        if len(dashboard_data['logs']) > 80:
+        if len(dashboard_data['logs']) > 70:
             dashboard_data['logs'].pop(0)
 
 def add_ledger_entry(trade_info):
     with data_lock:
         dashboard_data['ledger'].insert(0, trade_info)
-        if len(dashboard_data['ledger']) > 25:
+        if len(dashboard_data['ledger']) > 20:
             dashboard_data['ledger'].pop()
 
-class BinanceHTTP:
-    def __init__(self, api_key, api_secret, testnet=False):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
-        self.session = requests.Session()
-        self.session.headers.update({
-            "X-MBX-APIKEY": self.api_key,
-            "Content-Type": "application/json"
-        })
-
-    def _sign(self, params):
-        query_string = urlencode(params)
-        signature = hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-        return query_string + "&signature=" + signature
-
-    def get_server_time(self):
-        url = f"{self.base_url}/fapi/v1/time"
-        resp = self.session.get(url).json()
-        server_time_ms = resp.get("serverTime", int(time.time() * 1000))
-        return {"result": {"timeNano": int(server_time_ms * 1e6)}}
-
-    def get_tickers(self, category="linear"):
-        try:
-            url_pi = f"{self.base_url}/fapi/v1/premiumIndex"
-            pi_resp = self.session.get(url_pi, timeout=10)
-            pi_data = pi_resp.json()
-
-            url_pr = f"{self.base_url}/fapi/v1/ticker/price"
-            pr_resp = self.session.get(url_pr, timeout=10)
-            pr_data = pr_resp.json()
-
-            price_map = {}
-            if isinstance(pr_data, list):
-                price_map = {item["symbol"]: float(item["price"]) for item in pr_data}
-
-            list_items = []
-            if isinstance(pi_data, list):
-                for item in pi_data:
-                    sym = item.get("symbol", "")
-                    funding_rate = item.get("lastFundingRate", "0")
-                    next_funding_time = item.get("nextFundingTime", 0)
-                    last_price = price_map.get(sym, float(item.get("markPrice", 0)))
-                    list_items.append({
-                        "symbol": sym,
-                        "fundingRate": str(funding_rate),
-                        "nextFundingTime": next_funding_time,
-                        "lastPrice": str(last_price)
-                    })
-            return {"result": {"list": list_items}}
-        except Exception as e:
-            add_ui_log(f"Error in get_tickers: {e}")
-            return {"result": {"list": []}}
-
-    def get_instruments_info(self, category="linear", symbol=None):
-        url = f"{self.base_url}/fapi/v1/exchangeInfo"
-        data = self.session.get(url).json()
-        symbols_info = data.get("symbols", [])
-        
-        list_items = []
-        for s in symbols_info:
-            if symbol and s["symbol"] != symbol:
-                continue
-            sym_name = s["symbol"]
-            max_lev = 20.0
-            tick_size = "0.0001"
-            qty_step = "1"
-            min_qty = "1"
-            
-            for f in s.get("filters", []):
-                if f["filterType"] == "PRICE_FILTER":
-                    tick_size = f["tickSize"]
-                elif f["filterType"] == "LOT_SIZE":
-                    qty_step = f["stepSize"]
-                    min_qty = f["minQty"]
-            
-            list_items.append({
-                "symbol": sym_name,
-                "leverageFilter": {"maxLeverage": str(max_lev)},
-                "priceFilter": {"tickSize": tick_size},
-                "lotSizeFilter": {"qtyStep": qty_step, "minOrderQty": min_qty}
-            })
-        return {"result": {"list": list_items}}
-
-    def set_leverage(self, category="linear", symbol=None, buyLeverage=None, sellLeverage=None):
-        url = f"{self.base_url}/fapi/v1/leverage"
-        lev = int(float(buyLeverage or 20))
-        params = {
-            "symbol": symbol,
-            "leverage": lev,
-            "timestamp": int(time.time() * 1000)
-        }
-        signed_query = self._sign(params)
-        resp = self.session.post(f"{url}?{signed_query}")
-        return resp.json()
-
-    def cancel_all_orders(self, category="linear", symbol=None):
-        url = f"{self.base_url}/fapi/v1/allOpenOrders"
-        params = {
-            "symbol": symbol,
-            "timestamp": int(time.time() * 1000)
-        }
-        signed_query = self._sign(params)
-        resp = self.session.delete(f"{url}?{signed_query}")
-        return resp.json()
-
-    def place_order(self, category="linear", symbol=None, side=None, orderType=None, qty=None, price=None, reduceOnly=False, positionIdx=0):
-        url = f"{self.base_url}/fapi/v1/order"
-        params = {
-            "symbol": symbol,
-            "side": str(side).upper(),
-            "type": str(orderType).upper(),
-            "quantity": str(qty),
-            "timestamp": int(time.time() * 1000)
-        }
-        if str(orderType).upper() == "LIMIT":
-            params["price"] = str(price)
-            params["timeInForce"] = "GTC"
-        if reduceOnly:
-            params["reduceOnly"] = "true"
-            
-        signed_query = self._sign(params)
-        resp = self.session.post(f"{url}?{signed_query}")
-        return resp.json()
-
-    def place_stop_loss(self, symbol=None, stopPrice=None, workingType="MARK_PRICE"):
-        url = f"{self.base_url}/fapi/v1/order"
-        params = {
-            "symbol": symbol,
-            "side": "SELL",
-            "type": "STOP_MARKET",
-            "stopPrice": str(stopPrice),
-            "closePosition": "true",
-            "workingType": workingType,
-            "timestamp": int(time.time() * 1000)
-        }
-        signed_query = self._sign(params)
-        resp = self.session.post(f"{url}?{signed_query}")
-        return resp.json()
-
-    def get_positions(self, category="linear", symbol=None):
-        url = f"{self.base_url}/fapi/v2/positionRisk"
-        params = {
-            "timestamp": int(time.time() * 1000)
-        }
-        signed_query = self._sign(params)
-        resp = self.session.get(f"{url}?{signed_query}").json()
-        
-        list_items = []
-        if isinstance(resp, list):
-            for p in resp:
-                if symbol and p["symbol"] != symbol:
-                    continue
-                amt = float(p.get("positionAmt", 0))
-                if amt != 0:
-                    list_items.append({
-                        "symbol": p["symbol"],
-                        "size": str(abs(amt)),
-                        "avgPrice": str(p.get("entryPrice", 0))
-                    })
-        if not list_items:
-            list_items.append({"symbol": symbol, "size": "0", "avgPrice": "0"})
-        return {"result": {"list": list_items}}
-
+# ==========================================
+# 2. HIGH-PRECISION CLOCK SYNCHRONIZATION
+# ==========================================
 clock_offset_ms = 0.0
+perf_base = 0.0
+synced_base = 0.0
 
-def sync_binance_clock(http_client):
-    global clock_offset_ms
+def sync_bybit_clock(http_client):
+    global clock_offset_ms, perf_base, synced_base
     try:
-        t_send = time.time() * 1000
+        t_send = time.perf_counter() * 1000
         server_time_resp = http_client.get_server_time()
-        t_recv = time.time() * 1000
+        t_recv = time.perf_counter() * 1000
 
         server_time = float(server_time_resp['result']['timeNano']) / 1e6
         rtt = t_recv - t_send
         estimated_server_time = server_time + (rtt / 2.0)
-        clock_offset_ms = estimated_server_time - t_recv
         
+        wall_recv = time.time() * 1000
+        clock_offset_ms = estimated_server_time - wall_recv
+        
+        perf_base = time.perf_counter() * 1000
+        synced_base = estimated_server_time
+
         with data_lock:
             dashboard_data['clock_offset_ms'] = round(clock_offset_ms, 2)
     except Exception:
         pass
 
 def get_synced_time_ms():
-    return (time.time() * 1000) + clock_offset_ms
+    global perf_base, synced_base
+    if perf_base == 0.0:
+        return (time.time() * 1000) + clock_offset_ms
+    elapsed = (time.perf_counter() * 1000) - perf_base
+    return synced_base + elapsed
 
-def precision_wait_until(target_time_ms):
+def ultra_precision_wait(target_time_ms):
     while True:
         now = get_synced_time_ms()
         diff = target_time_ms - now
         if diff <= 0:
             break
-        elif diff > 10:
-            time.sleep(0.002)
-        elif diff > 2:
-            time.sleep(0.0005)
+        elif diff > 50:
+            time.sleep(0.01)
+        elif diff > 5:
+            time.sleep(0.001)
+        else:
+            pass
 
+# ==========================================
+# 3. WEB DASHBOARD
+# ==========================================
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/status':
@@ -264,7 +114,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Binance Multi-Coin Funding Engine</title>
+<title>BLURUSDT 11:50 PM Test Engine</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
 body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
@@ -285,21 +135,21 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 .rate-tag { color: #0ecb81; font-weight: 600; }
 .ledger-status { font-weight: 600; padding: 4px 10px; border-radius: 6px; font-size: 12px; text-align: right; }
 .status-profit { background: rgba(14, 203, 129, 0.15); color: #0ecb81; }
-.status-cancel { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
+.status-abort { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Binance Multi-Coin Funding Engine (Instant Pre-Cached Entry)</h1>
-    <div class="badge" id="ws-status">INITIALIZING</div>
+    <h1>⚡ BLURUSDT 11:50 PM Test ($1 | T+10ms Sell | T+705ms Exit)</h1>
+    <div class="badge" id="ws-status">TEST RUNNING</div>
   </div>
   <div class="grid">
-    <div class="card"><div class="card-title">Top Target Coins (Max 3)</div><div class="card-value" id="coin" style="font-size:13px;">-</div></div>
+    <div class="card"><div class="card-title">Target Coin</div><div class="card-value" id="coin">-</div></div>
     <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color:#0ecb81;">-</div></div>
-    <div class="card"><div class="card-title">Direction</div><div class="card-value" id="direction" style="color:#f7a600; font-size:13px;">--</div></div>
-    <div class="card"><div class="card-title">Entry (T - 5s)</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:13px;">-</div></div>
-    <div class="card"><div class="card-title">Exit (T + 8s / Emergency)</div><div class="card-value" id="exit" style="color:#f6465d; font-size:12px;">-</div></div>
+    <div class="card"><div class="card-title">Direction</div><div class="card-value" id="direction" style="color:#f7a600;">--</div></div>
+    <div class="card"><div class="card-title">Entry Target</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:12px;">-</div></div>
+    <div class="card"><div class="card-title">Exit Target</div><div class="card-value" id="exit" style="color:#f6465d; font-size:12px;">-</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
   </div>
   
@@ -360,21 +210,17 @@ def run_web_server():
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
-API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
-API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_API_SECRET_HERE')
+# ==========================================
+# 4. CONFIG & API CREDENTIALS
+# ==========================================
+API_KEY = os.environ.get('BYBIT_API_KEY', 'YOUR_API_KEY_HERE')
+API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_API_SECRET_HERE')
+MARGIN_USD = 1.0  # $1 Fixed Margin
 
-MIN_FUNDING_RATE_THRESHOLD = -0.0045   # -0.45% Threshold
-INITIAL_ENTRY_MARGIN_USD = 1.0         # $1 Initial Margin
+def round_to_tick(price, tick_size):
+    return round(round(price / tick_size) * tick_size, 8)
 
-def get_window_priority(window_type):
-    if window_type == "1H":
-        return 0
-    elif window_type == "4H":
-        return 1
-    else:
-        return 2
-
-def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
+def get_instrument_specs(http_client, symbol):
     try:
         inst_info = http_client.get_instruments_info(category="linear", symbol=symbol)["result"]["list"][0]
         exchange_max_lev = float(inst_info.get("leverageFilter", {}).get("maxLeverage", 20))
@@ -384,273 +230,173 @@ def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
         tick_size = float(price_filter.get("tickSize", "0.0001"))
         lot_filter = inst_info['lotSizeFilter']
         qty_step = float(lot_filter["qtyStep"])
-        if qty_step <= 0:
-            qty_step = 1.0
         min_qty = float(lot_filter['minOrderQty'])
-    except Exception:
-        max_leverage = 20.0
-        tick_size = 0.0001
-        qty_step = 1.0
-        min_qty = 1.0
 
-    try:
-        http_client.set_leverage(category="linear", symbol=symbol, buyLeverage=str(max_leverage), sellLeverage=str(max_leverage))
-    except Exception:
-        pass
-
-    qty_str = f"{qty_step:.8f}".rstrip("0")
-    qty_decimals = len(qty_str.split(".")[1]) if "." in qty_str else 0
-
-    tick_str = f"{tick_size:.8f}".rstrip("0")
-    price_decimals = len(tick_str.split(".")[1]) if "." in tick_str else 2
-
-    if price < 1.0:
-        price_decimals = max(price_decimals, 5)
-    elif price < 10.0:
-        price_decimals = max(price_decimals, 4)
-
-    notional = margin_usd * max_leverage
-    calc_qty = max(min_qty, math.floor((notional / price) / qty_step) * qty_step)
-    qty_formatted = f"{calc_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_qty))
-
-    return {
-        "qty": qty_formatted,
-        "max_leverage": max_leverage,
-        "price_decimals": price_decimals,
-        "qty_step": qty_step,
-        "min_qty": min_qty,
-        "qty_decimals": qty_decimals
-    }
-
-def scan_top_funding_opportunities(http_client, limit=3):
-    try:
-        tickers = http_client.get_tickers(category="linear")["result"]["list"]
-    except Exception as e:
-        add_ui_log(f"Scan exception: {e}")
-        return []
-
-    if not tickers:
-        return []
-
-    now_ms = int(get_synced_time_ms())
-    candidates = []
-
-    for t in tickers:
-        sym = t.get("symbol", "")
-        if not sym.endswith("USDT"):
-            continue
-            
-        raw_rate = t.get("fundingRate", "")
-        raw_next = t.get("nextFundingTime", "")
-        if not raw_rate or not raw_next:
-            continue
         try:
-            rate = float(raw_rate)
-            next_time_ms = int(raw_next)
-        except ValueError:
-            continue
-
-        time_diff = next_time_ms - now_ms
-        
-        if time_diff > 0 and rate <= MIN_FUNDING_RATE_THRESHOLD:
-            window_type = "1H" if time_diff <= 1.5 * 3600 * 1000 else ("4H" if time_diff <= 4.5 * 3600 * 1000 else "8H")
-            last_price = float(t.get("lastPrice", 0))
-            
-            # Pre-cache trade parameters during scan phase so entry is instant!
-            add_ui_log(f"Pre-caching parameters for {sym}...")
-            params = prepare_coin_parameters(http_client, sym, last_price, INITIAL_ENTRY_MARGIN_USD)
-
-            candidates.append({
-                "symbol": sym,
-                "funding_rate": rate,
-                "next_funding_time": next_time_ms,
-                "last_price": last_price,
-                "window_type": window_type,
-                "params": params
-            })
-
-    candidates.sort(key=lambda x: (get_window_priority(x['window_type']), x['funding_rate']))
-    return candidates[:limit]
-
-def execute_single_coin_trade(http_client, opportunity):
-    symbol = opportunity['symbol']
-    rate = opportunity['funding_rate']
-    settle_epoch = opportunity['next_funding_time']
-    window_type = opportunity['window_type']
-    params = opportunity['params']
-    rate_percent = f"{rate * 100:+.4f}%"
-    
-    t_entry = settle_epoch - 5000       # T - 5s
-    t_cancel = settle_epoch + 3000      # T + 3s
-    t_exit = settle_epoch + 8000        # T + 8s
-    t_emergency = settle_epoch + 10000  # T + 10s
-
-    entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-    exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-
-    with data_lock:
-        dashboard_data['entry_target'] = f"{entry_ist} IST (T - 5000ms)"
-        dashboard_data['exit_target'] = f"{exit_ist} IST (Emergency T+10s)"
-
-    add_ui_log(f"ARMED [{window_type}]: {symbol} | Rate: {rate_percent} | Entry: T-5s")
-
-    precision_wait_until(t_entry)
-    entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-    
-    # Instant price fetch at T-5s just for limit offset calculation
-    try:
-        live_ticker = http_client.get_tickers(category="linear")["result"]["list"]
-        live_price = opportunity['last_price']
-        for t in live_ticker:
-            if t["symbol"] == symbol:
-                live_price = float(t["lastPrice"])
-                break
-    except Exception:
-        live_price = opportunity['last_price']
-
-    qty = params['qty']
-    price_decimals = params['price_decimals']
-    
-    abs_funding_pct = abs(rate)
-    limit_offset = abs_funding_pct * 1.10
-    limit_price = round(live_price * (1.0 - limit_offset), price_decimals)
-    
-    add_ui_log(f"PLACING INSTANT LIMIT BUY: {symbol} at {limit_price:.{price_decimals}f} | Qty: {qty}")
-
-    try:
-        http_client.place_order(
-            category="linear",
-            symbol=symbol,
-            side="Buy",
-            orderType="Limit",
-            price=f"{limit_price:.{price_decimals}f}",
-            qty=qty,
-            positionIdx=0
-        )
-        add_ui_log(f"LIMIT ORDER PLACED INSTANTLY: {qty} {symbol} @ {limit_price:.{price_decimals}f}")
-    except Exception as e:
-        add_ui_log(f"Limit order failed for {symbol}: {e}")
-        return
-
-    sl_set = False
-    fill_price = limit_price
-
-    while True:
-        now_ms = get_synced_time_ms()
-        if now_ms >= t_cancel:
-            break
-            
-        try:
-            pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-            pos_size = float(pos_info.get("size", 0))
-            avg_price = float(pos_info.get("avgPrice", 0))
-            
-            if pos_size > 0 and not sl_set:
-                fill_price = avg_price if avg_price > 0 else limit_price
-                sl_price = round(fill_price * 0.99, price_decimals)
-                
-                try:
-                    http_client.place_stop_loss(
-                        symbol=symbol,
-                        stopPrice=f"{sl_price:.{price_decimals}f}",
-                        workingType="MARK_PRICE"
-                    )
-                    add_ui_log(f"STOP-LOSS SET AT: {sl_price:.{price_decimals}f}")
-                    sl_set = True
-                except Exception as sle:
-                    add_ui_log(f"Failed to set Stop-Loss for {symbol}: {sle}")
-                break
+            http_client.set_leverage(category="linear", symbol=symbol, buyLeverage=str(max_leverage), sellLeverage=str(max_leverage))
         except Exception:
             pass
-        time.sleep(0.3)
 
-    try:
-        http_client.cancel_all_orders(category="linear", symbol=symbol)
+        qty_str = f"{qty_step:.8f}".rstrip("0")
+        qty_decimals = len(qty_str.split(".")[1]) if "." in qty_str else 0
+
+        tick_str = f"{tick_size:.8f}".rstrip("0")
+        price_decimals = len(tick_str.split(".")[1]) if "." in tick_str else 2
+
+        return max_leverage, price_decimals, qty_step, min_qty, qty_decimals, tick_size
     except Exception:
-        pass
+        return 20.0, 4, 1.0, 1.0, 0, 0.0001
 
-    precision_wait_until(t_exit)
-    exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-    
-    status_text = "CLOSED"
-    status_class = "status-profit"
-
-    try:
-        pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-        pos_qty = float(pos_info.get("size", 0))
-
-        if pos_qty > 0:
-            http_client.cancel_all_orders(category="linear", symbol=symbol)
-            http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-            add_ui_log(f"HARD EXIT DISPATCHED: {pos_qty} {symbol} at {exit_time_str}")
-            status_text = "HARD EXIT (T+8s)"
-            status_class = "status-cancel"
-        else:
-            status_text = "CAPTURED / SL HIT"
-            status_class = "status-profit"
-    except Exception as e:
-        add_ui_log(f"Exit check failed for {symbol}: {e}")
-
-    precision_wait_until(t_emergency)
-    try:
-        pos_info = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"][0]
-        pos_qty = float(pos_info.get("size", 0))
-
-        if pos_qty > 0:
-            add_ui_log(f"EMERGENCY FALLBACK EXIT: {symbol} position still open ({pos_qty}). Forcing close...")
-            http_client.cancel_all_orders(category="linear", symbol=symbol)
-            http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=str(pos_qty), reduceOnly=True, positionIdx=0)
-    except Exception as e:
-        add_ui_log(f"Emergency exit check failed for {symbol}: {e}")
-
-    add_ledger_entry({
-        "coin": f"{symbol} ({window_type})",
-        "rate": rate_percent,
-        "entry_time": entry_time_str,
-        "exit_time": exit_time_str,
-        "status_text": status_text,
-        "status_class": status_class
-    })
-
-def run_funding_capture_engine():
-    http_client = BinanceHTTP(api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Funding Engine Active (Pre-Cached Instant Entry). Scanner Starting...")
-
-    processed_trades = set()
+# ==========================================
+# 5. TEST ENGINE MAIN LOOP FOR 11:50 PM
+# ==========================================
+def run_blurusdt_1150_test():
+    http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
+    target_symbol = "BLURUSDT"
+    add_ui_log(f"🧪 BLURUSDT 11:50 PM Test Engine Active ($1 Margin)")
 
     while True:
         try:
-            sync_binance_clock(http_client)
-            opportunities = scan_top_funding_opportunities(http_client, limit=3)
+            sync_bybit_clock(http_client)
 
-            if not opportunities:
-                with data_lock:
-                    dashboard_data['target_symbol'] = "Scanning..."
-                    dashboard_data['funding_rate'] = "0.00%"
-                    dashboard_data['action_direction'] = "--"
-                    dashboard_data['status'] = "SCANNING: No coin <= -0.45% found"
-                time.sleep(10)
+            # --- SET TARGET TIME TO 11:50 PM IST ---
+            target_hour = 23    # 23 matlab 11 PM
+            target_minute = 50  # 50 minutes (11:50 PM IST)
+            
+            now_dt = datetime.now(IST)
+            settle_dt = now_dt.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            
+            if now_dt >= settle_dt:
+                settle_dt = settle_dt + timedelta(days=1)
+                
+            settle_epoch = int(settle_dt.timestamp() * 1000)
+            
+            resp = http_client.get_tickers(category="linear", symbol=target_symbol)
+            tickers = resp.get("result", {}).get("list", [])
+            if not tickers:
+                time.sleep(3)
                 continue
 
-            coins_str = ", ".join([f"{o['symbol']} ({o['funding_rate']*100:+.2f}%)" for o in opportunities])
+            t_data = tickers[0]
+            raw_rate = t_data.get("fundingRate", "-0.02")
+            rate = float(raw_rate) if raw_rate else -0.02
+            last_price = float(t_data.get("lastPrice", 0))
+
+            lev, p_dec, q_step, m_qty, q_dec, t_size = get_instrument_specs(http_client, target_symbol)
+
             with data_lock:
-                dashboard_data['target_symbol'] = coins_str
-                dashboard_data['funding_rate'] = f"{opportunities[0]['funding_rate']*100:+.2f}% (Top)"
-                dashboard_data['action_direction'] = "LONG + 110% Limit + 1% SL"
-                dashboard_data['status'] = f"ARMED: Tracking {len(opportunities)} coin(s)"
+                dashboard_data['target_symbol'] = target_symbol
+                dashboard_data['funding_rate'] = f"{rate*100:+.2f}%"
+                dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
+                dashboard_data['action_direction'] = f"ARMED 11:50 PM: T+10ms @ {settle_dt.strftime('%H:%M:%S')}"
 
-            add_ui_log(f"Rescan completed. Top opportunities: {coins_str}")
+            t_pre_compute = settle_epoch - 1000  # T - 1000ms
+            t_entry = settle_epoch + 10          # T + 10ms (Exact Target)
+            t_exit = settle_epoch + 705          # T + 705ms Hard Exit
 
-            for opp in opportunities:
-                trade_key = (opp['symbol'], opp['next_funding_time'])
-                if trade_key not in processed_trades:
-                    processed_trades.add(trade_key)
-                    threading.Thread(target=execute_single_coin_trade, args=(http_client, opp), daemon=True).start()
+            entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
+            exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
 
-            time.sleep(60)
-        except Exception as outer_e:
-            add_ui_log(f"Main loop exception: {outer_e}")
-            time.sleep(10)
+            with data_lock:
+                dashboard_data['entry_target'] = f"{entry_ist} IST (T + 10ms Short)"
+                dashboard_data['exit_target'] = f"{exit_ist} IST (Hard Exit T + 705ms)"
+                dashboard_data['status'] = f"WAITING FOR 11:50 PM: {settle_dt.strftime('%H:%M:%S')}"
+
+            add_ui_log(f"🎯 11:50 PM TARGET SET: {target_symbol} | Target Time: {settle_dt.strftime('%H:%M:%S IST')} | Rate: {rate*100:+.2f}%")
+
+            # High precision wait for T - 1000ms
+            ultra_precision_wait(t_pre_compute)
+
+            add_ui_log("🔍 T-1000ms: Pre-computing order payload...")
+            try:
+                ticker_resp = http_client.get_tickers(category="linear", symbol=target_symbol)
+                live_price = float(ticker_resp.get("result", {}).get("list", [])[0].get("lastPrice", last_price))
+            except Exception:
+                live_price = last_price
+
+            abs_funding_pct = abs(rate)
+            notional = MARGIN_USD * lev
+            calc_qty = max(m_qty, math.floor((notional / live_price) / q_step) * q_step)
+            qty_str = f"{calc_qty:.{q_dec}f}" if q_dec > 0 else str(int(calc_qty))
+
+            raw_tp_price = live_price * (1.0 - abs_funding_pct * 0.90)
+            tp_price = round_to_tick(raw_tp_price, t_size)
+            tp_price_str = f"{tp_price:.{p_dec}f}"
+
+            add_ui_log(f"📦 Payload Ready: Qty {qty_str} | TP Buy @ {tp_price_str}. Waiting for T+10ms...")
+
+            # T + 10ms Execution Loop
+            ultra_precision_wait(t_entry)
+            entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            add_ui_log(f"🚀 T+10ms: Firing Short Market Sell for {target_symbol}...")
+
+            order_success = False
+            status_text = "FAILED"
+            status_class = "status-abort"
+
+            try:
+                res = http_client.place_order(
+                    category="linear",
+                    symbol=target_symbol,
+                    side="Sell",
+                    orderType="Market",
+                    qty=qty_str,
+                    takeProfit=tp_price_str,
+                    tpTriggerBy="LastPrice",
+                    positionIdx=0
+                )
+                add_ui_log(f"🚀 HTTP ORDER RESPONSE: {res}")
+                if res.get("retCode") == 0:
+                    order_success = True
+                else:
+                    status_text = f"REJECTED: {res.get('retMsg', 'Unknown')}"
+            except Exception as e:
+                status_text = f"ERROR: {str(e)}"
+                add_ui_log(f"⚠ Entry Exception: {e}")
+
+            # T + 705ms Hard Exit Check
+            ultra_precision_wait(t_exit)
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+
+            if order_success:
+                try:
+                    try:
+                        http_client.cancel_all_orders(category="linear", symbol=target_symbol)
+                    except Exception:
+                        pass
+
+                    pos_resp = http_client.get_positions(category="linear", symbol=target_symbol)
+                    pos_list = pos_resp.get("result", {}).get("list", [])
+                    if pos_list:
+                        pos_qty = float(pos_list[0].get("size", 0))
+                        if pos_qty > 0:
+                            http_client.place_order(
+                                category="linear", symbol=target_symbol, side="Buy", orderType="Market",
+                                qty=str(pos_qty), reduceOnly=True, positionIdx=0
+                            )
+                            add_ui_log(f"⏰ HARD EXIT (T+705ms): Forced Cover of {pos_qty} {target_symbol}")
+                            status_text = "HARD EXIT (T+705ms)"
+                            status_class = "status-abort"
+                        else:
+                            status_text = "TP HIT / CLOSED"
+                            status_class = "status-profit"
+                except Exception as e:
+                    add_ui_log(f"⚠ Hard Exit Check Failed: {e}")
+
+            add_ledger_entry({
+                "coin": f"{target_symbol} (11:50 PM Test)",
+                "rate": f"{rate*100:+.2f}%",
+                "entry_time": entry_time_str,
+                "exit_time": exit_time_str,
+                "status_text": status_text,
+                "status_class": status_class
+            })
+
+            time.sleep(20)
+
+        except Exception as main_err:
+            add_ui_log(f"⚠ Main Loop Exception: {main_err}")
+            time.sleep(3)
 
 if __name__ == '__main__':
-    run_funding_capture_engine()
+    run_blurusdt_1150_test()
