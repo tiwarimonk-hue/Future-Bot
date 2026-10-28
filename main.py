@@ -23,8 +23,8 @@ dashboard_data = {
     "action_direction": "--",
     "status": "Initializing Multi-Coin Priority Scanner...",
     "target_settlement": "-- IST",
-    "entry_target": "-- IST (T + 15ms)",
-    "exit_target": "-- IST (T + 1000ms / Emergency Exit)",
+    "entry_target": "-- IST (T + 15ms Short)",
+    "exit_target": "-- IST (T + 700ms Hard Exit)",
     "clock_offset_ms": 0.0,
     "active_targets": [],
     "logs": [],
@@ -138,7 +138,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Bybit Multi-Coin Funding Engine ($1 Margin | Priority: 1H > 4H > 8H)</h1>
+    <h1>⚡ Bybit Short Arbitrage ($1 Margin | T+15ms Sell | T+700ms Hard Exit)</h1>
     <div class="badge" id="ws-status">INITIALIZING</div>
   </div>
   <div class="grid">
@@ -201,10 +201,10 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ==========================================
 # 4. WEBSOCKET PIPELINE
 # ==========================================
-API_KEY = os.environ.get('BYBIT_API_KEY', 'YOUR_API_KEY_HERE')
-API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_API_SECRET_HERE')
+API_KEY = "5OGqzNHMLZ5uXDRqZg"
+API_SECRET = "8yTYSmulJW2MSEoJI7eHm4Zre4V2EObz4YhO"
 MIN_FUNDING_RATE_THRESHOLD = -0.003
-INITIAL_ENTRY_MARGIN_USD = 1.0  # Margin set to $1
+INITIAL_ENTRY_MARGIN_USD = 1.0
 
 ws_ready = False
 
@@ -324,7 +324,6 @@ def calculate_qty_for_price(http_client, symbol, price, margin_usd=1.0):
         qty_step = 1.0
         min_qty = 1.0
 
-    # Leverage limit max 20 or coin's max leverage (whichever is lower)
     applied_leverage = min(20.0, max_leverage)
     try:
         http_client.set_leverage(category="linear", symbol=symbol, buyLeverage=str(applied_leverage), sellLeverage=str(applied_leverage))
@@ -363,8 +362,8 @@ def execute_coin_trade_pipeline(opportunity, active_set):
 
     try:
         t_pre_calc = settle_epoch - 1000       # T - 1s Pre-Calculation
-        t_entry = settle_epoch + 15            # T + 15ms Entry
-        t_exit = settle_epoch + 1000           # T + 1000ms Emergency Exit
+        t_entry = settle_epoch + 15            # T + 15ms Short (Sell) Entry
+        t_hard_exit = settle_epoch + 700       # T + 700ms Hard Exit (Agar TP hit na ho)
 
         add_ui_log(f"🧵 Worker Spawned for {symbol} [{window_type}] | Settle: {datetime.fromtimestamp(settle_epoch/1000, tz=IST).strftime('%H:%M:%S')}")
 
@@ -391,7 +390,7 @@ def execute_coin_trade_pipeline(opportunity, active_set):
 
         expected_funding_profit = base_price * abs(current_rate)
         target_profit_90 = expected_funding_profit * 0.90
-        tp_price = base_price + target_profit_90
+        tp_price = base_price - target_profit_90  # Short position ke liye TP price kam hoga (Buy Limit)
         max_allowed_price_delta = base_price * abs(current_rate) * 0.30
 
         precision_wait_until(t_entry)
@@ -421,12 +420,13 @@ def execute_coin_trade_pipeline(opportunity, active_set):
 
         entry_success = False
         try:
-            http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=initial_qty, positionIdx=0)
-            add_ui_log(f"🚀 ENTRY EXECUTED [{symbol}]: Bought {initial_qty} @ {live_price} at {entry_time_str}")
+            # T+15ms Market SELL (Short) Entry
+            http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=initial_qty, positionIdx=0)
+            add_ui_log(f"🚀 SHORT ENTRY EXECUTED [{symbol}]: Sold {initial_qty} @ {live_price} at {entry_time_str}")
             entry_success = True
         except Exception as e:
             err_msg = f"ERROR (ENTRY): {str(e)[:30]}"
-            add_ui_log(f"❌ Entry failed for {symbol}: {e}")
+            add_ui_log(f"❌ Short Entry failed for {symbol}: {e}")
             add_ledger_entry({
                 "coin": f"{symbol} ({window_type})",
                 "rate": f"{current_rate*100:+.4f}%",
@@ -439,28 +439,37 @@ def execute_coin_trade_pipeline(opportunity, active_set):
 
         if entry_success:
             try:
-                time.sleep(0.05)
+                time.sleep(0.05)  # 50ms buffer to avoid race conditions
                 tp_price_str = f"{tp_price:.{price_decimals}f}"
+                # Short TP ke liye BUY Limit order
                 http_client.place_order(
                     category="linear",
                     symbol=symbol,
-                    side="Sell",
+                    side="Buy",
                     orderType="Limit",
                     qty=initial_qty,
                     price=tp_price_str,
                     reduceOnly=True,
                     positionIdx=0
                 )
-                add_ui_log(f"🎯 TP PLACED [{symbol}]: Sell Limit @ {tp_price_str}")
+                add_ui_log(f"🎯 TP PLACED [{symbol}]: Buy Limit @ {tp_price_str}")
             except Exception as e:
                 err_msg = f"ERROR (TP): {str(e)[:30]}"
                 add_ui_log(f"⚠ Failed to place TP for {symbol}: {e}")
-                # We continue to emergency exit even if TP placement gave an error
+                add_ledger_entry({
+                    "coin": f"{symbol} ({window_type})",
+                    "rate": f"{current_rate*100:+.4f}%",
+                    "entry_time": entry_time_str,
+                    "exit_time": "--",
+                    "status_text": err_msg,
+                    "status_class": "status-cancel"
+                })
 
-        precision_wait_until(t_exit)
+        # T + 700ms Hard Exit agar TP hit na hua ho
+        precision_wait_until(t_hard_exit)
         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         
-        status_text = "CLOSED (EMERGENCY EXIT)"
+        status_text = "CLOSED (HARD EXIT T+700ms)"
         status_class = "status-profit"
 
         if entry_success:
@@ -475,8 +484,9 @@ def execute_coin_trade_pipeline(opportunity, active_set):
                     pos_qty = float(pos_info.get("size", 0))
                     if pos_qty > 0:
                         formatted_exit_qty = f"{pos_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_qty))
-                        http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=formatted_exit_qty, reduceOnly=True, positionIdx=0)
-                        add_ui_log(f"⏰ EMERGENCY EXIT DISPATCHED [{symbol}]: Sold {formatted_exit_qty} at {exit_time_str}")
+                        # Hard exit ke liye Market BUY order
+                        http_client.place_order(category="linear", symbol=symbol, side="Buy", orderType="Market", qty=formatted_exit_qty, reduceOnly=True, positionIdx=0)
+                        add_ui_log(f"⏰ HARD EXIT DISPATCHED [{symbol}]: Bought back {formatted_exit_qty} at {exit_time_str}")
                     else:
                         status_text = "CLOSED (TP HIT ALREADY)"
                 else:
@@ -484,7 +494,7 @@ def execute_coin_trade_pipeline(opportunity, active_set):
             except Exception as e:
                 status_text = f"ERROR (EXIT): {str(e)[:30]}"
                 status_class = "status-cancel"
-                add_ui_log(f"Emergency exit failed for {symbol}: {e}")
+                add_ui_log(f"Hard exit failed for {symbol}: {e}")
 
         add_ledger_entry({
             "coin": f"{symbol} ({window_type})",
@@ -516,7 +526,7 @@ def execute_coin_trade_pipeline(opportunity, active_set):
 # ==========================================
 def run_funding_engine():
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("Multi-Coin Priority Funding Engine Active ($1 Margin | Max 20x | T+1000ms Emergency Exit)...")
+    add_ui_log("Multi-Coin Priority Funding Engine Active ($1 Margin | Max 20x | T+15ms Sell | T+700ms Hard Exit)...")
 
     while not ws_ready:
         time.sleep(0.1)
