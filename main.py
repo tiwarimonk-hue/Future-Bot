@@ -21,10 +21,10 @@ dashboard_data = {
     "target_symbol": "Scanning Market...",
     "funding_rate": "0.00%",
     "action_direction": "--",
-    "status": "Initializing WS HFT Engine...",
+    "status": "Initializing Bulletproof WS Engine...",
     "target_settlement": "-- IST",
     "entry_target": "-- IST (T-20ms WS Buy)",
-    "exit_target": "-- IST (T+10ms WS Sell | Emergency T+300ms)",
+    "exit_target": "-- IST (T+10ms | T+300ms | T+10s | T+2m Emergency)",
     "clock_offset_ms": 0.0,
     "logs": [],
     "ledger": []
@@ -118,7 +118,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bybit WS HFT Engine (Emergency Safety Net)</title>
+<title>Bybit Bulletproof WS HFT Engine</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
 body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; justify-content: center; }
@@ -139,14 +139,14 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
 .rate-tag { color: #0ecb81; font-weight: 600; }
 .ledger-status { font-weight: 600; padding: 4px 10px; border-radius: 6px; font-size: 12px; text-align: right; }
 .status-profit { background: rgba(14, 203, 129, 0.15); color: #0ecb81; }
-.status-emergency { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
+.status-error { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <h1>⚡ Bybit WS HFT Engine ($1 | T-800ms Check | T-20ms Buy | T+10ms Sell | T+300ms Emergency)</h1>
-    <div class="badge" id="ws-status">WS CONNECTED</div>
+    <h1>⚡ Bybit Bulletproof WS Engine ($1 | T-20ms Buy | T+10ms Sell | Verified Ledger)</h1>
+    <div class="badge" id="ws-status">RUNNING</div>
   </div>
   <div class="grid">
     <div class="card"><div class="card-title">Target Coins</div><div class="card-value" id="coin" style="font-size:14px;">-</div></div>
@@ -215,7 +215,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# 4. CONFIG & API CREDENTIALS & WS CLIENT
+# 4. CONFIG & FIXED WS CLIENT (With Response Tracking)
 # ==========================================
 API_KEY = os.environ.get('BYBIT_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_API_SECRET_HERE')
@@ -223,19 +223,21 @@ API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_API_SECRET_HERE')
 MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
 MARGIN_USD = 1.0                     # $1 Fixed Margin per coin
 
-class BybitHFTWebSocket:
+class BybitBulletproofWebSocket:
     def __init__(self, api_key, api_secret):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.ws_url = "wss://stream.bybit.com/v5/trade"
+        self.ws_url = "wss://stream.bybit.com/v5/private"
         self.ws = None
         self.req_id = 1
+        self.responses = {}
+        self.lock = threading.Lock()
         self.connect()
 
     def connect(self):
         def on_open(ws):
-            add_ui_log("🔌 WebSocket Connected. Authenticating...")
-            expires = int((time.time() + 10) * 1000)
+            add_ui_log("🔌 WS Connected to /v5/private. Authenticating...")
+            expires = int((time.time() + 15) * 1000)
             signature_str = f"GET/realtime{expires}"
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
@@ -250,14 +252,20 @@ class BybitHFTWebSocket:
             ws.send(json.dumps(auth_payload))
 
         def on_message(ws, message):
-            pass
+            try:
+                data = json.loads(message)
+                if "reqId" in data:
+                    with self.lock:
+                        self.responses[data["reqId"]] = data
+            except Exception:
+                pass
 
         def on_error(ws, error):
-            add_ui_log(f"⚠ WebSocket Error: {error}")
+            add_ui_log(f"⚠ WS Error: {error}")
 
         def on_close(ws, close_status_code, close_msg):
-            add_ui_log("⚠ WebSocket Closed. Reconnecting in 3s...")
-            time.sleep(3)
+            add_ui_log("⚠ WS Closed. Auto-reconnecting in 2s...")
+            time.sleep(2)
             threading.Thread(target=self.connect, daemon=True).start()
 
         self.ws = websocket.WebSocketApp(
@@ -272,10 +280,11 @@ class BybitHFTWebSocket:
         wst.daemon = True
         wst.start()
 
-    def send_order(self, symbol, side, qty, reduce_only=False):
+    def send_order_and_wait(self, symbol, side, qty, reduce_only=False, timeout=1.5):
         try:
-            req_id_str = f"hft_{self.req_id}"
-            self.req_id += 1
+            with self.lock:
+                req_id_str = f"hft_{self.req_id}"
+                self.req_id += 1
             
             order_payload = {
                 "reqId": req_id_str,
@@ -295,11 +304,31 @@ class BybitHFTWebSocket:
                 }]
             }
             self.ws.send(json.dumps(order_payload))
-            add_ui_log(f"⚡ WS {side.upper()} PUSHED: {symbol} (Qty: {qty})")
-        except Exception as e:
-            add_ui_log(f"⚠ WS Order Push Failed for {symbol}: {e}")
+            add_ui_log(f"⚡ WS {side.upper()} SENT: {symbol} (Qty: {qty}) [ReqId: {req_id_str}]")
 
-ws_client = BybitHFTWebSocket(API_KEY, API_SECRET)
+            # Wait for response confirmation from WebSocket
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                with self.lock:
+                    if req_id_str in self.responses:
+                        resp = self.responses.pop(req_id_str)
+                        ret_code = resp.get("retCode", -1)
+                        if ret_code == 0:
+                            add_ui_log(f"✅ WS CONFIRMED SUCCESS: {symbol} {side}")
+                            return True, "SUCCESS"
+                        else:
+                            err_msg = resp.get("retMsg", "Unknown Error")
+                            add_ui_log(f"❌ WS ORDER REJECTED {symbol} ({side}): Code {ret_code} - {err_msg}")
+                            return False, f"REJECTED: {err_msg}"
+                time.sleep(0.005)
+
+            add_ui_log(f"⚠ WS RESPONSE TIMEOUT for {symbol} ({side}). Checking via fallback...")
+            return False, "TIMEOUT"
+        except Exception as e:
+            add_ui_log(f"⚠ WS Exception {symbol}: {e}")
+            return False, str(e)
+
+ws_client = BybitBulletproofWebSocket(API_KEY, API_SECRET)
 
 def get_instrument_specs(http_client, symbol):
     try:
@@ -371,25 +400,32 @@ def scan_top_funding_opportunities(http_client, max_count=3):
         return []
 
 # ==========================================
-# 5. PRODUCTION ENGINE MAIN LOOP (WS HFT + EMERGENCY EXIT)
+# 5. PRODUCTION ENGINE MAIN LOOP (Bulletproof Execution)
 # ==========================================
 def run_production_engine():
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🚀 AWS WebSocket HFT Engine Active ($1 Margin | T-800ms Check | T-20ms Buy | T+10ms Sell | T+300ms Emergency)")
+    add_ui_log("🚀 Bulletproof WS Engine Active (Continuous 5-Min Rescan & Verified Ledger)")
 
     while True:
         try:
             sync_bybit_clock(http_client)
-            opportunities = scan_top_funding_opportunities(http_client, max_count=3)
-
-            if not opportunities:
+            
+            opportunities = []
+            while True:
+                opportunities = scan_top_funding_opportunities(http_client, max_count=3)
+                if opportunities:
+                    settle_epoch = opportunities[0]['next_funding_time']
+                    time_until_settle = settle_epoch - get_synced_time_ms()
+                    if 0 < time_until_settle <= 600000:
+                        break
+                
                 with data_lock:
-                    dashboard_data['target_symbol'] = "Scanning..."
+                    dashboard_data['status'] = "SCANNING/RE-ARMING (Every 5m)..."
+                    dashboard_data['target_symbol'] = "Searching Top Rates..."
                     dashboard_data['funding_rate'] = "0.00%"
-                    dashboard_data['action_direction'] = "--"
-                    dashboard_data['status'] = "SCANNING: No coin <= -0.4% found"
-                time.sleep(3)
-                continue
+                
+                add_ui_log("🔄 Rescanning market for best funding opportunities (Next check in 300s)...")
+                time.sleep(300)
 
             settle_epoch = opportunities[0]['next_funding_time']
             settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
@@ -410,30 +446,31 @@ def run_production_engine():
                 dashboard_data['target_symbol'] = symbols_str
                 dashboard_data['funding_rate'] = rates_str
                 dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
-                dashboard_data['action_direction'] = "ARMED: T-800ms Check -> T-20ms Buy -> T+10ms Sell -> T+300ms Emergency"
+                dashboard_data['action_direction'] = "LOCKED: T-20ms Buy -> T+10ms Sell -> Multi-Emergency"
 
             # ==========================================
             # TIMINGS SETUP
             # ==========================================
-            t_pre_compute = settle_epoch - 800   # T - 800ms (Pre-calculate specs & prices)
-            t_entry = settle_epoch - 20          # T - 20ms (Exact WS Buy Entry)
-            t_exit = settle_epoch + 10           # T + 10ms (Exact WS Sell Exit)
-            t_emergency = settle_epoch + 300     # T + 300ms (Emergency Safety Hard Exit)
+            t_pre_compute = settle_epoch - 800     # T - 800ms
+            t_entry = settle_epoch - 20            # T - 20ms (Buy Entry)
+            t_exit = settle_epoch + 10             # T + 10ms (Sell Exit)
+            t_emergency_300ms = settle_epoch + 300 # T + 300ms Emergency
+            t_emergency_10s = settle_epoch + 10000 # T + 10 seconds Emergency
+            t_emergency_2m = settle_epoch + 120000 # T + 2 minutes Emergency
 
             entry_ist = datetime.fromtimestamp(t_entry / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
             exit_ist = datetime.fromtimestamp(t_exit / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
-            emergency_ist = datetime.fromtimestamp(t_emergency / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]
 
             with data_lock:
                 dashboard_data['entry_target'] = f"{entry_ist} IST (T - 20ms Buy)"
-                dashboard_data['exit_target'] = f"{exit_ist} IST (Sell) | {emergency_ist} (Emergency)"
+                dashboard_data['exit_target'] = f"{exit_ist} IST (Sell) | Safeties: 300ms, 10s, 2m"
                 dashboard_data['status'] = f"ARMED: {symbols_str}"
 
-            add_ui_log(f"🎯 TARGETS ARMED (WS HFT + Emergency): {symbols_str} | Rates: {rates_str}")
+            add_ui_log(f"🎯 TARGETS ARMED: {symbols_str} | Rates: {rates_str}")
 
-            # Wait until T - 800ms for pre-computation & checks
+            # Wait until T - 800ms for pre-computation
             ultra_precision_wait(t_pre_compute)
-            add_ui_log("🔍 T-800ms: Pre-computing order payloads via HTTP...")
+            add_ui_log("🔍 T-800ms: Pre-computing order payloads...")
             ready_orders = []
 
             def prepare_coin_payload(opp):
@@ -470,84 +507,105 @@ def run_production_engine():
                         ready_orders.append(res)
 
             if not ready_orders:
-                add_ui_log("❌ ABORT: All coins failed safety check or rate shifted.")
+                add_ui_log("❌ ABORT: Rates shifted during pre-check.")
                 time.sleep(2)
                 continue
 
-            add_ui_log(f"📦 Payloads ready at T-800ms. Waiting for exact T-20ms WebSocket Buy trigger...")
-
             # ==========================================
-            # ENTRY: T - 20 ms (WEBSOCKET BUY)
+            # ENTRY: T - 20 ms (BUY)
             # ==========================================
             ultra_precision_wait(t_entry)
             entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            add_ui_log("🚀 T-20ms: Pushing WS BUY orders simultaneously...")
+            add_ui_log("🚀 T-20ms: Executing WS BUY orders...")
 
+            entry_results = {}
             for item in ready_orders:
                 symbol, rate, qty_str = item
-                ws_client.send_order(symbol=symbol, side="Buy", qty=qty_str, reduce_only=False)
+                success, msg = ws_client.send_order_and_wait(symbol=symbol, side="Buy", qty=qty_str, reduce_only=False)
+                entry_results[symbol] = success
 
             # ==========================================
-            # EXIT: T + 10 ms (WEBSOCKET SELL / CLOSE)
+            # EXIT: T + 10 ms (SELL / CLOSE)
             # ==========================================
             ultra_precision_wait(t_exit)
             exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            add_ui_log("⚡ T+10ms: Pushing WS SELL (Exit) orders instantly...")
+            add_ui_log("⚡ T+10ms: Executing WS SELL (Exit) orders...")
 
             for item in ready_orders:
                 symbol, rate, qty_str = item
-                try:
-                    pos_resp = http_client.get_positions(category="linear", symbol=symbol)
-                    pos_list = pos_resp.get("result", {}).get("list", [])
-                    if pos_list:
-                        pos_qty = float(pos_list[0].get("size", 0))
-                        if pos_qty > 0:
-                            ws_client.send_order(symbol=symbol, side="Sell", qty=str(pos_qty), reduce_only=True)
-                except Exception as e:
-                    ws_client.send_order(symbol=symbol, side="Sell", qty=qty_str, reduce_only=True)
+                closed_successfully = False
+                
+                # Fetch position with small retries to handle exchange latency
+                pos_qty = 0.0
+                for _ in range(3):
+                    try:
+                        pos_resp = http_client.get_positions(category="linear", symbol=symbol)
+                        pos_list = pos_resp.get("result", {}).get("list", [])
+                        if pos_list:
+                            pos_qty = float(pos_list[0].get("size", 0))
+                            if pos_qty > 0:
+                                break
+                    except Exception:
+                        pass
+                    time.sleep(0.005)
+
+                if pos_qty > 0:
+                    success, _ = ws_client.send_order_and_wait(symbol=symbol, side="Sell", qty=str(pos_qty), reduce_only=True)
+                    closed_successfully = success
+                else:
+                    # If position size is 0, maybe entry failed earlier
+                    closed_successfully = not entry_results.get(symbol, True)
+
+                status_text = "CLOSED (T+10ms)" if closed_successfully else "EXIT PENDING (Safeties Active)"
+                status_class = "status-profit" if closed_successfully else "status-error"
 
                 add_ledger_entry({
-                    "coin": f"{symbol} (WS HFT T-20ms Buy / T+10ms Sell)",
+                    "coin": f"{symbol} (WS HFT)",
                     "rate": f"{rate*100:+.2f}%",
                     "entry_time": entry_time_str,
                     "exit_time": exit_time_str,
-                    "status_text": "WS CLOSED (T+10ms)",
-                    "status_class": "status-profit"
+                    "status_text": status_text,
+                    "status_class": status_class
                 })
 
-            # ==========================================
-            # EMERGENCY SAFETY NET: T + 300 ms (HARD CHECK & FORCE CLOSE)
-            # ==========================================
-            ultra_precision_wait(t_emergency)
-            emergency_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            # Reusable emergency function with strict verification
+            def force_close_check(target_label, target_time_ms):
+                ultra_precision_wait(target_time_ms)
+                check_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                
+                def check_and_close(item):
+                    symbol, rate, _ = item
+                    try:
+                        pos_resp = http_client.get_positions(category="linear", symbol=symbol)
+                        pos_list = pos_resp.get("result", {}).get("list", [])
+                        if pos_list:
+                            pos_qty = float(pos_list[0].get("size", 0))
+                            if pos_qty > 0:
+                                add_ui_log(f"🚨 EMERGENCY ({target_label}): Position still open for {symbol} ({pos_qty}). Force closing via HTTP!")
+                                http_client.place_order(
+                                    category="linear", symbol=symbol, side="Sell", orderType="Market",
+                                    qty=str(pos_qty), reduceOnly=True, positionIdx=0
+                                )
+                                add_ledger_entry({
+                                    "coin": f"{symbol} ({target_label} SAFETY EXIT)",
+                                    "rate": f"{rate*100:+.2f}%",
+                                    "entry_time": entry_time_str,
+                                    "exit_time": check_time_str,
+                                    "status_text": f"CLOSED ({target_label})",
+                                    "status_class": "status-error"
+                                })
+                    except Exception as e:
+                        add_ui_log(f"⚠ Error during {target_label} for {symbol}: {e}")
 
-            def emergency_check_and_close(item):
-                symbol, rate, qty_str = item
-                try:
-                    pos_resp = http_client.get_positions(category="linear", symbol=symbol)
-                    pos_list = pos_resp.get("result", {}).get("list", [])
-                    if pos_list:
-                        pos_qty = float(pos_list[0].get("size", 0))
-                        if pos_qty > 0:
-                            add_ui_log(f"🚨 EMERGENCY (T+300ms): Position still open for {symbol} ({pos_qty}). Force closing via HTTP!")
-                            # Fallback HTTP Market Sell to guarantee closure
-                            http_client.place_order(
-                                category="linear", symbol=symbol, side="Sell", orderType="Market",
-                                qty=str(pos_qty), reduceOnly=True, positionIdx=0
-                            )
-                            add_ledger_entry({
-                                "coin": f"{symbol} (EMERGENCY SAFETY EXIT)",
-                                "rate": f"{rate*100:+.2f}%",
-                                "entry_time": entry_time_str,
-                                "exit_time": emergency_time_str,
-                                "status_text": "EMERGENCY CLOSED",
-                                "status_class": "status-emergency"
-                            })
-                except Exception as e:
-                    add_ui_log(f"⚠ Emergency Exit Error for {symbol}: {e}")
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    executor.map(check_and_close, ready_orders)
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                executor.map(emergency_check_and_close, ready_orders)
+            # ==========================================
+            # EMERGENCY LAYERS
+            # ==========================================
+            force_close_check("T+300ms", t_emergency_300ms)
+            force_close_check("T+10s", t_emergency_10s)
+            force_close_check("T+2m", t_emergency_2m)
 
             time.sleep(5)
 
