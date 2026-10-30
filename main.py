@@ -220,8 +220,8 @@ threading.Thread(target=run_web_server, daemon=True).start()
 API_KEY = os.environ.get('BYBIT_API_KEY', 'YOUR_API_KEY_HERE')
 API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_API_SECRET_HERE')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-MARGIN_USD = 1.0                     # $1 Fixed Margin per coin
+MIN_FUNDING_RATE_THRESHOLD = -0.0039  # -0.39% Threshold to safely catch -0.4% coins
+MARGIN_USD = 1.0                      # $1 Fixed Margin per coin
 
 class BybitBulletproofWebSocket:
     def __init__(self, api_key, api_secret):
@@ -357,6 +357,7 @@ def scan_top_funding_opportunities(http_client, max_count=3):
         resp = http_client.get_tickers(category="linear")
         tickers = resp.get("result", {}).get("list", [])
         if not tickers:
+            add_ui_log("⚠ Scan Warning: No tickers returned from Bybit API.")
             return []
 
         now_ms = int(get_synced_time_ms())
@@ -377,22 +378,42 @@ def scan_top_funding_opportunities(http_client, max_count=3):
                 last_price = float(t.get("lastPrice", 0))
 
                 time_diff = next_time_ms - now_ms
-                if 0 < time_diff <= 8 * 3600 * 1000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
+                
+                # Check for upcoming settlement within 8.5 hours and rate meeting threshold
+                if 0 < time_diff <= 8.5 * 3600 * 1000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
+                    
+                    # Priority tiers based on settlement intervals: 1h -> 4h -> 8h
+                    hours_diff = time_diff / (3600 * 1000)
+                    if hours_diff <= 1.5:
+                        priority_tier = 1  # 1 Hour Priority
+                    elif hours_diff <= 4.5:
+                        priority_tier = 2  # 4 Hour Priority
+                    else:
+                        priority_tier = 3  # 8 Hour Priority
+
                     all_candidates.append({
                         "symbol": sym,
                         "funding_rate": rate,
                         "next_funding_time": next_time_ms,
-                        "last_price": last_price
+                        "last_price": last_price,
+                        "priority_tier": priority_tier,
+                        "hours_diff": hours_diff
                     })
             except Exception:
                 continue
 
         if not all_candidates:
+            add_ui_log("⚠ Scan Info: No coins found matching 1h/4h/8h and negative rate criteria.")
             return []
 
-        all_candidates.sort(key=lambda x: (x['next_funding_time'], x['funding_rate']))
+        # Sort by Priority Tier (1h first, then 4h, then 8h), then by most negative funding rate
+        all_candidates.sort(key=lambda x: (x['priority_tier'], x['funding_rate']))
+
+        for c in all_candidates[:max_count]:
+            add_ui_log(f"🎯 Selected: {c['symbol']} | Rate: {c['funding_rate']*100:+.3f}% | Settle in: {c['hours_diff']:.1f}h (Tier {c['priority_tier']})")
+
         target_settle = all_candidates[0]['next_funding_time']
-        cluster = [c for c in all_candidates if abs(c['next_funding_time'] - target_settle) <= 10000]
+        cluster = [c for c in all_candidates if abs(c['next_funding_time'] - target_settle) <= 15000]
 
         return cluster[:max_count]
     except Exception as e:
@@ -421,7 +442,7 @@ def run_production_engine():
                 
                 with data_lock:
                     dashboard_data['status'] = "SCANNING/RE-ARMING (Every 5m)..."
-                    dashboard_data['target_symbol'] = "Searching Top Rates..."
+                    dashboard_data['target_symbol'] = "Searching Top Rates (1h/4h/8h)..."
                     dashboard_data['funding_rate'] = "0.00%"
                 
                 add_ui_log("🔄 Rescanning market for best funding opportunities (Next check in 300s)...")
@@ -535,7 +556,6 @@ def run_production_engine():
                 symbol, rate, qty_str = item
                 closed_successfully = False
                 
-                # Fetch position with small retries to handle exchange latency
                 pos_qty = 0.0
                 for _ in range(3):
                     try:
@@ -553,7 +573,6 @@ def run_production_engine():
                     success, _ = ws_client.send_order_and_wait(symbol=symbol, side="Sell", qty=str(pos_qty), reduce_only=True)
                     closed_successfully = success
                 else:
-                    # If position size is 0, maybe entry failed earlier
                     closed_successfully = not entry_results.get(symbol, True)
 
                 status_text = "CLOSED (T+10ms)" if closed_successfully else "EXIT PENDING (Safeties Active)"
@@ -568,7 +587,6 @@ def run_production_engine():
                     "status_class": status_class
                 })
 
-            # Reusable emergency function with strict verification
             def force_close_check(target_label, target_time_ms):
                 ultra_precision_wait(target_time_ms)
                 check_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
