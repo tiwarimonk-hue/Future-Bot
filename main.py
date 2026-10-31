@@ -16,11 +16,11 @@ data_lock = threading.Lock()
 dashboard_data = {
     "target_symbols": "Scanning Market (Top 3)...",
     "funding_rates": "--",
-    "action_direction": "PARALLEL REST CAPTURE ($1 MARGIN | MAX 20x)",
-    "status": "Initializing Parallel Fast Engine...",
+    "action_direction": "PARALLEL LIMIT CAPTURE ($1 MARGIN | MAX 20x)",
+    "status": "Initializing Parallel Limit Engine...",
     "target_settlement": "-- IST",
-    "entry_target": "-- IST (T - 20ms)",
-    "exit_target": "-- IST (T + 10ms)",
+    "entry_target": "-- IST (T - 100s Limit)",
+    "exit_target": "-- IST (T + 7s Hard Exit)",
     "clock_offset_ms": 0.0,
     "logs": [],
     "ledger": []
@@ -143,8 +143,8 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
     <div class="card"><div class="card-title">Targets (Top 3)</div><div class="card-value" id="coins">-</div></div>
     <div class="card"><div class="card-title">Live Rates</div><div class="card-value" id="rates" style="color:#0ecb81;">-</div></div>
     <div class="card"><div class="card-title">Settlement Time</div><div class="card-value" id="settlement" style="color:#38bdf8;">--</div></div>
-    <div class="card"><div class="card-title">Entry Window</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:13px;">T - 20ms</div></div>
-    <div class="card"><div class="card-title">Exit Window</div><div class="card-value" id="exit" style="color:#f6465d; font-size:13px;">T + 10ms</div></div>
+    <div class="card"><div class="card-title">Entry Window</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:13px;">T - 100s (Limit)</div></div>
+    <div class="card"><div class="card-title">Hard Exit</div><div class="card-value" id="exit" style="color:#f6465d; font-size:13px;">T + 7s</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
   </div>
 
@@ -190,8 +190,9 @@ async function updateDashboard() {
             <div class="status-pill ${item.badge_class}">${item.badge_text}</div>
           </div>
           <div class="ledger-details">
-            <div class="detail-item">🚀 <b>Entry (T-20ms):</b> <span>${item.entry_time}</span> | ${item.entry_result}</div>
-            <div class="detail-item">⏰ <b>Exit (T+10ms):</b> <span>${item.exit_time}</span> | ${item.exit_result}</div>
+            <div class="detail-item">🚀 <b>Limit Entry (T-100s):</b> <span>${item.entry_time}</span> | ${item.entry_result}</div>
+            <div class="detail-item">🎯 <b>Limit Price / SL:</b> <span>${item.limit_price}</span> / <span>${item.sl_price}</span></div>
+            <div class="detail-item">⏰ <b>Hard Exit (T+7s):</b> <span>${item.exit_time}</span> | ${item.exit_result}</div>
             <div class="detail-item">🛡 <b>Emergency Action:</b> <span>${item.emergency_action}</span></div>
           </div>
           ${item.error_message ? `<div class="error-tag">⚠ Error Details: ${item.error_message}</div>` : ''}
@@ -253,7 +254,8 @@ def scan_top_funding_opportunities(http_client):
             continue
 
         time_diff = next_time_ms - now_ms
-        if time_diff > 30000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
+        # At least 120 seconds left so T-100s entry is never in the past
+        if time_diff > 120000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
             valid_candidates.append({
                 "symbol": sym,
                 "funding_rate": rate,
@@ -268,29 +270,26 @@ def scan_top_funding_opportunities(http_client):
     earliest_time = min(c['next_funding_time'] for c in valid_candidates)
     imminent_candidates = [c for c in valid_candidates if abs(c['next_funding_time'] - earliest_time) <= 600000]
     
-    # Sort by highest negative funding rate first
     imminent_candidates.sort(key=lambda x: x['funding_rate'])
     return imminent_candidates[:MAX_TARGET_COINS]
 
 def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
-    """
-    Calculates quantity for $1 margin with leverage capped at 20x.
-    If coin max leverage is less than 20x, exchange max leverage is used.
-    Ensures Bybit minOrderQty / minNotional limits are met.
-    """
     try:
         inst_info = http_client.get_instruments_info(category="linear", symbol=symbol)["result"]["list"][0]
         exchange_max_lev = float(inst_info.get("leverageFilter", {}).get("maxLeverage", 20.0))
         lot_filter = inst_info['lotSizeFilter']
+        price_filter = inst_info.get('priceFilter', {})
         qty_step = float(lot_filter["qtyStep"])
         min_qty = float(lot_filter['minOrderQty'])
         min_notional = float(lot_filter.get("minNotionalValue", 5.0))
+        tick_size = float(price_filter.get("tickSize", "0.0001"))
     except Exception as e:
         add_ui_log(f"[{symbol}] Instrument info read error: {e}")
         exchange_max_lev = 20.0
         qty_step = 1.0
         min_qty = 1.0
         min_notional = 5.0
+        tick_size = 0.0001
 
     applied_leverage = min(MAX_ALLOWED_LEVERAGE, exchange_max_lev)
 
@@ -307,10 +306,12 @@ def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
     qty_str = f"{qty_step:.8f}".rstrip("0")
     qty_decimals = len(qty_str.split(".")[1]) if "." in qty_str else 0
 
+    tick_str = f"{tick_size:.8f}".rstrip("0")
+    price_decimals = len(tick_str.split(".")[1]) if "." in tick_str else 2
+
     notional = margin_usd * applied_leverage
     calc_qty = math.floor((notional / price) / qty_step) * qty_step
 
-    # Bybit min order constraints verification
     if calc_qty < min_qty:
         calc_qty = min_qty
     if (calc_qty * price) < min_notional:
@@ -322,95 +323,147 @@ def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
         "symbol": symbol,
         "qty": formatted_qty,
         "leverage": applied_leverage,
-        "qty_decimals": qty_decimals
+        "qty_decimals": qty_decimals,
+        "price_decimals": price_decimals,
+        "tick_size": tick_size
     }
 
 # ==========================================
-# 6. PARALLEL REST EXECUTION WORKER
+# 6. PARALLEL LIMIT ORDER WORKER THREAD
 # ==========================================
 def parallel_coin_executor(http_client, coin_plan, settle_epoch):
     """
-    Dedicated worker thread per coin running pure, verified REST order placement:
-    - Entry: T - 20ms
-    - Exit:  T + 10ms
-    - Emergency Exits: Strictly at T + 1s, T + 2s, and T + 10s
+    Dedicated worker thread per coin:
+    - Calculation & Limit Entry with 1% SL at T - 100s (Min 0.6% discount floor)
+    - Hard Exit at T + 7000ms (7s)
+    - Emergency Exits strictly at T + 50s and T + 60s
     """
     symbol = coin_plan['symbol']
+    rate = coin_plan['rate']
     rate_str = coin_plan['rate_str']
     qty = coin_plan['qty']
     qty_decimals = coin_plan['qty_decimals']
+    price_decimals = coin_plan['price_decimals']
+    tick_size = coin_plan['tick_size']
     leverage = coin_plan['leverage']
 
-    t_entry = settle_epoch - 20   # T - 20ms
-    t_exit = settle_epoch + 10    # T + 10ms
+    t_entry = settle_epoch - 100000   # T - 100s Limit Order
+    t_exit = settle_epoch + 7000      # T + 7s Hard Exit
 
     entry_result_str = "--"
     exit_result_str = "--"
     emergency_action_str = "None (Position Flat)"
     error_log = []
     entry_confirmed = False
+    limit_order_id = None
+    limit_price_str = "--"
+    sl_price_str = "--"
 
-    # 1. PARALLEL ENTRY AT T - 20ms (Direct pybit REST execution)
+    # 1. PRECISE LIMIT ENTRY AT T - 100s
     precision_wait_until(t_entry)
     entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+
     try:
+        # Live market price aur live funding rate fetch
+        ticker_data = http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
+        live_price = float(ticker_data.get("lastPrice", 0))
+        live_rate = float(ticker_data.get("fundingRate", rate))
+
+        # Discount rule: 110% of funding rate, clamped to a minimum of 0.6% (0.006)
+        calc_discount = abs(live_rate) * 1.10
+        effective_discount = max(0.006, calc_discount)
+        raw_limit_price = live_price * (1.0 - effective_discount)
+
+        # Round to valid tick size
+        limit_price = round(math.floor(raw_limit_price / tick_size) * tick_size, price_decimals)
+        limit_price_str = f"{limit_price:.{price_decimals}f}"
+
+        # 1% Stop Loss below the calculated limit price
+        raw_sl_price = limit_price * 0.99
+        sl_price = round(math.floor(raw_sl_price / tick_size) * tick_size, price_decimals)
+        sl_price_str = f"{sl_price:.{price_decimals}f}"
+
+        # Place Buy Limit Order with Stop Loss attached directly on Bybit engine
         entry_resp = http_client.place_order(
             category="linear",
             symbol=symbol,
             side="Buy",
-            orderType="Market",
+            orderType="Limit",
+            price=limit_price_str,
             qty=qty,
-            positionIdx=0
+            timeInForce="GTC",
+            positionIdx=0,
+            stopLoss=sl_price_str,
+            slTriggerBy="LastPrice"
         )
+
         if entry_resp.get("retCode") == 0:
-            order_id = entry_resp["result"].get("orderId", "OK")
-            entry_result_str = f"FILLED (ID: {order_id[:8]}..)"
+            limit_order_id = entry_resp["result"].get("orderId", "")
+            entry_result_str = f"LIMIT PLACED (ID: {limit_order_id[:8]}..)"
             entry_confirmed = True
-            add_ui_log(f"🚀 [{symbol}] ENTRY EXECUTED (BUY MARKET): {qty} @ {leverage}x at {entry_time_str}")
+            add_ui_log(f"🎯 [{symbol}] LIMIT BUY PLACED at {limit_price_str} (Disc: {effective_discount*100:.2f}% | SL: {sl_price_str} | Qty: {qty}) at {entry_time_str}")
         else:
             err_msg = f"RetCode {entry_resp.get('retCode')}: {entry_resp.get('retMsg')}"
             entry_result_str = "REJECTED BY BYBIT"
             error_log.append(err_msg)
-            add_ui_log(f"❌ [{symbol}] Entry Rejected: {err_msg}")
+            add_ui_log(f"❌ [{symbol}] Limit Entry Rejected: {err_msg}")
     except Exception as e:
-        err_msg = f"REST Error: {str(e)}"
+        err_msg = f"Entry Exception: {str(e)}"
         entry_result_str = "EXCEPTION FAILED"
         error_log.append(err_msg)
         add_ui_log(f"❌ [{symbol}] Entry Exception: {err_msg}")
 
-    # 2. PARALLEL EXIT AT T + 10ms (Direct pybit REST execution)
+    # 2. HARD EXIT AT T + 7s (Cancel unfilled limit order & market close open position)
     precision_wait_until(t_exit)
     exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+
+    # Cancel limit order if still open / pending
     try:
-        exit_resp = http_client.place_order(
-            category="linear",
-            symbol=symbol,
-            side="Sell",
-            orderType="Market",
-            qty=qty,
-            reduceOnly=True,
-            positionIdx=0
-        )
-        if exit_resp.get("retCode") == 0:
-            exit_order_id = exit_resp["result"].get("orderId", "OK")
-            exit_result_str = f"FILLED (ID: {exit_order_id[:8]}..)"
-            add_ui_log(f"⚡ [{symbol}] EXIT DISPATCHED (SELL MARKET): {qty} at {exit_time_str}")
+        if limit_order_id:
+            http_client.cancel_order(category="linear", symbol=symbol, orderId=limit_order_id)
         else:
-            err_msg = f"RetCode {exit_resp.get('retCode')}: {exit_resp.get('retMsg')}"
-            exit_result_str = "REJECTED BY BYBIT"
-            error_log.append(err_msg)
-            add_ui_log(f"❌ [{symbol}] Exit Rejected: {err_msg}")
+            http_client.cancel_all_orders(category="linear", symbol=symbol)
+    except Exception:
+        pass
+
+    # Check and close open position
+    pos_filled = False
+    try:
+        pos_resp = http_client.get_positions(category="linear", symbol=symbol)
+        positions = pos_resp.get("result", {}).get("list", [])
+        pos_size = float(positions[0].get("size", 0)) if positions else 0.0
+
+        if pos_size > 0:
+            pos_filled = True
+            formatted_exit_qty = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
+            exit_resp = http_client.place_order(
+                category="linear",
+                symbol=symbol,
+                side="Sell",
+                orderType="Market",
+                qty=formatted_exit_qty,
+                reduceOnly=True,
+                positionIdx=0
+            )
+            if exit_resp.get("retCode") == 0:
+                exit_result_str = f"CLOSED (T+7s Market)"
+                add_ui_log(f"⚡ [{symbol}] HARD EXIT CLOSED: {formatted_exit_qty} at {exit_time_str}")
+            else:
+                err_msg = f"Exit RetCode {exit_resp.get('retCode')}: {exit_resp.get('retMsg')}"
+                exit_result_str = "EXIT REJECTED"
+                error_log.append(err_msg)
+        else:
+            exit_result_str = "NO OPEN POSITION (LIMIT UNFILLED / SL HIT)"
+            add_ui_log(f"ℹ [{symbol}] Position Flat at T+7s (Unfilled or SL Hit)")
     except Exception as e:
-        err_msg = f"REST Error: {str(e)}"
+        err_msg = f"Hard Exit Exception: {str(e)}"
         exit_result_str = "EXCEPTION FAILED"
         error_log.append(err_msg)
-        add_ui_log(f"❌ [{symbol}] Exit Exception: {err_msg}")
 
-    # 3. EMERGENCY EXITS (STRICTLY AT T + 1s, T + 2s, and T + 10s)
+    # 3. EMERGENCY EXITS (STRICTLY AT T + 50s and T + 60s)
     emergency_times = [
-        ("T+1s", settle_epoch + 1000),
-        ("T+2s", settle_epoch + 2000),
-        ("T+10s", settle_epoch + 10000)
+        ("T+50s", settle_epoch + 50000),
+        ("T+60s", settle_epoch + 60000)
     ]
 
     position_cleared = False
@@ -444,7 +497,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
             err_str = f"{stage_name} Check Error: {str(e)}"
             error_log.append(err_str)
 
-    # Determine real ledger badge status
+    # Status Determination for Ledger
     if not entry_confirmed:
         badge_text = "ENTRY REJECTED"
         badge_class = "status-error"
@@ -452,20 +505,21 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
         emergency_action_str = " | ".join(triggered_stages)
         badge_text = "EMERGENCY CLOSED"
         badge_class = "status-warn"
-    elif position_cleared:
-        emergency_action_str = "Clean (Filled instantly at T+10ms)"
+    elif pos_filled and position_cleared:
+        emergency_action_str = "Clean (Closed at T+7s)"
         badge_text = "CAPTURED (CLEAN)"
         badge_class = "status-success"
     else:
-        badge_text = "EXECUTION ERROR"
-        badge_class = "status-error"
+        badge_text = "FLAT / UNFILLED"
+        badge_class = "status-warn"
 
-    # Add verified entry to ledger
     add_ledger_entry({
         "coin": symbol,
         "rate": rate_str,
         "qty": qty,
         "leverage": leverage,
+        "limit_price": limit_price_str,
+        "sl_price": sl_price_str,
         "entry_time": entry_time_str,
         "entry_result": entry_result_str,
         "exit_time": exit_time_str,
@@ -481,7 +535,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
 # ==========================================
 def run_funding_capture_engine():
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🔥 Parallel REST Engine Ready: Top 3 Coins | $1 Margin | Capped 20x | T-20ms Entry | T+10ms Exit")
+    add_ui_log("🔥 Limit Capture Engine Loaded: Top 3 Coins | $1 Margin | Capped 20x | T-100s Limit | T+7s Hard Exit")
 
     while True:
         sync_bybit_clock(http_client)
@@ -497,6 +551,7 @@ def run_funding_capture_engine():
 
         settle_epoch = targets[0]['next_funding_time']
         settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
+        entry_dt = datetime.fromtimestamp((settle_epoch - 100000) / 1000, tz=IST)
         symbols_str = ", ".join([c['symbol'] for c in targets])
         rates_str = ", ".join([f"{c['funding_rate']*100:+.4f}%" for c in targets])
 
@@ -505,12 +560,13 @@ def run_funding_capture_engine():
             dashboard_data['funding_rates'] = rates_str
             dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
             dashboard_data['status'] = f"ARMED ({len(targets)} Targets): {symbols_str}"
-            dashboard_data['entry_target'] = f"{settle_dt.strftime('%H:%M:%S')}.980 IST (T - 20ms)"
-            dashboard_data['exit_target'] = f"{settle_dt.strftime('%H:%M:%S')}.010 IST (T + 10ms)"
+            dashboard_data['entry_target'] = f"{entry_dt.strftime('%H:%M:%S')} IST (T - 100s Limit)"
+            dashboard_data['exit_target'] = f"{settle_dt.strftime('%H:%M:%S')}.000 + 7s IST"
 
         add_ui_log(f"🎯 ARMED TOP {len(targets)} COINS: {symbols_str} | Settlement: {dashboard_data['target_settlement']}")
 
-        t_precalc = settle_epoch - 2000      # T - 2s: Calculations & quantities lock
+        # Pre-calculation locked at T - 102s so threads are ready for T - 100s dispatch
+        t_precalc = settle_epoch - 102000
         last_5min_scan = time.time()
         last_rate_update = time.time()
         interrupted = False
@@ -566,9 +622,9 @@ def run_funding_capture_engine():
         if interrupted:
             continue
 
-        # --- T - 2s PRE-CALCULATION PHASE ---
+        # --- PRE-CALCULATION PHASE (Locks leverage & lot step filters) ---
         precision_wait_until(t_precalc)
-        add_ui_log("⚙️ T - 2s Pre-Calculation Phase: Locking leverage & computing exact lots...")
+        add_ui_log("⚙️ T - 102s Pre-Flight: Locking leverage & lot filters...")
         sync_bybit_clock(http_client)
 
         prepared_plans = []
@@ -580,9 +636,10 @@ def run_funding_capture_engine():
                 live_price = t['last_price']
 
             calc = prepare_coin_parameters(http_client, sym, live_price, INITIAL_ENTRY_MARGIN_USD)
+            calc['rate'] = t['funding_rate']
             calc['rate_str'] = f"{t['funding_rate']*100:+.4f}%"
             prepared_plans.append(calc)
-            add_ui_log(f"  ✔ [{sym}] Qty: {calc['qty']} | Leverage: {calc['leverage']}x (Max 20x cap) | $1 Margin")
+            add_ui_log(f"  ✔ [{sym}] Qty: {calc['qty']} | Leverage: {calc['leverage']}x | TickSize: {calc['tick_size']}")
 
         # --- PARALLEL INDEPENDENT THREAD LAUNCH ---
         worker_threads = []
@@ -598,7 +655,7 @@ def run_funding_capture_engine():
         for th in worker_threads:
             th.join()
 
-        add_ui_log("✅ All parallel workers completed cycle. Preparing next round...")
+        add_ui_log("✅ All parallel workers finished cycle. Preparing next round...")
         time.sleep(5)
 
 if __name__ == '__main__':
