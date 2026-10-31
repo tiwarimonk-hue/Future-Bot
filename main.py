@@ -19,7 +19,7 @@ dashboard_data = {
     "action_direction": "PARALLEL LIMIT CAPTURE ($1 MARGIN | MAX 20x)",
     "status": "Initializing Parallel Limit Engine...",
     "target_settlement": "-- IST",
-    "entry_target": "-- IST (T - 100ms Limit)",
+    "entry_target": "-- IST (T - 250ms Limit)",
     "exit_target": "-- IST (T + 7s Hard Exit)",
     "clock_offset_ms": 0.0,
     "logs": [],
@@ -143,7 +143,7 @@ body { background-color: #0b0e11; color: #eaecef; padding: 20px; display: flex; 
     <div class="card"><div class="card-title">Targets (Top 3)</div><div class="card-value" id="coins">-</div></div>
     <div class="card"><div class="card-title">Live Rates</div><div class="card-value" id="rates" style="color:#0ecb81;">-</div></div>
     <div class="card"><div class="card-title">Settlement Time</div><div class="card-value" id="settlement" style="color:#38bdf8;">--</div></div>
-    <div class="card"><div class="card-title">Entry Window</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:13px;">T - 100ms (Limit)</div></div>
+    <div class="card"><div class="card-title">Entry Window</div><div class="card-value" id="entry" style="color:#0ecb81; font-size:13px;">T - 250ms (Limit)</div></div>
     <div class="card"><div class="card-title">Hard Exit</div><div class="card-value" id="exit" style="color:#f6465d; font-size:13px;">T + 7s</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset">0.0 ms</div></div>
   </div>
@@ -190,7 +190,7 @@ async function updateDashboard() {
             <div class="status-pill ${item.badge_class}">${item.badge_text}</div>
           </div>
           <div class="ledger-details">
-            <div class="detail-item">🚀 <b>Limit Entry (T-100ms):</b> <span>${item.entry_time}</span> | ${item.entry_result}</div>
+            <div class="detail-item">🚀 <b>Limit Entry (T-250ms):</b> <span>${item.entry_time}</span> | ${item.entry_result}</div>
             <div class="detail-item">🎯 <b>Limit Price / SL:</b> <span>${item.limit_price}</span> / <span>${item.sl_price}</span></div>
             <div class="detail-item">⏰ <b>Hard Exit (T+7s):</b> <span>${item.exit_time}</span> | ${item.exit_result}</div>
             <div class="detail-item">🛡 <b>Emergency Action:</b> <span>${item.emergency_action}</span></div>
@@ -334,7 +334,7 @@ def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
 def parallel_coin_executor(http_client, coin_plan, settle_epoch):
     """
     Dedicated worker thread per coin:
-    - Calculation & Limit Entry with 1% SL at T - 100ms (Min 0.6% discount floor)
+    - Calculation & Limit Entry with 1% SL at T - 250ms (Min 0.6% discount floor)
     - Hard Exit at T + 7000ms (7s)
     - Emergency Exits strictly at T + 50s and T + 60s
     """
@@ -347,7 +347,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
     tick_size = coin_plan['tick_size']
     leverage = coin_plan['leverage']
 
-    t_entry = settle_epoch - 100      # T - 100ms Limit Order
+    t_entry = settle_epoch - 250      # T - 250ms Limit Order
     t_exit = settle_epoch + 7000      # T + 7s Hard Exit
 
     entry_result_str = "--"
@@ -359,12 +359,11 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
     limit_price_str = "--"
     sl_price_str = "--"
 
-    # 1. PRECISE LIMIT ENTRY AT T - 100ms
+    # 1. PRECISE LIMIT ENTRY AT T - 250ms
     precision_wait_until(t_entry)
     entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
     try:
-        # Instantaneous live market price & live rate fetch
         try:
             ticker_data = http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
             live_price = float(ticker_data.get("lastPrice", coin_plan['last_price']))
@@ -378,7 +377,6 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
         effective_discount = max(0.006, calc_discount)
         raw_limit_price = live_price * (1.0 - effective_discount)
 
-        # Round to tick size
         limit_price = round(math.floor(raw_limit_price / tick_size) * tick_size, price_decimals)
         limit_price_str = f"{limit_price:.{price_decimals}f}"
 
@@ -539,7 +537,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
 # ==========================================
 def run_funding_capture_engine():
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🔥 Limit Capture Engine Loaded: Top 3 Coins | $1 Margin | Capped 20x | T-100ms Limit | T+7s Hard Exit")
+    add_ui_log("🔥 Limit Capture Engine Loaded: Top 3 Coins | $1 Margin | Capped 20x | T-250ms Limit | T+7s Hard Exit")
 
     while True:
         sync_bybit_clock(http_client)
@@ -555,7 +553,7 @@ def run_funding_capture_engine():
 
         settle_epoch = targets[0]['next_funding_time']
         settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-        entry_dt = datetime.fromtimestamp((settle_epoch - 100) / 1000, tz=IST)
+        entry_dt = datetime.fromtimestamp((settle_epoch - 250) / 1000, tz=IST)
         symbols_str = ", ".join([c['symbol'] for c in targets])
         rates_str = ", ".join([f"{c['funding_rate']*100:+.4f}%" for c in targets])
 
@@ -564,12 +562,12 @@ def run_funding_capture_engine():
             dashboard_data['funding_rates'] = rates_str
             dashboard_data['target_settlement'] = settle_dt.strftime('%H:%M:%S IST')
             dashboard_data['status'] = f"ARMED ({len(targets)} Targets): {symbols_str}"
-            dashboard_data['entry_target'] = f"{entry_dt.strftime('%H:%M:%S')}.900 IST (T - 100ms Limit)"
+            dashboard_data['entry_target'] = f"{entry_dt.strftime('%H:%M:%S')}.750 IST (T - 250ms Limit)"
             dashboard_data['exit_target'] = f"{settle_dt.strftime('%H:%M:%S')}.000 + 7s IST"
 
         add_ui_log(f"🎯 ARMED TOP {len(targets)} COINS: {symbols_str} | Settlement: {dashboard_data['target_settlement']}")
 
-        # Pre-calculation locked at T - 2s so worker threads are primed for T - 100ms
+        # Pre-calculation locked at T - 2s so worker threads are primed for T - 250ms
         t_precalc = settle_epoch - 2000
         last_5min_scan = time.time()
         last_rate_update = time.time()
