@@ -334,7 +334,10 @@ def prepare_coin_parameters(http_client, symbol, price, margin_usd=1.0):
 def parallel_coin_executor(http_client, coin_plan, settle_epoch):
     """
     Dedicated worker thread per coin:
-    - Calculation & Limit Entry with 1% SL at T - 250ms (Min 0.6% discount floor)
+    - Calculation & Limit Entry with 1% SL at T - 250ms:
+      * Funding <= -2%: 150% discount
+      * Funding > -2%: 120% discount
+      * Minimum discount floor: 0.6%
     - Hard Exit at T + 7000ms (7s)
     - Emergency Exits strictly at T + 50s and T + 60s
     """
@@ -372,9 +375,17 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
             live_price = coin_plan['last_price']
             live_rate = rate
 
-        # Discount formula: 110% of funding rate magnitude, clamped to min 0.6% (0.006)
-        calc_discount = abs(live_rate) * 1.10
-        effective_discount = max(0.006, calc_discount)
+        # Tiered Discount Multiplier Rule:
+        # Agar funding -2% se jyada negative hai (e.g. <= -0.02) -> 150%, warna 120%
+        if abs(live_rate) >= 0.02:
+            multiplier = 1.50
+            multiplier_tag = "150%"
+        else:
+            multiplier = 1.20
+            multiplier_tag = "120%"
+
+        calc_discount = abs(live_rate) * multiplier
+        effective_discount = max(0.006, calc_discount)  # Min 0.6% floor
         raw_limit_price = live_price * (1.0 - effective_discount)
 
         limit_price = round(math.floor(raw_limit_price / tick_size) * tick_size, price_decimals)
@@ -403,7 +414,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
             limit_order_id = entry_resp["result"].get("orderId", "")
             entry_result_str = f"LIMIT PLACED (ID: {limit_order_id[:8]}..)"
             entry_confirmed = True
-            add_ui_log(f"🎯 [{symbol}] LIMIT BUY PLACED at {limit_price_str} (Disc: {effective_discount*100:.2f}% | SL: {sl_price_str} | Qty: {qty}) at {entry_time_str}")
+            add_ui_log(f"🎯 [{symbol}] LIMIT BUY PLACED at {limit_price_str} (Tier: {multiplier_tag} | Disc: {effective_discount*100:.2f}% | SL: {sl_price_str} | Qty: {qty}) at {entry_time_str}")
         else:
             err_msg = f"RetCode {entry_resp.get('retCode')}: {entry_resp.get('retMsg')}"
             entry_result_str = "REJECTED BY BYBIT"
@@ -537,7 +548,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch):
 # ==========================================
 def run_funding_capture_engine():
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🔥 Limit Capture Engine Loaded: Top 3 Coins | $1 Margin | Capped 20x | T-250ms Limit | T+7s Hard Exit")
+    add_ui_log("🔥 Dynamic Limit Capture Engine Active: Top 3 Coins | $1 Margin | Capped 20x | T-250ms Limit | T+7s Hard Exit")
 
     while True:
         sync_bybit_clock(http_client)
