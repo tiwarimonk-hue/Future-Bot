@@ -3,213 +3,427 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Unified Multi-Exchange Funding Cockpit</title>
+<title>Alpha Terminal | Multi-Exchange Funding Cockpit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+:root {
+  --bg-main: #080a0d;
+  --bg-card: #12161c;
+  --bg-panel: #181d24;
+  --border: #232b36;
+  --border-focus: #374251;
+  --text-main: #f0f3f6;
+  --text-dim: #768396;
+  --bybit-gold: #f7a600;
+  --binance-yellow: #f0b90b;
+  --dual-blue: #38bdf8;
+  --neon-green: #0ecb81;
+  --neon-red: #f6465d;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, sans-serif; }
-body { background-color: #0b0e11; color: #eaecef; padding: 18px; display: flex; justify-content: center; }
-.container { width: 100%; max-width: 1200px; display: flex; flex-direction: column; gap: 16px; }
+body { background-color: var(--bg-main); color: var(--text-main); padding: 18px; display: flex; justify-content: center; min-height: 100vh; }
+.terminal-wrapper { width: 100%; max-width: 1440px; display: flex; flex-direction: column; gap: 18px; }
 
-/* Header & Tabs */
-.header { background: #1e2329; padding: 16px 20px; border-radius: 12px; border: 1px solid #2b313a; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
-.header h1 { font-size: 18px; color: #f7a600; font-weight: 700; }
-.tabs { display: flex; gap: 8px; background: #181c22; padding: 4px; border-radius: 8px; border: 1px solid #2b313a; }
-.tab-btn { background: transparent; border: none; color: #848e9c; padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
-.tab-btn.active { background: #2b313a; color: #f7a600; }
+/* TOP METRICS STRIP */
+.top-strip { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; letter-spacing: -0.3px; }
+.pulse-dot { width: 9px; height: 9px; background: var(--neon-green); border-radius: 50%; box-shadow: 0 0 10px var(--neon-green); animation: pulse 1.5s infinite; }
+@keyframes pulse { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
 
-/* Grid Sections */
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-.card { background: #1e2329; padding: 14px; border-radius: 10px; border: 1px solid #2b313a; }
-.card-title { font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 5px; font-weight: 600; }
-.card-value { font-size: 14px; font-weight: 700; color: #eaecef; word-break: break-all; }
+.system-stats { display: flex; gap: 16px; align-items: center; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+.stat-pill { background: var(--bg-panel); border: 1px solid var(--border); padding: 5px 12px; border-radius: 6px; color: var(--text-dim); }
+.stat-pill b { color: var(--text-main); }
 
-/* Engine Panels */
-.engine-section { background: #1e2329; padding: 18px; border-radius: 12px; border: 1px solid #2b313a; display: flex; flex-direction: column; gap: 12px; }
-.engine-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2b313a; padding-bottom: 10px; }
-.engine-tag { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
-.tag-bybit { background: rgba(247, 166, 0, 0.15); color: #f7a600; border: 1px solid rgba(247, 166, 0, 0.3); }
-.tag-binance { background: rgba(240, 185, 11, 0.15); color: #f0b90b; border: 1px solid rgba(240, 185, 11, 0.3); }
-.tag-dual { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+/* TWO-COLUMN SOLO STRATEGY GRID */
+.strategy-title-strip { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; margin-bottom: -6px; }
+.two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media(max-width: 980px) { .two-col-grid { grid-template-columns: 1fr; } }
 
-/* Ledger & Logs */
-#log-box { background: #0b0e11; border: 1px solid #2b313a; border-radius: 8px; padding: 12px; height: 220px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; color: #0ecb81; line-height: 1.5; }
-.ledger-container { max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.ledger-card { background: #181c22; border: 1px solid #2b313a; border-radius: 8px; padding: 12px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
-.ledger-top { display: flex; justify-content: space-between; align-items: center; }
-.status-pill { font-weight: 700; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; }
-.status-success { background: rgba(14, 203, 129, 0.15); color: #0ecb81; }
-.status-warn { background: rgba(247, 166, 0, 0.15); color: #f7a600; }
-.status-error { background: rgba(246, 70, 93, 0.15); color: #f6465d; }
+.exchange-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 14px; position: relative; }
+.exchange-panel.bybit-theme { border-top: 3px solid var(--bybit-gold); }
+.exchange-panel.binance-theme { border-top: 3px solid var(--binance-yellow); }
+
+.panel-header { display: flex; justify-content: space-between; align-items: center; }
+.panel-name { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 6px; text-transform: uppercase; font-family: 'JetBrains Mono', monospace; }
+.badge-armed { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border: 1px solid rgba(14, 203, 129, 0.3); }
+.badge-scanning { background: rgba(247, 166, 0, 0.12); color: var(--bybit-gold); border: 1px solid rgba(247, 166, 0, 0.25); }
+
+/* MARKET COIN CARDS */
+.target-card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.coin-box { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 5px; position: relative; }
+.coin-box.armed-highlight { border-color: rgba(14, 203, 129, 0.4); background: rgba(14, 203, 129, 0.04); }
+.coin-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 700; }
+.cycle-tag { font-size: 10px; font-family: 'JetBrains Mono', monospace; padding: 2px 5px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: var(--dual-blue); }
+.coin-rate { font-size: 16px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--neon-green); }
+.armed-chip { position: absolute; bottom: 8px; right: 8px; font-size: 9px; font-weight: 800; background: var(--neon-green); color: #000; padding: 1px 6px; border-radius: 3px; }
+
+/* MINI METRICS ROW */
+.metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.metric-mini { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; }
+.metric-mini-label { font-size: 10px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; }
+.metric-mini-val { font-size: 13px; font-weight: 700; color: var(--text-main); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
+
+/* DUAL ARBITRAGE PANEL */
+.dual-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); border-top: 3px solid var(--dual-blue); padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.dual-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center; }
+@media(max-width: 850px) { .dual-grid { grid-template-columns: 1fr; text-align: center; } }
+.leg-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+.leg-badge { align-self: flex-start; font-size: 11px; font-weight: 800; padding: 3px 8px; border-radius: 4px; }
+.badge-long { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); }
+.badge-short { background: rgba(246, 70, 93, 0.15); color: var(--neon-red); }
+.spread-vs-box { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; font-family: 'JetBrains Mono', monospace; }
+
+/* DEDICATED EXECUTION LEDGERS */
+.ledger-block { display: flex; flex-direction: column; gap: 8px; }
+.ledger-header-text { font-size: 12px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.ledger-scroll { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+.ledger-scroll::-webkit-scrollbar { width: 5px; }
+.ledger-scroll::-webkit-scrollbar-track { background: var(--bg-panel); }
+.ledger-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.trade-item { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.trade-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+.trade-desc { color: var(--text-dim); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+.trade-error { color: var(--neon-red); background: rgba(246, 70, 93, 0.08); border: 1px solid rgba(246, 70, 93, 0.2); border-radius: 4px; padding: 4px 8px; font-size: 11px; font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
+
+/* TERMINAL CONSOLE */
+.console-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.console-box { background: #05070a; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; height: 180px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--neon-green); line-height: 1.6; }
 </style>
 </head>
 <body>
-<div class="container">
-  
-  <div class="header">
-    <h1>⚡ Multi-Exchange Funding Cockpit</h1>
-    <div class="tabs">
-      <button class="tab-btn active" onclick="switchView('all')">All Engines</button>
-      <button class="tab-btn" onclick="switchView('bybit')">Bybit Solo</button>
-      <button class="tab-btn" onclick="switchView('binance')">Binance Solo</button>
-      <button class="tab-btn" onclick="switchView('dual')">Dual Arbitrage</button>
+
+<div class="terminal-wrapper">
+
+  <!-- TOP HEADER STRIP -->
+  <div class="top-strip">
+    <div class="brand">
+      <div class="pulse-dot"></div>
+      <span>QUANT FUNDING COCKPIT</span>
+      <span style="font-size:11px; font-weight:600; color:var(--text-dim); border-left:1px solid var(--border); padding-left:10px;">v3.2 High-Precision</span>
+    </div>
+    <div class="system-stats">
+      <div class="stat-pill">BYBIT DRIFT: <b id="bb-drift">0.0ms</b></div>
+      <div class="stat-pill">BINANCE DRIFT: <b id="bn-drift">0.0ms</b></div>
+      <div class="stat-pill">IST TIME: <b id="clock-ist">--:--:--</b></div>
     </div>
   </div>
 
-  <!-- PANEL 1: BYBIT SOLO -->
-  <div class="engine-section" id="panel-bybit">
-    <div class="engine-header">
-      <div style="font-weight: 700; color: #f7a600; font-size: 15px;">🟡 Bybit Dynamic Engine (Top 3 | $1 Margin)</div>
-      <div class="engine-tag tag-bybit" id="bybit-status">INITIALIZING</div>
+  <!-- SECTION 1: TWO COLUMNS FOR SOLO STRATEGY -->
+  <div class="strategy-title-strip">⚡ Strategy 1: Parallel Solo Extreme Capture (T - 250ms Limit | Max 20x)</div>
+  <div class="two-col-grid">
+
+    <!-- COLUMN 1: BYBIT SOLO -->
+    <div class="exchange-panel bybit-theme">
+      <div class="panel-header">
+        <div class="panel-name">
+          <span style="color:var(--bybit-gold);">●</span> Bybit Linear Engine
+        </div>
+        <div class="badge badge-scanning" id="bybit-status-badge">SCANNING</div>
+      </div>
+
+      <!-- ARMED & SCANNED COINS -->
+      <div class="target-card-row" id="bybit-cards-box">
+        <div class="coin-box armed-highlight">
+          <div class="coin-head">
+            <span id="bb-c1-sym">SCANNING</span>
+            <span class="cycle-tag" id="bb-c1-cycle">1H</span>
+          </div>
+          <div class="coin-rate" id="bb-c1-rate">--%</div>
+          <div style="font-size:10px; color:var(--text-dim);" id="bb-c1-timer">Settle: --:--</div>
+          <div class="armed-chip" id="bb-c1-armed">ARMED</div>
+        </div>
+      </div>
+
+      <!-- CONFIG SPECS -->
+      <div class="metrics-row">
+        <div class="metric-mini">
+          <div class="metric-mini-label">Settle Time</div>
+          <div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-mini-label">Limit Entry</div>
+          <div class="metric-mini-val" style="color:var(--neon-green);">T - 250ms</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-mini-label">Hard Exit</div>
+          <div class="metric-mini-val" style="color:var(--neon-red);">T + 7.0s</div>
+        </div>
+      </div>
+
+      <!-- DEDICATED BYBIT LEDGER -->
+      <div class="ledger-block">
+        <div class="ledger-header-text">📋 Bybit Execution Ledger</div>
+        <div class="ledger-scroll" id="bybit-ledger-box">
+          <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Bybit trade...</div>
+        </div>
+      </div>
     </div>
-    <div class="grid">
-      <div class="card"><div class="card-title">Targets</div><div class="card-value" id="bybit-coins">-</div></div>
-      <div class="card"><div class="card-title">Live Rates</div><div class="card-value" id="bybit-rates" style="color:#0ecb81;">-</div></div>
-      <div class="card"><div class="card-title">Settlement Time</div><div class="card-value" id="bybit-settlement" style="color:#38bdf8;">--</div></div>
-      <div class="card"><div class="card-title">Order Window</div><div class="card-value" style="color:#0ecb81;">T - 250ms (Limit)</div></div>
-      <div class="card"><div class="card-title">Hard Exit</div><div class="card-value" style="color:#f6465d;">T + 7s (Market)</div></div>
-      <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="bybit-offset">0.0 ms</div></div>
+
+    <!-- COLUMN 2: BINANCE SOLO -->
+    <div class="exchange-panel binance-theme">
+      <div class="panel-header">
+        <div class="panel-name">
+          <span style="color:var(--binance-yellow);">●</span> Binance Futures Engine
+        </div>
+        <div class="badge badge-scanning" id="binance-status-badge">SCANNING</div>
+      </div>
+
+      <!-- ARMED & SCANNED COINS -->
+      <div class="target-card-row" id="binance-cards-box">
+        <div class="coin-box armed-highlight">
+          <div class="coin-head">
+            <span id="bn-c1-sym">SCANNING</span>
+            <span class="cycle-tag" id="bn-c1-cycle">1H</span>
+          </div>
+          <div class="coin-rate" id="bn-c1-rate">--%</div>
+          <div style="font-size:10px; color:var(--text-dim);" id="bn-c1-timer">Settle: --:--</div>
+          <div class="armed-chip" id="bn-c1-armed">ARMED</div>
+        </div>
+      </div>
+
+      <!-- CONFIG SPECS -->
+      <div class="metrics-row">
+        <div class="metric-mini">
+          <div class="metric-mini-label">Settle Time</div>
+          <div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-mini-label">Limit Entry</div>
+          <div class="metric-mini-val" style="color:var(--neon-green);">T - 250ms</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-mini-label">Hard Exit</div>
+          <div class="metric-mini-val" style="color:var(--neon-red);">T + 7.0s</div>
+        </div>
+      </div>
+
+      <!-- DEDICATED BINANCE LEDGER -->
+      <div class="ledger-block">
+        <div class="ledger-header-text">📋 Binance Execution Ledger</div>
+        <div class="ledger-scroll" id="binance-ledger-box">
+          <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Binance trade...</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- SECTION 2: DUAL ARBITRAGE STRATEGY -->
+  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (1H vs 4H/8H Spread Reversion)</div>
+  <div class="dual-panel">
+    <div class="panel-header">
+      <div class="panel-name">
+        <span style="color:var(--dual-blue);">⚡</span> Bybit ⇋ Binance Neutral Arb
+        <span style="font-size:12px; font-weight:600; color:var(--text-dim); margin-left:10px;" id="dual-active-coin">Target: Searching Pair...</span>
+      </div>
+      <div class="badge badge-scanning" id="dual-status-badge">MONITORING SPREAD</div>
+    </div>
+
+    <!-- DUAL LEGS VISUAL DISPLAY -->
+    <div class="dual-grid">
+      <!-- LEG 1 -->
+      <div class="leg-card" id="dual-leg1-card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="leg-badge badge-long" id="dual-leg1-action">LEG 1: LONG (1H CYCLE)</span>
+          <span class="cycle-tag" id="dual-leg1-cycle">1H Funding</span>
+        </div>
+        <div style="font-size:15px; font-weight:800; margin-top:4px;" id="dual-leg1-ex">Bybit Linear</div>
+        <div style="font-size:18px; font-weight:800; color:var(--neon-green); font-family:'JetBrains Mono', monospace;" id="dual-leg1-rate">--%</div>
+        <div style="font-size:11px; color:var(--text-dim);" id="dual-leg1-status">Waiting trigger...</div>
+      </div>
+
+      <!-- CENTER SPREAD VS BOX -->
+      <div class="spread-vs-box">
+        <div style="font-size:11px; color:var(--text-dim); font-weight:700;">NET ARB SPREAD</div>
+        <div style="font-size:22px; font-weight:800; color:var(--dual-blue);" id="dual-spread-val">--%</div>
+        <div style="font-size:11px; color:var(--neon-green); margin-top:2px;">Zero Price Risk</div>
+      </div>
+
+      <!-- LEG 2 -->
+      <div class="leg-card" id="dual-leg2-card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="leg-badge badge-short" id="dual-leg2-action">LEG 2: SHORT (HEDGE)</span>
+          <span class="cycle-tag" id="dual-leg2-cycle">4H / 8H Funding</span>
+        </div>
+        <div style="font-size:15px; font-weight:800; margin-top:4px;" id="dual-leg2-ex">Binance Futures</div>
+        <div style="font-size:18px; font-weight:800; color:var(--text-main); font-family:'JetBrains Mono', monospace;" id="dual-leg2-rate">--%</div>
+        <div style="font-size:11px; color:var(--text-dim);" id="dual-leg2-status">4H Non-Settling</div>
+      </div>
+    </div>
+
+    <!-- SPECS & SETTLEMENT STRIP -->
+    <div class="metrics-row" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="metric-mini">
+        <div class="metric-mini-label">Settle Epoch</div>
+        <div class="metric-mini-val" id="dual-settle-val" style="color:var(--dual-blue);">--:--:--</div>
+      </div>
+      <div class="metric-mini">
+        <div class="metric-mini-label">Entry Timing</div>
+        <div class="metric-mini-val" style="color:var(--neon-green);">T - 15.0s</div>
+      </div>
+      <div class="metric-mini">
+        <div class="metric-mini-label">Exit Strategy</div>
+        <div class="metric-mini-val">Reversion or T+30s</div>
+      </div>
+      <div class="metric-mini">
+        <div class="metric-mini-label">Leverage / Margin</div>
+        <div class="metric-mini-val">10x ($1 Margin)</div>
+      </div>
+    </div>
+
+    <!-- DEDICATED DUAL ARB LEDGER -->
+    <div class="ledger-block">
+      <div class="ledger-header-text">📋 Dual Arbitrage Execution Ledger (Spread & Reversion Logs)</div>
+      <div class="ledger-scroll" id="dual-ledger-box">
+        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Cross-Arb trade...</div>
+      </div>
     </div>
   </div>
 
-  <!-- PANEL 2: BINANCE SOLO -->
-  <div class="engine-section" id="panel-binance">
-    <div class="engine-header">
-      <div style="font-weight: 700; color: #f0b90b; font-size: 15px;">🔶 Binance Futures Engine (Top 3 | $1 Margin)</div>
-      <div class="engine-tag tag-binance" id="binance-status">INITIALIZING</div>
+  <!-- SECTION 3: MASTER TERMINAL CONSOLE -->
+  <div class="console-panel">
+    <div style="font-size:12px; font-weight:700; color:var(--text-dim); text-transform:uppercase; display:flex; justify-content:space-between;">
+      <span>🖥 System Terminal Output</span>
+      <span style="font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--neon-green);">STDOUT LIVE</span>
     </div>
-    <div class="grid">
-      <div class="card"><div class="card-title">Targets</div><div class="card-value" id="binance-coins">-</div></div>
-      <div class="card"><div class="card-title">Live Rates</div><div class="card-value" id="binance-rates" style="color:#0ecb81;">-</div></div>
-      <div class="card"><div class="card-title">Settlement Time</div><div class="card-value" id="binance-settlement" style="color:#38bdf8;">--</div></div>
-      <div class="card"><div class="card-title">Order Window</div><div class="card-value" style="color:#0ecb81;">T - 250ms (Limit)</div></div>
-      <div class="card"><div class="card-title">Hard Exit</div><div class="card-value" style="color:#f6465d;">T + 7s (Market)</div></div>
-      <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="binance-offset">0.0 ms</div></div>
-    </div>
-  </div>
-
-  <!-- PANEL 3: DUAL ARBITRAGE -->
-  <div class="engine-section" id="panel-dual">
-    <div class="engine-header">
-      <div style="font-weight: 700; color: #38bdf8; font-size: 15px;">⚡ Bybit ⇋ Binance Cross-Arbitrage (Zero Price Risk)</div>
-      <div class="engine-tag tag-dual" id="dual-status">INITIALIZING</div>
-    </div>
-    <div class="grid">
-      <div class="card"><div class="card-title">Arb Coin</div><div class="card-value" id="dual-coin" style="color:#f7a600;">-</div></div>
-      <div class="card"><div class="card-title">Bybit Rate (Long)</div><div class="card-value" id="dual-bybit-rate" style="color:#0ecb81;">-</div></div>
-      <div class="card"><div class="card-title">Binance Rate (Short)</div><div class="card-value" id="dual-binance-rate" style="color:#f6465d;">-</div></div>
-      <div class="card"><div class="card-title">Net Spread Capture</div><div class="card-value" id="dual-spread" style="color:#38bdf8;">-</div></div>
-      <div class="card"><div class="card-title">Settlement Time</div><div class="card-value" id="dual-settlement">--</div></div>
-      <div class="card"><div class="card-title">Leg Balance Status</div><div class="card-value" id="dual-legs">Synced</div></div>
-    </div>
-  </div>
-
-  <!-- LEDGER SECTION -->
-  <div class="engine-section">
-    <div style="font-size: 14px; font-weight: 700;">📋 Unified Multi-Exchange Execution Ledger</div>
-    <div class="ledger-container" id="ledger-box">
-      <div style="color:#848e9c; text-align:center; padding:20px;">No trades recorded yet.</div>
-    </div>
-  </div>
-
-  <!-- LOGS SECTION -->
-  <div class="engine-section">
-    <div style="font-size: 14px; font-weight: 700;">🖥 Master Terminal Logs</div>
-    <div id="log-box"></div>
+    <div class="console-box" id="log-box"></div>
   </div>
 
 </div>
 
 <script>
-function switchView(mode) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+// Live IST Clock
+setInterval(() => {
+  const d = new Date();
+  const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+  const ist = new Date(utc + (3600000 * 5.5));
+  document.getElementById('clock-ist').innerText = ist.toTimeString().split(' ')[0];
+}, 1000);
 
-  const pBybit = document.getElementById('panel-bybit');
-  const pBinance = document.getElementById('panel-binance');
-  const pDual = document.getElementById('panel-dual');
-
-  if(mode === 'all') {
-    pBybit.style.display = 'flex';
-    pBinance.style.display = 'flex';
-    pDual.style.display = 'flex';
-  } else if(mode === 'bybit') {
-    pBybit.style.display = 'flex';
-    pBinance.style.display = 'none';
-    pDual.style.display = 'none';
-  } else if(mode === 'binance') {
-    pBybit.style.display = 'none';
-    pBinance.style.display = 'flex';
-    pDual.style.display = 'none';
-  } else if(mode === 'dual') {
-    pBybit.style.display = 'none';
-    pBinance.style.display = 'none';
-    pDual.style.display = 'flex';
-  }
-}
-
-async function updateDashboard() {
+async function fetchTelemetry() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
 
-    // 1. Bybit Telemetry
-    if(data.bybit) {
-      document.getElementById('bybit-status').innerText = data.bybit.status || '--';
-      document.getElementById('bybit-coins').innerText = data.bybit.symbols || '-';
-      document.getElementById('bybit-rates').innerText = data.bybit.rates || '-';
-      document.getElementById('bybit-settlement').innerText = data.bybit.settlement || '--';
-      document.getElementById('bybit-offset').innerText = (data.bybit.offset || '0.0') + ' ms';
+    // 1. BYBIT SOLO UPDATE
+    if (data.bybit) {
+      document.getElementById('bb-drift').innerText = (data.bybit.offset || '0.0') + 'ms';
+      document.getElementById('bybit-settle-val').innerText = data.bybit.settlement || '--:--:--';
+      
+      const isArmed = (data.bybit.status || '').toUpperCase().includes('ARMED');
+      const bbBadge = document.getElementById('bybit-status-badge');
+      bbBadge.innerText = data.bybit.status || 'SCANNING';
+      bbBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
+
+      renderCoinCards('bybit-cards-box', data.bybit.symbols, data.bybit.rates, isArmed, data.bybit.settlement);
     }
 
-    // 2. Binance Telemetry
-    if(data.binance) {
-      document.getElementById('binance-status').innerText = data.binance.status || '--';
-      document.getElementById('binance-coins').innerText = data.binance.symbols || '-';
-      document.getElementById('binance-rates').innerText = data.binance.rates || '-';
-      document.getElementById('binance-settlement').innerText = data.binance.settlement || '--';
-      document.getElementById('binance-offset').innerText = (data.binance.offset || '0.0') + ' ms';
+    // 2. BINANCE SOLO UPDATE
+    if (data.binance) {
+      document.getElementById('bn-drift').innerText = (data.binance.offset || '0.0') + 'ms';
+      document.getElementById('binance-settle-val').innerText = data.binance.settlement || '--:--:--';
+      
+      const isArmed = (data.binance.status || '').toUpperCase().includes('ARMED');
+      const bnBadge = document.getElementById('binance-status-badge');
+      bnBadge.innerText = data.binance.status || 'SCANNING';
+      bnBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
+
+      renderCoinCards('binance-cards-box', data.binance.symbols, data.binance.rates, isArmed, data.binance.settlement);
     }
 
-    // 3. Dual Arbitrage Telemetry
-    if(data.dual) {
-      document.getElementById('dual-status').innerText = data.dual.status || '--';
-      document.getElementById('dual-coin').innerText = data.dual.coin || '-';
-      document.getElementById('dual-bybit-rate').innerText = data.dual.bybit_rate || '-';
-      document.getElementById('dual-binance-rate').innerText = data.dual.binance_rate || '-';
-      document.getElementById('dual-spread').innerText = data.dual.spread || '-';
-      document.getElementById('dual-settlement').innerText = data.dual.settlement || '--';
-      document.getElementById('dual-legs').innerText = data.dual.legs || 'Synced';
+    // 3. DUAL ARB UPDATE
+    if (data.dual) {
+      document.getElementById('dual-active-coin').innerText = `Target: ${data.dual.coin || 'Searching...'}`;
+      document.getElementById('dual-settle-val').innerText = data.dual.settlement || '--:--:--';
+      document.getElementById('dual-spread-val').innerText = data.dual.spread || '--%';
+      document.getElementById('dual-leg1-rate').innerText = data.dual.bybit_rate || '--%';
+      document.getElementById('dual-leg2-rate').innerText = data.dual.binance_rate || '--%';
+
+      const isArmed = (data.dual.status || '').toUpperCase().includes('ARMED');
+      const dualBadge = document.getElementById('dual-status-badge');
+      dualBadge.innerText = data.dual.status || 'MONITORING SPREAD';
+      dualBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
     }
 
-    // Logs
-    const logBox = document.getElementById('log-box');
-    if(data.logs) {
+    // 4. LEDGERS ROUTING (Bybit / Binance / Dual)
+    if (data.ledger && data.ledger.length > 0) {
+      const bybitTrades = data.ledger.filter(x => x.exchange === 'Bybit');
+      const binanceTrades = data.ledger.filter(x => x.exchange === 'Binance');
+      const dualTrades = data.ledger.filter(x => (x.exchange || '').includes('⇋') || (x.exchange || '').toLowerCase().includes('dual'));
+
+      renderLedger('bybit-ledger-box', bybitTrades);
+      renderLedger('binance-ledger-box', binanceTrades);
+      renderLedger('dual-ledger-box', dualTrades);
+    }
+
+    // 5. MASTER TERMINAL LOGS
+    if (data.logs) {
+      const logBox = document.getElementById('log-box');
       logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
       logBox.scrollTop = logBox.scrollHeight;
     }
 
-    // Ledger
-    const ledgerBox = document.getElementById('ledger-box');
-    if (data.ledger && data.ledger.length > 0) {
-      ledgerBox.innerHTML = data.ledger.map(item => `
-        <div class="ledger-card">
-          <div class="ledger-top">
-            <div>
-              <span style="font-weight:700; color:#f7a600;">[${item.exchange}] ${item.coin}</span>
-              <span style="color:#0ecb81; margin-left:8px; font-weight:600;">(${item.rate})</span>
-            </div>
-            <div class="status-pill ${item.badge_class}">${item.badge_text}</div>
-          </div>
-          <div style="color:#848e9c; font-size:11px;">
-            Entry: ${item.entry_time} | Exit: ${item.exit_time} | Detail: ${item.detail}
-          </div>
-        </div>
-      `).join('');
-    }
-  } catch (e) {}
+  } catch(e) {}
 }
 
-setInterval(updateDashboard, 1000);
-updateDashboard();
+function renderCoinCards(containerId, symbolsStr, ratesStr, isArmed, settleTime) {
+  const container = document.getElementById(containerId);
+  if (!symbolsStr || symbolsStr.includes('Scanning')) {
+    container.innerHTML = `
+      <div class="coin-box">
+        <div class="coin-head"><span>SCANNING...</span><span class="cycle-tag">Auto</span></div>
+        <div class="coin-rate" style="font-size:13px; color:var(--text-dim);">No <= -0.4%</div>
+      </div>
+    `;
+    return;
+  }
+
+  const symbols = symbolsStr.split(',').map(s => s.trim());
+  const rates = (ratesStr || '').split(',').map(r => r.trim());
+
+  container.innerHTML = symbols.map((sym, i) => `
+    <div class="coin-box ${isArmed ? 'armed-highlight' : ''}">
+      <div class="coin-head">
+        <span>${sym}</span>
+        <span class="cycle-tag">1H</span>
+      </div>
+      <div class="coin-rate">${rates[i] || '--'}</div>
+      <div style="font-size:10px; color:var(--text-dim);">Settle: ${settleTime || '--'}</div>
+      ${isArmed ? `<div class="armed-chip">ARMED</div>` : ''}
+    </div>
+  `).join('');
+}
+
+function renderLedger(containerId, trades) {
+  const box = document.getElementById(containerId);
+  if (!trades || trades.length === 0) {
+    box.innerHTML = `<div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">No trades recorded in this session.</div>`;
+    return;
+  }
+
+  box.innerHTML = trades.map(t => {
+    const isError = (t.badge_class || '').includes('error') || (t.detail || '').toLowerCase().includes('rejected') || (t.detail || '').toLowerCase().includes('fail');
+    return `
+      <div class="trade-item">
+        <div class="trade-head">
+          <span style="color:var(--bybit-gold); font-size:12px;">${t.coin} <span style="color:var(--neon-green); font-size:11px;">(${t.rate || ''})</span></span>
+          <span class="badge ${t.badge_class || 'badge-scanning'}">${t.badge_text || 'EXECUTED'}</span>
+        </div>
+        <div class="trade-desc">Entry: ${t.entry_time || '--'} | Exit: ${t.exit_time || '--'}</div>
+        <div class="trade-desc" style="color:var(--text-main); font-weight:600;">${t.detail || ''}</div>
+        ${t.error_message ? `<div class="trade-error">⚠ ERROR: ${t.error_message}</div>` : ''}
+        ${isError && !t.error_message ? `<div class="trade-error">⚠ Execution Exception logged in terminal</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+setInterval(fetchTelemetry, 1000);
+fetchTelemetry();
 </script>
 </body>
 </html>
