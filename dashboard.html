@@ -127,14 +127,13 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 18px;
 
       <!-- ARMED & SCANNED COINS -->
       <div class="target-card-row" id="bybit-cards-box">
-        <div class="coin-box armed-highlight">
+        <div class="coin-box">
           <div class="coin-head">
             <span id="bb-c1-sym">SCANNING</span>
-            <span class="cycle-tag" id="bb-c1-cycle">1H</span>
+            <span class="cycle-tag">1H</span>
           </div>
           <div class="coin-rate" id="bb-c1-rate">--%</div>
           <div style="font-size:10px; color:var(--text-dim);" id="bb-c1-timer">Settle: --:--</div>
-          <div class="armed-chip" id="bb-c1-armed">ARMED</div>
         </div>
       </div>
 
@@ -174,14 +173,13 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 18px;
 
       <!-- ARMED & SCANNED COINS -->
       <div class="target-card-row" id="binance-cards-box">
-        <div class="coin-box armed-highlight">
+        <div class="coin-box">
           <div class="coin-head">
             <span id="bn-c1-sym">SCANNING</span>
-            <span class="cycle-tag" id="bn-c1-cycle">1H</span>
+            <span class="cycle-tag">1H</span>
           </div>
           <div class="coin-rate" id="bn-c1-rate">--%</div>
           <div style="font-size:10px; color:var(--text-dim);" id="bn-c1-timer">Settle: --:--</div>
-          <div class="armed-chip" id="bn-c1-armed">ARMED</div>
         </div>
       </div>
 
@@ -307,6 +305,7 @@ setInterval(() => {
 async function fetchTelemetry() {
   try {
     const res = await fetch('/api/status');
+    if (!res.ok) return;
     const data = await res.json();
 
     // 1. BYBIT SOLO UPDATE
@@ -350,10 +349,10 @@ async function fetchTelemetry() {
     }
 
     // 4. LEDGERS ROUTING (Bybit / Binance / Dual)
-    if (data.ledger && data.ledger.length > 0) {
-      const bybitTrades = data.ledger.filter(x => x.exchange === 'Bybit');
-      const binanceTrades = data.ledger.filter(x => x.exchange === 'Binance');
-      const dualTrades = data.ledger.filter(x => (x.exchange || '').includes('⇋') || (x.exchange || '').toLowerCase().includes('dual'));
+    if (data.ledger && Array.isArray(data.ledger)) {
+      const bybitTrades = data.ledger.filter(x => (x.exchange || '').toLowerCase().includes('bybit') && !(x.exchange || '').includes('⇋'));
+      const binanceTrades = data.ledger.filter(x => (x.exchange || '').toLowerCase().includes('binance') && !(x.exchange || '').includes('⇋'));
+      const dualTrades = data.ledger.filter(x => (x.exchange || '').includes('⇋') || (x.exchange || '').toLowerCase().includes('dual') || (x.exchange || '').toLowerCase().includes('bybit ⇋ binance'));
 
       renderLedger('bybit-ledger-box', bybitTrades);
       renderLedger('binance-ledger-box', binanceTrades);
@@ -361,22 +360,24 @@ async function fetchTelemetry() {
     }
 
     // 5. MASTER TERMINAL LOGS
-    if (data.logs) {
+    if (data.logs && Array.isArray(data.logs)) {
       const logBox = document.getElementById('log-box');
       logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
       logBox.scrollTop = logBox.scrollHeight;
     }
 
-  } catch(e) {}
+  } catch(e) {
+    console.error("Telemetry fetch error:", e);
+  }
 }
 
 function renderCoinCards(containerId, symbolsStr, ratesStr, isArmed, settleTime) {
   const container = document.getElementById(containerId);
-  if (!symbolsStr || symbolsStr.includes('Scanning')) {
+  if (!symbolsStr || symbolsStr.includes('Scanning') || symbolsStr === '--') {
     container.innerHTML = `
       <div class="coin-box">
         <div class="coin-head"><span>SCANNING...</span><span class="cycle-tag">Auto</span></div>
-        <div class="coin-rate" style="font-size:13px; color:var(--text-dim);">No <= -0.4%</div>
+        <div class="coin-rate" style="font-size:13px; color:var(--text-dim);">Searching target <= -0.25%</div>
       </div>
     `;
     return;
@@ -410,7 +411,7 @@ function renderLedger(containerId, trades) {
     return `
       <div class="trade-item">
         <div class="trade-head">
-          <span style="color:var(--bybit-gold); font-size:12px;">${t.coin} <span style="color:var(--neon-green); font-size:11px;">(${t.rate || ''})</span></span>
+          <span style="color:var(--bybit-gold); font-size:12px;">${t.coin || 'COIN'} <span style="color:var(--neon-green); font-size:11px;">(${t.rate || ''})</span></span>
           <span class="badge ${t.badge_class || 'badge-scanning'}">${t.badge_text || 'EXECUTED'}</span>
         </div>
         <div class="trade-desc">Entry: ${t.entry_time || '--'} | Exit: ${t.exit_time || '--'}</div>
