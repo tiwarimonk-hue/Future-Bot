@@ -1,5 +1,5 @@
 pybit==5.8.0
-binance-futures-connector==3.11.0
+binance-futures-connector
 requests==2.32.3
 urllib3==2.2.3
 websocket-client==1.8.0
