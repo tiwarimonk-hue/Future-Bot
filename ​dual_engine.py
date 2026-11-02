@@ -16,9 +16,9 @@ BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_BYBIT_API_SECRET')
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_BINANCE_API_KEY')
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_BINANCE_API_SECRET')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-ENTRY_MARGIN_USD = 1.0               # $1 Margin strictly kept
-MAX_ALLOWED_LEVERAGE = 10.0          # Strictly capped at 10x
+MIN_FUNDING_RATE_THRESHOLD = -0.0025  # Updated: -0.25% Threshold
+ENTRY_MARGIN_USD = 1.0                # $1 Margin strictly kept
+MAX_ALLOWED_LEVERAGE = 10.0           # Strictly capped at 10x
 
 bybit_clock_offset = 0.0
 binance_clock_offset = 0.0
@@ -46,7 +46,6 @@ def sync_exchange_clocks(bybit_client, binance_client, dashboard_data, data_lock
         pass
 
 def get_synced_time_ms():
-    # Use average synced cluster time
     return (time.time() * 1000) + ((bybit_clock_offset + binance_clock_offset) / 2.0)
 
 def precision_wait_until(target_time_ms):
@@ -73,7 +72,7 @@ def scan_cross_arb_opportunities(bybit_client, binance_client, add_ui_log):
         add_ui_log(f"[Dual-Arb] Scan API Fetch Error: {e}")
         return None
 
-    # Map Binance items: {symbol: {funding_rate, next_funding_time, price}}
+    # Map Binance items: {symbol: {rate, next_time, price}}
     binance_map = {}
     for bp in binance_premiums:
         sym = bp.get("symbol", "")
@@ -148,7 +147,7 @@ def scan_cross_arb_opportunities(bybit_client, binance_client, add_ui_log):
     if not candidates:
         return None
 
-    # Pick the deepest negative funding rate opportunity
+    # Deepest negative funding rate first
     candidates.sort(key=lambda x: x["target_rate"])
     return candidates[0]
 
@@ -206,13 +205,13 @@ def calculate_exchange_lots(bybit_client, binance_client, symbol, bybit_price, b
     if bb_calc_qty < bb_min_qty:
         bb_calc_qty = bb_min_qty
     if (bb_calc_qty * bybit_price) < bb_min_notional:
-        bb_calc_qty = math.ceil((bb_min_notional / bybit_price) / bb_qty_step) * bb_qty_step
+        bb_calc_qty = math.ceil((min_notional := bb_min_notional) / bybit_price / bb_qty_step) * bb_qty_step
 
     bn_calc_qty = math.floor((target_notional / binance_price) / bn_qty_step) * bn_qty_step
     if bn_calc_qty < bn_min_qty:
         bn_calc_qty = bn_min_qty
     if (bn_calc_qty * binance_price) < bn_min_notional:
-        bn_calc_qty = math.ceil((bn_min_notional / binance_price) / bn_qty_step) * bn_qty_step
+        bn_calc_qty = math.ceil(bn_min_notional / binance_price / bn_qty_step) * bn_qty_step
 
     return {
         "bybit_qty": f"{bb_calc_qty:.{bb_decimals}f}" if bb_decimals > 0 else str(int(bb_calc_qty)),
@@ -426,7 +425,7 @@ def execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_plan, lots, a
 def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     bybit_client = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
     binance_client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Dual Arbitrage Engine Active ($1 Margin | 10x Cap | T-15s Entry | T+30s Hard Exit)")
+    add_ui_log("🚀 Dual Arbitrage Engine Active (Thresh <= -0.25% | $1 Margin | 10x Cap | T-15s Entry | T+30s Hard Exit)")
 
     while True:
         sync_exchange_clocks(bybit_client, binance_client, dashboard_data, data_lock)
@@ -434,7 +433,7 @@ def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
 
         if not arb_opp:
             with data_lock:
-                dashboard_data['dual']['status'] = "SCANNING: No 1H vs 4H/8H opportunity"
+                dashboard_data['dual']['status'] = "SCANNING: No 1H vs 4H/8H opportunity (<= -0.25%)"
                 dashboard_data['dual']['coin'] = "--"
                 dashboard_data['dual']['bybit_rate'] = "--"
                 dashboard_data['dual']['binance_rate'] = "--"
@@ -472,7 +471,7 @@ def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
             arb_opp["bybit_price"], arb_opp["binance_price"], add_ui_log
         )
 
-        add_ui_log(f"⚙️ [Dual-Arb] PRE-FLIGHT ({symbol}): Bybit Qty: {lots['bybit_qty']} | Binance Qty: {lots['binance_qty']} @ {lots['leverage']}x Leverage")
+        add_ui_log(f"⚙️ [Dual-Arb] PRE-FLIGHT ({symbol}): Bybit Qty: {lots['bybit_qty']} | Binance Qty: {lots['binance_qty']} @ {lots['leverage']}x")
 
         # Execute cycle with entry at T - 15s
         execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_opp, lots, add_ui_log, add_ledger_entry)
