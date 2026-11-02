@@ -7,16 +7,13 @@ from pybit.unified_trading import HTTP
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# ==========================================
-# CONFIGURATION & SETTINGS
-# ==========================================
 API_KEY = os.environ.get('BYBIT_API_KEY', 'YOUR_BYBIT_API_KEY')
 API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_BYBIT_API_SECRET')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.004  # -0.4% Threshold
-INITIAL_ENTRY_MARGIN_USD = 1.0       # $1 Margin strictly kept
-MAX_TARGET_COINS = 3                 # Top 3 Coins Parallel
-MAX_ALLOWED_LEVERAGE = 20.0          # Strictly capped at 20x
+MIN_FUNDING_RATE_THRESHOLD = -0.004
+INITIAL_ENTRY_MARGIN_USD = 1.0
+MAX_TARGET_COINS = 3
+MAX_ALLOWED_LEVERAGE = 20.0
 
 clock_offset_ms = 0.0
 
@@ -51,7 +48,7 @@ def precision_wait_until(target_time_ms):
         elif diff > 2:
             time.sleep(0.0005)
 
-def scan_top_funding_opportunities(http_client, add_ui_log):
+def scan_top_funding_opportunities(http_client, add_ui_log, dashboard_data, data_lock):
     try:
         tickers = http_client.get_tickers(category="linear")["result"]["list"]
     except Exception as e:
@@ -61,10 +58,22 @@ def scan_top_funding_opportunities(http_client, add_ui_log):
     now_ms = int(get_synced_time_ms())
     valid_candidates = []
 
+    # Check Dual Engine Priority Lock
+    dual_coin_armed = "--"
+    with data_lock:
+        dual_status = dashboard_data.get('dual', {}).get('status', '')
+        if "ARMED" in dual_status.upper():
+            dual_coin_armed = dashboard_data.get('dual', {}).get('coin', '--')
+
     for t in tickers:
         sym = t.get("symbol", "")
         if not sym.endswith("USDT"):
             continue
+
+        # PRIORITY LOCK: Dual me use hone wale coin ko Bybit Solo me UNARM rakhein
+        if sym == dual_coin_armed:
+            continue
+
         raw_rate = t.get("fundingRate", "")
         raw_next = t.get("nextFundingTime", "")
         if not raw_rate or not raw_next:
@@ -159,8 +168,8 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
     tick_size = coin_plan['tick_size']
     leverage = coin_plan['leverage']
 
-    t_entry = settle_epoch - 250      # T - 250ms Limit Order
-    t_exit = settle_epoch + 7000      # T + 7s Hard Exit
+    t_entry = settle_epoch - 250
+    t_exit = settle_epoch + 7000
 
     entry_result_str = "--"
     exit_result_str = "--"
@@ -170,7 +179,6 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
     limit_order_id = None
     limit_price_str = "--"
 
-    # 1. PRECISE LIMIT ENTRY AT T - 250ms
     precision_wait_until(t_entry)
     entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
@@ -224,7 +232,6 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
         error_log.append(err_msg)
         add_ui_log(f"❌ [Bybit] [{symbol}] Exception: {err_msg}")
 
-    # 2. HARD EXIT AT T + 7s
     precision_wait_until(t_exit)
     exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
@@ -267,12 +274,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
         exit_result_str = "EXCEPTION FAILED"
         error_log.append(str(e))
 
-    # 3. EMERGENCY EXITS (T + 50s and T + 60s)
-    emergency_times = [("T+50s", settle_epoch + 50000), ("T+60s", settle_epoch + 60000)]
-    position_cleared = False
-    triggered_stages = []
-
-    for stage_name, target_ms in emergency_times:
+    for stage_name, target_ms in [("T+50s", settle_epoch + 50000), ("T+60s", settle_epoch + 60000)]:
         precision_wait_until(target_ms)
         try:
             pos_resp = http_client.get_positions(category="linear", symbol=symbol)
@@ -291,24 +293,11 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
                     positionIdx=0
                 )
                 action_msg = f"{stage_name} Closed {rem_qty}"
-                triggered_stages.append(action_msg)
                 add_ui_log(f"🛡 [Bybit] [{symbol}] EMERGENCY EXIT: {action_msg}")
             else:
-                position_cleared = True
                 break
         except Exception as e:
             error_log.append(str(e))
-
-    if not entry_confirmed:
-        badge_text, badge_class = "REJECTED", "status-error"
-    elif triggered_stages:
-        emergency_action_str = " | ".join(triggered_stages)
-        badge_text, badge_class = "EMERGENCY CLOSED", "status-warn"
-    elif pos_filled and position_cleared:
-        emergency_action_str = "Clean (T+7s)"
-        badge_text, badge_class = "CAPTURED", "status-success"
-    else:
-        badge_text, badge_class = "UNFILLED", "status-warn"
 
     add_ledger_entry({
         "exchange": "Bybit",
@@ -317,24 +306,21 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
         "entry_time": entry_time_str,
         "exit_time": exit_time_str,
         "detail": f"Limit: {limit_price_str} | Qty: {qty} ({leverage}x) | {entry_result_str} / {exit_result_str}",
-        "badge_text": badge_text,
-        "badge_class": badge_class
+        "badge_text": "CAPTURED" if pos_filled else ("UNFILLED" if entry_confirmed else "REJECTED"),
+        "badge_class": "status-success" if pos_filled else "status-warn"
     })
 
-# ==========================================
-# MASTER ENTRY POINT (Called from main.py)
-# ==========================================
 def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🚀 Bybit Engine Initialized (Threshold <= -0.4% | $1 Margin | Capped 20x | T-250ms Entry)")
+    add_ui_log("🚀 Bybit Engine Initialized (Threshold <= -0.4% | Dual-Conflict Locked)")
 
     while True:
         sync_bybit_clock(http_client, dashboard_data, data_lock)
-        targets = scan_top_funding_opportunities(http_client, add_ui_log)
+        targets = scan_top_funding_opportunities(http_client, add_ui_log, dashboard_data, data_lock)
 
         if not targets:
             with data_lock:
-                dashboard_data['bybit']['status'] = "SCANNING (No coin <= -0.4%)"
+                dashboard_data['bybit']['status'] = "SCANNING (&le; -0.4% / Dual Locked)"
                 dashboard_data['bybit']['symbols'] = "Scanning..."
                 dashboard_data['bybit']['rates'] = "--"
             time.sleep(3)
@@ -351,64 +337,27 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
             dashboard_data['bybit']['rates'] = rates_str
             dashboard_data['bybit']['settlement'] = settle_dt.strftime('%H:%M:%S IST')
 
-        add_ui_log(f"🎯 [Bybit] ARMED: {symbols_str} | Settlement: {settle_dt.strftime('%H:%M:%S IST')}")
-
         t_precalc = settle_epoch - 2000
-        last_5min_scan = time.time()
-        last_rate_update = time.time()
         interrupted = False
 
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_precalc:
                 break
-
             time.sleep(1.0)
 
-            # Live Rate Update (Every 3s)
-            if time.time() - last_rate_update >= 3.0:
-                last_rate_update = time.time()
-                try:
-                    active_rates = []
-                    threshold_breached = False
-                    for t in targets:
-                        tick = http_client.get_tickers(category="linear", symbol=t['symbol'])["result"]["list"][0]
-                        cur_rate = float(tick.get("fundingRate", t['funding_rate']))
-                        t['funding_rate'] = cur_rate
-                        t['last_price'] = float(tick.get("lastPrice", t['last_price']))
-                        active_rates.append(f"{cur_rate * 100:+.4f}%")
-
-                        if cur_rate > MIN_FUNDING_RATE_THRESHOLD:
-                            add_ui_log(f"⚠️ [Bybit] {t['symbol']} weakened above -0.4%. Re-arming!")
-                            threshold_breached = True
-
-                    with data_lock:
-                        dashboard_data['bybit']['rates'] = ", ".join(active_rates)
-
-                    if threshold_breached:
-                        interrupted = True
-                        break
-                except Exception:
-                    pass
-
-            # 5-Minute Full Rescan
-            if time.time() - last_5min_scan >= 300:
-                last_5min_scan = time.time()
-                add_ui_log("🔄 [Bybit] 5-Minute Rescan running...")
-                sync_bybit_clock(http_client, dashboard_data, data_lock)
-                fresh_targets = scan_top_funding_opportunities(http_client, add_ui_log)
-                if fresh_targets:
-                    fresh_symbols = [c['symbol'] for c in fresh_targets]
-                    current_symbols = [c['symbol'] for c in targets]
-                    if fresh_symbols != current_symbols or fresh_targets[0]['next_funding_time'] < settle_epoch:
-                        add_ui_log(f"⚡ [Bybit] Target coins switched to {', '.join(fresh_symbols)}")
-                        interrupted = True
-                        break
+            # Re-check Dual Lock while waiting
+            with data_lock:
+                dual_status = dashboard_data.get('dual', {}).get('status', '')
+                dual_coin = dashboard_data.get('dual', {}).get('coin', '')
+                if "ARMED" in dual_status.upper() and any(t['symbol'] == dual_coin for t in targets):
+                    add_ui_log(f"⚠️ [Bybit] Coin {dual_coin} was claimed by Dual Engine! Unarming from Bybit Solo.")
+                    interrupted = True
+                    break
 
         if interrupted:
             continue
 
-        # T - 2s Pre-Calculation
         precision_wait_until(t_precalc)
         sync_bybit_clock(http_client, dashboard_data, data_lock)
 
@@ -425,7 +374,6 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
             calc['rate_str'] = f"{t['funding_rate']*100:+.4f}%"
             prepared_plans.append(calc)
 
-        # Parallel Launch
         worker_threads = []
         for plan in prepared_plans:
             th = threading.Thread(
@@ -439,5 +387,4 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
         for th in worker_threads:
             th.join()
 
-        add_ui_log("✅ [Bybit] Cycle complete. Searching next targets...")
         time.sleep(5)
