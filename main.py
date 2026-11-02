@@ -7,30 +7,32 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 
-# Unified Central Dashboard State
+# ==========================================
+# CENTRAL DASHBOARD TELEMETRY STATE
+# ==========================================
 dashboard_data = {
     "bybit": {
-        "status": "Initializing...",
-        "symbols": "Scanning...",
+        "status": "Initializing Engine...",
+        "symbols": "Scanning Market...",
         "rates": "--",
         "settlement": "--",
         "offset": 0.0
     },
     "binance": {
-        "status": "Initializing...",
-        "symbols": "Scanning...",
+        "status": "Initializing Engine...",
+        "symbols": "Scanning Market...",
         "rates": "--",
         "settlement": "--",
         "offset": 0.0
     },
     "dual": {
-        "status": "Scanning Spread...",
+        "status": "Dual Module Ready",
         "coin": "--",
         "bybit_rate": "--",
         "binance_rate": "--",
         "spread": "--",
         "settlement": "--",
-        "legs": "Ready"
+        "legs": "Synced"
     },
     "logs": [],
     "ledger": []
@@ -59,6 +61,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        # 1. API Status Endpoint
         if self.path == '/api/status':
             self.send_response(200)
             self.send_header("Content-type", "application/json")
@@ -69,42 +72,66 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
+        # 2. Web UI Frontend (Reads dashboard.html from disk)
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
 
-        # Load external dashboard.html from disk
         html_file_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
         if os.path.exists(html_file_path):
             with open(html_file_path, "r", encoding="utf-8") as f:
                 content = f.read().encode("utf-8")
         else:
-            content = b"<h1>dashboard.html not found! Place it in the same directory.</h1>"
+            content = b"""
+            <body style='background:#0b0e11;color:#f6465d;font-family:sans-serif;padding:30px;text-align:center;'>
+                <h2>dashboard.html not found!</h2>
+                <p style='color:#eaecef;'>Please place <b>dashboard.html</b> in the same directory as main.py.</p>
+            </body>
+            """
         
         self.wfile.write(content)
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), MasterDashboardHandler)
-    print(f"🚀 Unified Web Cockpit Live on http://0.0.0.0:{port}")
+    add_ui_log(f"🚀 Unified Web Dashboard running on Port {port}")
     server.serve_forever()
 
+# ==========================================
+# MASTER ENTRY POINT
+# ==========================================
 if __name__ == '__main__':
-    # 1. Start Single Port Web Server
+    add_ui_log("⚡ Master Controller Starting...")
+
+    # 1. Start Web Server in background thread
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    # 2. Modules ko thread me launch karne ka setup:
-    # try:
-    #     import bybit_engine
-    #     threading.Thread(target=bybit_engine.start_bybit_loop, args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry), daemon=True).start()
-    # except Exception as e:
-    #     add_ui_log(f"Bybit Engine Init Error: {e}")
+    # 2. Launch Bybit Engine Thread
+    try:
+        import bybit_engine
+        threading.Thread(
+            target=bybit_engine.start_bybit_loop,
+            args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
+            daemon=True
+        ).start()
+        add_ui_log("✔ Bybit Engine Thread Launched")
+    except Exception as e:
+        add_ui_log(f"❌ Failed to launch Bybit Engine: {e}")
 
-    # try:
-    #     import binance_engine
-    #     threading.Thread(target=binance_engine.start_binance_loop, args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry), daemon=True).start()
-    # except Exception as e:
-    #     add_ui_log(f"Binance Engine Init Error: {e}")
+    # 3. Launch Binance Engine Thread
+    try:
+        import binance_engine
+        threading.Thread(
+            target=binance_engine.start_binance_loop,
+            args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
+            daemon=True
+        ).start()
+        add_ui_log("✔ Binance Engine Thread Launched")
+    except Exception as e:
+        add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
-    # Keep Master Thread Alive
-    threading.Event().wait()
+    # Keep Master Process Alive
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        add_ui_log("🛑 Engine Stopped by User.")
