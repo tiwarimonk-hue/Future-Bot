@@ -26,7 +26,7 @@ dashboard_data = {
         "offset": 0.0
     },
     "dual": {
-        "status": "Dual Module Ready",
+        "status": "Initializing Engine...",
         "coin": "--",
         "bybit_rate": "--",
         "binance_rate": "--",
@@ -129,6 +129,18 @@ if __name__ == '__main__':
         add_ui_log("✔ Binance Engine Thread Launched")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
+
+    # 4. Launch Dual Arbitrage Engine Thread
+    try:
+        import dual_engine
+        threading.Thread(
+            target=dual_engine.start_dual_loop,
+            args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
+            daemon=True
+        ).start()
+        add_ui_log("✔ Dual Arbitrage Engine Thread Launched")
+    except Exception as e:
+        add_ui_log(f"❌ Failed to launch Dual Engine: {e}")
 
     # Keep Master Process Alive
     try:
