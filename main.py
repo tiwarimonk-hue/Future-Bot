@@ -1,6 +1,8 @@
 import os
 import json
 import threading
+import socket
+import sys
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -54,7 +56,18 @@ def add_ledger_entry(trade_info):
             dashboard_data['ledger'].pop()
 
 # ==========================================
-# SINGLE PORT HTTP SERVER (PORT 10000)
+# ROBUST HTTP SERVER (Suppress ConnectionResetError)
+# ==========================================
+class RobustHTTPServer(HTTPServer):
+    """Custom HTTP Server to suppress ConnectionResetError (Errno 104) and Broken Pipe (Errno 32)"""
+    def handle_error(self, request, client_address):
+        exc_type, exc_value, _ = sys.exc_info()
+        if isinstance(exc_value, (socket.error, OSError)) and getattr(exc_value, 'errno', 0) in (104, 32):
+            return  # Client connection drop / reset ko silently ignore karein
+        super().handle_error(request, client_address)
+
+# ==========================================
+# SINGLE PORT HTTP HANDLER (PORT 10000)
 # ==========================================
 class MasterDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -69,7 +82,10 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             with data_lock:
                 payload = json.dumps(dashboard_data).encode('utf-8')
-            self.wfile.write(payload)
+            try:
+                self.wfile.write(payload)
+            except (socket.error, OSError):
+                pass
             return
 
         # 2. Web UI Frontend (Reads dashboard.html from disk)
@@ -89,11 +105,14 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
             </body>
             """
         
-        self.wfile.write(content)
+        try:
+            self.wfile.write(content)
+        except (socket.error, OSError):
+            pass
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), MasterDashboardHandler)
+    server = RobustHTTPServer(('0.0.0.0', port), MasterDashboardHandler)
     add_ui_log(f"🚀 Unified Web Dashboard running on Port {port}")
     server.serve_forever()
 
