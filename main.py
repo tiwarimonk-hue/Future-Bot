@@ -1,17 +1,15 @@
 import os
 import json
-import threading
 import socket
-import sys
+import threading
 from datetime import datetime, timezone, timedelta
+from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 IST = timezone(timedelta(hours=5, minutes=30))
-data_lock = threading.Lock()
+data_lock = threading.RLock()
 
-# ==========================================
-# CENTRAL DASHBOARD TELEMETRY STATE
-# ==========================================
+# Central Dashboard Telemetry State
 dashboard_data = {
     "bybit": {
         "status": "Initializing Engine...",
@@ -56,65 +54,68 @@ def add_ledger_entry(trade_info):
             dashboard_data['ledger'].pop()
 
 # ==========================================
-# ROBUST HTTP SERVER (Suppress ConnectionResetError)
+# THREADED HTTP SERVER (ZERO FREEZE / ZERO STALL)
 # ==========================================
-class RobustHTTPServer(HTTPServer):
-    """Custom HTTP Server to suppress ConnectionResetError (Errno 104) and Broken Pipe (Errno 32)"""
-    def handle_error(self, request, client_address):
-        exc_type, exc_value, _ = sys.exc_info()
-        if isinstance(exc_value, (socket.error, OSError)) and getattr(exc_value, 'errno', 0) in (104, 32):
-            return  # Client connection drop / reset ko silently ignore karein
-        super().handle_error(request, client_address)
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
-# ==========================================
-# SINGLE PORT HTTP HANDLER (PORT 10000)
-# ==========================================
 class MasterDashboardHandler(BaseHTTPRequestHandler):
+    timeout = 4  # Drop hanging mobile connections after 4s
+
     def log_message(self, format, *args):
         return
 
     def do_GET(self):
-        # 1. API Status Endpoint
-        if self.path == '/api/status':
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            with data_lock:
-                payload = json.dumps(dashboard_data).encode('utf-8')
-            try:
-                self.wfile.write(payload)
-            except (socket.error, OSError):
-                pass
-            return
-
-        # 2. Web UI Frontend (Reads dashboard.html from disk)
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-
-        html_file_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
-        if os.path.exists(html_file_path):
-            with open(html_file_path, "r", encoding="utf-8") as f:
-                content = f.read().encode("utf-8")
-        else:
-            content = b"""
-            <body style='background:#0b0e11;color:#f6465d;font-family:sans-serif;padding:30px;text-align:center;'>
-                <h2>dashboard.html not found!</h2>
-                <p style='color:#eaecef;'>Please place <b>dashboard.html</b> in the same directory as main.py.</p>
-            </body>
-            """
-        
         try:
+            # 1. API Telemetry Endpoint
+            if self.path == '/api/status':
+                self.send_response(200)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                with data_lock:
+                    payload = json.dumps(dashboard_data).encode('utf-8')
+
+                self.wfile.write(payload)
+                self.wfile.flush()
+                return
+
+            # 2. Web UI HTML File
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            html_file_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+            if os.path.exists(html_file_path):
+                with open(html_file_path, "r", encoding="utf-8") as f:
+                    content = f.read().encode("utf-8")
+            else:
+                content = b"<h1>dashboard.html not found! Place it in the same directory.</h1>"
+
             self.wfile.write(content)
-        except (socket.error, OSError):
+            self.wfile.flush()
+
+        except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as e:
+            pass
+        finally:
+            self.close_connection = True
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = RobustHTTPServer(('0.0.0.0', port), MasterDashboardHandler)
-    add_ui_log(f"🚀 Unified Web Dashboard running on Port {port}")
-    server.serve_forever()
+    while True:
+        try:
+            server = ThreadedHTTPServer(('0.0.0.0', port), MasterDashboardHandler)
+            add_ui_log(f"🚀 Multi-Threaded Cockpit Web Server Running on Port {port}")
+            server.serve_forever()
+        except Exception as e:
+            add_ui_log(f"⚠️ Web server restarted due to: {e}")
+            time.sleep(1)
 
 # ==========================================
 # MASTER ENTRY POINT
@@ -122,10 +123,10 @@ def run_web_server():
 if __name__ == '__main__':
     add_ui_log("⚡ Master Controller Starting...")
 
-    # 1. Start Web Server in background thread
+    # 1. Launch Multi-Threaded Web Server
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    # 2. Launch Bybit Engine Thread
+    # 2. Launch Bybit Solo Engine Thread
     try:
         import bybit_engine
         threading.Thread(
@@ -137,7 +138,7 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Bybit Engine: {e}")
 
-    # 3. Launch Binance Engine Thread
+    # 3. Launch Binance Solo Engine Thread
     try:
         import binance_engine
         threading.Thread(
@@ -149,7 +150,7 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
-    # 4. Launch Dual Arbitrage Engine Thread
+    # 4. Launch Dual Cross-Arbitrage Engine Thread
     try:
         import dual_engine
         threading.Thread(
@@ -161,7 +162,7 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Dual Engine: {e}")
 
-    # Keep Master Process Alive
+    # Keep Master Thread Active
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
