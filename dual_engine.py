@@ -16,7 +16,8 @@ BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', 'YOUR_BYBIT_API_SECRET')
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_BINANCE_API_KEY')
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_BINANCE_API_SECRET')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.0025  # -0.25% Threshold
+# STRICT THRESHOLD: -1.0% (-0.01)
+MIN_FUNDING_RATE_THRESHOLD = -0.01
 ENTRY_MARGIN_USD = 1.0                # $1 Margin
 MAX_ALLOWED_LEVERAGE = 10.0           # 10x Max Cap
 
@@ -58,7 +59,7 @@ def precision_wait_until(target_time_ms):
             time.sleep(0.0005)
 
 # ==========================================
-# CROSS-EXCHANGE SCANNER
+# CROSS-EXCHANGE SCANNER (THRESHOLD <= -1.0%)
 # ==========================================
 def scan_cross_arb_opportunities(bybit_client, binance_client, add_ui_log):
     now_ms = int(get_synced_time_ms())
@@ -110,8 +111,7 @@ def scan_cross_arb_opportunities(bybit_client, binance_client, add_ui_log):
         bybit_time_diff = bybit_next - now_ms
         binance_time_diff = binance_next - now_ms
 
-        # Bybit settles earlier (1H), Binance settles >= 30m later
-        # Settlement must be at least 75s away to allow T-1m setup
+        # Bybit settles 1H (<= -1.0%), Binance settles >= 30m later
         if bybit_time_diff > 75000 and (binance_next - bybit_next >= 1800000):
             if bybit_rate <= MIN_FUNDING_RATE_THRESHOLD:
                 candidates.append({
@@ -121,7 +121,7 @@ def scan_cross_arb_opportunities(bybit_client, binance_client, add_ui_log):
                     "spread_abs": abs(bybit_rate - binance_rate)
                 })
 
-        # Binance settles earlier (1H), Bybit settles >= 30m later
+        # Binance settles 1H (<= -1.0%), Bybit settles >= 30m later
         elif binance_time_diff > 75000 and (bybit_next - binance_next >= 1800000):
             if binance_rate <= MIN_FUNDING_RATE_THRESHOLD:
                 candidates.append({
@@ -138,7 +138,7 @@ def scan_cross_arb_opportunities(bybit_client, binance_client, add_ui_log):
     return candidates[0]
 
 # ==========================================
-# PRECISION & NOTIONAL CALCULATION
+# LOT CALCULATION
 # ==========================================
 def calculate_exchange_lots(bybit_client, binance_client, symbol, bybit_price, binance_price):
     try:
@@ -217,43 +217,59 @@ def fire_binance_order(binance_client, symbol, side, qty):
 # ==========================================
 # MASTER ARBITRAGE CYCLE EXECUTOR
 # ==========================================
-def execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_plan, lots, add_ui_log, add_ledger_entry):
+def execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_plan, lots, dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     symbol = arb_plan["symbol"]
     long_ex = arb_plan["long_exchange"]
     short_ex = arb_plan["short_exchange"]
     settle_epoch = arb_plan["settle_epoch"]
 
-    # TIMING MATRIX: T - 1 Minute Entry & T + 7 Minutes Hard Exit Window
-    t_entry = settle_epoch - 60000       # Exact Entry at T - 1 Minute (60s)
-    t_settle = settle_epoch              # Settlement Timestamp
-    t_hard_exit = settle_epoch + 420000  # Hard Exit at T + 7 Minutes (420s)
+    t_entry = settle_epoch - 60000       # Entry at T - 1m
+    t_settle = settle_epoch              # Settlement
+    t_hard_exit = settle_epoch + 420000  # Hard Exit at T + 7m
 
-    # 1. DISPATCH ENTRY AT T - 1 MINUTE
     precision_wait_until(t_entry)
-    entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
+    # 1. MANUAL SAFETY CHECK BEFORE DISPATCH
+    with data_lock:
+        trade_enabled = dashboard_data.get('dual', {}).get('trade_enabled', True)
+
+    if not trade_enabled:
+        add_ui_log(f"🛑 [Dual-Arb] MANUAL SKIP: User has DISABLED trading. Trade skipped for {symbol}!")
+        add_ledger_entry({
+            "exchange": "Bybit ⇋ Binance",
+            "coin": symbol,
+            "rate": f"Long: {long_ex} ({arb_plan['target_rate']*100:.2f}%)",
+            "entry_time": datetime.now(IST).strftime('%H:%M:%S'),
+            "exit_time": "--",
+            "detail": "SKIPPED: Manual Toggle Disabled by User on Dashboard",
+            "badge_text": "MANUAL SKIPPED",
+            "badge_class": "status-warn"
+        })
+        return
+
+    # 2. DISPATCH ENTRY AT T - 1m
+    entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
     th1 = threading.Thread(target=fire_bybit_order, args=(bybit_client, symbol, "Buy" if long_ex == "Bybit" else "Sell", lots["bybit_qty"]), daemon=True)
     th2 = threading.Thread(target=fire_binance_order, args=(binance_client, symbol, "BUY" if long_ex == "Binance" else "SELL", lots["binance_qty"]), daemon=True)
     th1.start(); th2.start()
     th1.join(); th2.join()
 
-    # 2. CAPTURE & LOCK ENTRY PRICE GAP
+    # 3. CAPTURE & LOCK ENTRY PRICE GAP
     try:
         p_bybit_entry = float(bybit_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]["lastPrice"])
         p_binance_entry = float(binance_client.ticker_price(symbol=symbol)["price"])
     except Exception:
         p_bybit_entry, p_binance_entry = arb_plan["bybit_price"], arb_plan["binance_price"]
 
-    # Entry Price Gap Difference Locked
     entry_gap = abs(p_bybit_entry - p_binance_entry)
     add_ui_log(f"🚀 [Dual-Arb] DISPATCHED AT T-1m ({entry_time_str}) | Long: {long_ex} | Short: {short_ex}")
     add_ui_log(f"🔒 [Dual-Arb] ENTRY GAP LOCKED: {entry_gap:.6f} (Bybit: {p_bybit_entry:.5f} vs Binance: {p_binance_entry:.5f})")
 
-    # 3. WAIT UNTIL SETTLEMENT TIMESTAMP T
+    # 4. WAIT UNTIL SETTLEMENT
     precision_wait_until(t_settle)
     add_ui_log(f"💰 [Dual-Arb] SETTLEMENT HIT ({datetime.now(IST).strftime('%H:%M:%S')}). Funding captured on {long_ex}! Monitoring gap for 7 minutes...")
 
-    # 4. MONITOR PRICE GAP FROM T UNTIL T + 7 MINUTES
+    # 5. GAP MONITORING LOOP (T to T + 7m)
     gap_closed_early = False
     exit_reason = "Hard Exit (T+7m Window End)"
     final_gap = entry_gap
@@ -269,7 +285,6 @@ def execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_plan, lots, a
             cur_gap = abs(live_bb_p - live_bn_p)
             final_gap = cur_gap
 
-            # Trigger: Live price gap <= Entry price gap
             if cur_gap <= entry_gap:
                 gap_closed_early = True
                 exit_reason = f"Gap Reverted Early ({cur_gap:.6f} <= {entry_gap:.6f})"
@@ -278,16 +293,16 @@ def execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_plan, lots, a
         except Exception:
             pass
 
-        time.sleep(0.15)  # 150ms check frequency across the 7-minute window
+        time.sleep(0.15)
 
-    # 5. CLOSE BOTH LEGS
+    # 6. CLOSE BOTH LEGS
     exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
     th3 = threading.Thread(target=fire_bybit_order, args=(bybit_client, symbol, "Sell" if long_ex == "Bybit" else "Buy", lots["bybit_qty"]), daemon=True)
     th4 = threading.Thread(target=fire_binance_order, args=(binance_client, symbol, "SELL" if long_ex == "Binance" else "BUY", lots["binance_qty"]), daemon=True)
     th3.start(); th4.start()
     th3.join(); th4.join()
 
-    # 6. EMERGENCY SWEEP AT T + 7m 15s (Residual Verification)
+    # 7. EMERGENCY SWEEP AT T + 7m 15s
     precision_wait_until(settle_epoch + 435000)
     try:
         bb_pos = bybit_client.get_positions(category="linear", symbol=symbol)["result"]["list"]
@@ -318,7 +333,7 @@ def execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_plan, lots, a
 def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     bybit_client = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
     binance_client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Dual Arbitrage Active (Thresh <= -0.25% | T-1m Entry | T+7m Gap Exit)")
+    add_ui_log("🚀 Dual Arbitrage Active (Thresh <= -1.0% | T-1m Entry | T+7m Gap Exit | Manual Safety Ready)")
 
     while True:
         try:
@@ -327,7 +342,7 @@ def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
 
             if not arb_opp:
                 with data_lock:
-                    dashboard_data['dual']['status'] = "SCANNING: No 1H vs 4H/8H opportunity"
+                    dashboard_data['dual']['status'] = "SCANNING: No 1H (<= -1.0%) vs 4H/8H opp"
                     dashboard_data['dual']['coin'] = "--"
                     dashboard_data['dual']['bybit_rate'] = "--"
                     dashboard_data['dual']['binance_rate'] = "--"
@@ -350,7 +365,6 @@ def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
 
             add_ui_log(f"🎯 [Dual-Arb] ARMED {symbol}: Long {arb_opp['long_exchange']} vs Short {arb_opp['short_exchange']} | Settle: {dashboard_data['dual']['settlement']}")
 
-            # Pre-calculation locked at T - 70s (10s before T - 60s entry)
             t_precalc = settle_epoch - 70000
             interrupted = False
 
@@ -371,8 +385,9 @@ def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
                     arb_opp["spread_abs"] = abs(c_bb_r - c_bn_r)
 
                     target_cur = c_bb_r if arb_opp["long_exchange"] == "Bybit" else c_bn_r
+                    # If funding weakens above -1.0%, drop coin immediately
                     if target_cur > MIN_FUNDING_RATE_THRESHOLD:
-                        add_ui_log(f"⚠️ [Dual-Arb] {symbol} rate weakened above -0.25%. Re-scanning!")
+                        add_ui_log(f"⚠️ [Dual-Arb] {symbol} rate weakened above -1.0% ({target_cur*100:.2f}%). Dropping coin!")
                         interrupted = True
                         break
 
@@ -398,7 +413,7 @@ def start_dual_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
             lots = calculate_exchange_lots(bybit_client, binance_client, symbol, c_bb_p, c_bn_p)
             add_ui_log(f"⚙️ [Dual-Arb] PRE-FLIGHT READY ({symbol}): Bybit Qty: {lots['bybit_qty']} | Binance Qty: {lots['binance_qty']}")
 
-            execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_opp, lots, add_ui_log, add_ledger_entry)
+            execute_dual_arbitrage_cycle(bybit_client, binance_client, arb_opp, lots, dashboard_data, data_lock, add_ui_log, add_ledger_entry)
             time.sleep(5)
 
         except Exception as e:
