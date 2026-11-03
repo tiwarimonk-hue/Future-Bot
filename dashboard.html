@@ -36,6 +36,37 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 .badge-armed { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border: 1px solid rgba(14, 203, 129, 0.3); }
 .badge-scanning { background: rgba(247, 166, 0, 0.12); color: var(--bybit-gold); border: 1px solid rgba(247, 166, 0, 0.25); }
 
+/* MANUAL TOGGLE BUTTON STYLING */
+.trade-toggle-btn {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-trade-on {
+  background: rgba(14, 203, 129, 0.18);
+  color: var(--neon-green);
+  border-color: rgba(14, 203, 129, 0.5);
+}
+.btn-trade-on:hover {
+  background: rgba(14, 203, 129, 0.3);
+}
+.btn-trade-off {
+  background: rgba(246, 70, 93, 0.18);
+  color: var(--neon-red);
+  border-color: rgba(246, 70, 93, 0.5);
+}
+.btn-trade-off:hover {
+  background: rgba(246, 70, 93, 0.3);
+}
+
 .target-card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .coin-box { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 4px; position: relative; }
 .coin-box.armed-highlight { border-color: rgba(14, 203, 129, 0.4); background: rgba(14, 203, 129, 0.04); }
@@ -84,7 +115,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     </div>
   </div>
 
-  <!-- STRATEGY 1: SOLO EXTREME CAPTURE -->
+  <!-- STRATEGY 1: SOLO -->
   <div class="strategy-title-strip">⚡ Strategy 1: Parallel Solo Extreme Capture (T - 250ms Limit | 20x Max | &le; -0.4%)</div>
   <div class="two-col-grid">
     
@@ -130,15 +161,21 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 
   </div>
 
-  <!-- STRATEGY 2: DUAL DELTA-NEUTRAL ARBITRAGE (T-1m Entry & T+7m Gap Exit) -->
-  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -0.25% | T - 1m Entry | T + 7m Exit | 10x Max)</div>
+  <!-- STRATEGY 2: DUAL WITH MANUAL TOGGLE -->
+  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -1.0% | T - 1m Entry | T + 7m Exit | 10x Max)</div>
   <div class="dual-panel">
     <div class="panel-header">
       <div class="panel-name">
         <span style="color:var(--dual-blue);">⚡</span> Bybit &hArr; Binance Neutral Arb
         <span style="font-size:12px; font-weight:600; color:var(--text-dim); margin-left:10px;" id="dual-active-coin">Target: Searching Pair...</span>
       </div>
-      <div class="badge badge-scanning" id="dual-status-badge">MONITORING SPREAD</div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <!-- CLICKABLE MANUAL SAFETY BUTTON -->
+        <button id="dual-trade-toggle-btn" onclick="toggleDualTrade()" class="trade-toggle-btn btn-trade-on">
+          <span>●</span> <span id="dual-toggle-text">DUAL TRADE: ENABLED</span>
+        </button>
+        <div class="badge badge-scanning" id="dual-status-badge">MONITORING SPREAD</div>
+      </div>
     </div>
     <div class="dual-grid">
       <div class="leg-card">
@@ -166,7 +203,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
       <div class="metric-mini"><div class="metric-mini-label">Settle Epoch</div><div class="metric-mini-val" id="dual-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
       <div class="metric-mini"><div class="metric-mini-label">Entry Timing</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 1.0m</div></div>
       <div class="metric-mini"><div class="metric-mini-label">Exit Strategy</div><div class="metric-mini-val">Gap &le; Entry or T+7m</div></div>
-      <div class="metric-mini"><div class="metric-mini-label">Leverage / Margin</div><div class="metric-mini-val">10x ($1 Margin)</div></div>
+      <div class="metric-mini"><div class="metric-mini-label">Min Threshold</div><div class="metric-mini-val" style="color:var(--neon-red);">&le; -1.0%</div></div>
     </div>
     <div class="ledger-block">
       <div class="ledger-header-text">📋 Dual Arbitrage Execution Ledger</div>
@@ -193,6 +230,32 @@ setInterval(() => {
 }, 1000);
 
 let isFetching = false;
+
+// MANUAL BUTTON CLICK HANDLER
+async function toggleDualTrade() {
+  const btn = document.getElementById('dual-trade-toggle-btn');
+  btn.style.opacity = '0.5';
+  try {
+    const res = await fetch('/api/toggle_dual');
+    const data = await res.json();
+    updateToggleUI(data.trade_enabled);
+  } catch(e) {}
+  finally {
+    btn.style.opacity = '1';
+  }
+}
+
+function updateToggleUI(isEnabled) {
+  const btn = document.getElementById('dual-trade-toggle-btn');
+  const txt = document.getElementById('dual-toggle-text');
+  if (isEnabled) {
+    btn.className = 'trade-toggle-btn btn-trade-on';
+    txt.innerText = 'DUAL TRADE: ENABLED';
+  } else {
+    btn.className = 'trade-toggle-btn btn-trade-off';
+    txt.innerText = 'DUAL TRADE: DISABLED';
+  }
+}
 
 async function fetchTelemetry() {
   if (isFetching) return;
@@ -237,6 +300,11 @@ async function fetchTelemetry() {
       document.getElementById('dual-spread-val').innerText = data.dual.spread || '--%';
       document.getElementById('dual-leg1-rate').innerText = data.dual.bybit_rate || '--%';
       document.getElementById('dual-leg2-rate').innerText = data.dual.binance_rate || '--%';
+
+      if (data.dual.trade_enabled !== undefined) {
+        updateToggleUI(data.dual.trade_enabled);
+      }
+
       const isArmed = (data.dual.status || '').toUpperCase().includes('ARMED');
       const dualBadge = document.getElementById('dual-status-badge');
       dualBadge.innerText = data.dual.status || 'MONITORING SPREAD';
@@ -250,7 +318,7 @@ async function fetchTelemetry() {
       renderLedger('dual-ledger-box', data.ledger.filter(x => (x.exchange || '').includes('⇋') || (x.exchange || '').toLowerCase().includes('dual')));
     }
 
-    // 5. Logs Console
+    // 5. Console Output
     if (data.logs) {
       const logBox = document.getElementById('log-box');
       logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
