@@ -84,6 +84,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     </div>
   </div>
 
+  <!-- STRATEGY 1: SOLO EXTREME CAPTURE -->
   <div class="strategy-title-strip">⚡ Strategy 1: Parallel Solo Extreme Capture (T - 250ms Limit | 20x Max | &le; -0.4%)</div>
   <div class="two-col-grid">
     
@@ -129,8 +130,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 
   </div>
 
-  <!-- STRATEGY 2 DUAL (UPDATED WITH T - 30s & T + 90s) -->
-  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -0.25% | T - 30s | 10x Max)</div>
+  <!-- STRATEGY 2: DUAL DELTA-NEUTRAL ARBITRAGE (T-1m Entry & T+7m Gap Exit) -->
+  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -0.25% | T - 1m Entry | T + 7m Exit | 10x Max)</div>
   <div class="dual-panel">
     <div class="panel-header">
       <div class="panel-name">
@@ -163,8 +164,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     </div>
     <div class="metrics-row" style="grid-template-columns: repeat(4, 1fr);">
       <div class="metric-mini"><div class="metric-mini-label">Settle Epoch</div><div class="metric-mini-val" id="dual-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-      <div class="metric-mini"><div class="metric-mini-label">Entry Timing</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 30.0s</div></div>
-      <div class="metric-mini"><div class="metric-mini-label">Exit Strategy</div><div class="metric-mini-val">Reversion or T+90s</div></div>
+      <div class="metric-mini"><div class="metric-mini-label">Entry Timing</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 1.0m</div></div>
+      <div class="metric-mini"><div class="metric-mini-label">Exit Strategy</div><div class="metric-mini-val">Gap &le; Entry or T+7m</div></div>
       <div class="metric-mini"><div class="metric-mini-label">Leverage / Margin</div><div class="metric-mini-val">10x ($1 Margin)</div></div>
     </div>
     <div class="ledger-block">
@@ -175,6 +176,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     </div>
   </div>
 
+  <!-- CONSOLE LOGS -->
   <div class="console-panel">
     <div style="font-size:11px; font-weight:700; color:var(--text-dim); text-transform:uppercase;">🖥 Master Terminal Console</div>
     <div class="console-box" id="log-box"></div>
@@ -206,6 +208,7 @@ async function fetchTelemetry() {
     if (!res.ok) throw new Error("HTTP error " + res.status);
     const data = await res.json();
 
+    // 1. Bybit Solo
     if (data.bybit) {
       document.getElementById('bb-drift').innerText = (data.bybit.offset || '0.0') + 'ms';
       document.getElementById('bybit-settle-val').innerText = data.bybit.settlement || '--:--:--';
@@ -216,6 +219,7 @@ async function fetchTelemetry() {
       renderCoinCards('bybit-cards-box', data.bybit.symbols, data.bybit.rates, isArmed, data.bybit.settlement);
     }
 
+    // 2. Binance Solo
     if (data.binance) {
       document.getElementById('bn-drift').innerText = (data.binance.offset || '0.0') + 'ms';
       document.getElementById('binance-settle-val').innerText = data.binance.settlement || '--:--:--';
@@ -226,6 +230,7 @@ async function fetchTelemetry() {
       renderCoinCards('binance-cards-box', data.binance.symbols, data.binance.rates, isArmed, data.binance.settlement);
     }
 
+    // 3. Dual Arbitrage
     if (data.dual) {
       document.getElementById('dual-active-coin').innerText = `Target: ${data.dual.coin || 'Searching...'}`;
       document.getElementById('dual-settle-val').innerText = data.dual.settlement || '--:--:--';
@@ -238,12 +243,14 @@ async function fetchTelemetry() {
       dualBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
     }
 
+    // 4. Ledgers
     if (data.ledger && data.ledger.length > 0) {
       renderLedger('bybit-ledger-box', data.ledger.filter(x => x.exchange === 'Bybit'));
       renderLedger('binance-ledger-box', data.ledger.filter(x => x.exchange === 'Binance'));
       renderLedger('dual-ledger-box', data.ledger.filter(x => (x.exchange || '').includes('⇋') || (x.exchange || '').toLowerCase().includes('dual')));
     }
 
+    // 5. Logs Console
     if (data.logs) {
       const logBox = document.getElementById('log-box');
       logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
