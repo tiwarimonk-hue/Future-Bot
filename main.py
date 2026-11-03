@@ -1,6 +1,5 @@
 import os
 import json
-import socket
 import threading
 from datetime import datetime, timezone, timedelta
 from socketserver import ThreadingMixIn
@@ -32,7 +31,8 @@ dashboard_data = {
         "binance_rate": "--",
         "spread": "--",
         "settlement": "--",
-        "legs": "Synced"
+        "legs": "Synced",
+        "trade_enabled": True   # Manual Trade Safety Toggle
     },
     "logs": [],
     "ledger": []
@@ -53,22 +53,19 @@ def add_ledger_entry(trade_info):
         if len(dashboard_data['ledger']) > 40:
             dashboard_data['ledger'].pop()
 
-# ==========================================
-# THREADED HTTP SERVER (ZERO FREEZE / ZERO STALL)
-# ==========================================
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
 class MasterDashboardHandler(BaseHTTPRequestHandler):
-    timeout = 4  # Drop hanging mobile connections after 4s
+    timeout = 4
 
     def log_message(self, format, *args):
         return
 
     def do_GET(self):
         try:
-            # 1. API Telemetry Endpoint
+            # 1. API Telemetry
             if self.path == '/api/status':
                 self.send_response(200)
                 self.send_header("Content-type", "application/json; charset=utf-8")
@@ -83,7 +80,26 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 return
 
-            # 2. Web UI HTML File
+            # 2. Manual Trade Toggle Endpoint
+            if self.path == '/api/toggle_dual':
+                with data_lock:
+                    curr_val = dashboard_data['dual'].get('trade_enabled', True)
+                    dashboard_data['dual']['trade_enabled'] = not curr_val
+                    new_val = dashboard_data['dual']['trade_enabled']
+                    status_str = "ENABLED" if new_val else "DISABLED"
+
+                add_ui_log(f"🔘 [User Action] Dual Engine Auto-Trading manually set to: {status_str}")
+
+                self.send_response(200)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(json.dumps({"trade_enabled": new_val}).encode('utf-8'))
+                self.wfile.flush()
+                return
+
+            # 3. HTML Delivery
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.send_header("Connection", "close")
@@ -101,7 +117,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
 
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as e:
+        except Exception:
             pass
         finally:
             self.close_connection = True
@@ -117,16 +133,13 @@ def run_web_server():
             add_ui_log(f"⚠️ Web server restarted due to: {e}")
             time.sleep(1)
 
-# ==========================================
-# MASTER ENTRY POINT
-# ==========================================
 if __name__ == '__main__':
     add_ui_log("⚡ Master Controller Starting...")
 
-    # 1. Launch Multi-Threaded Web Server
+    # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    # 2. Launch Bybit Solo Engine Thread
+    # 2. Bybit Solo Thread
     try:
         import bybit_engine
         threading.Thread(
@@ -138,7 +151,7 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Bybit Engine: {e}")
 
-    # 3. Launch Binance Solo Engine Thread
+    # 3. Binance Solo Thread
     try:
         import binance_engine
         threading.Thread(
@@ -150,7 +163,7 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
-    # 4. Launch Dual Cross-Arbitrage Engine Thread
+    # 4. Dual Engine Thread
     try:
         import dual_engine
         threading.Thread(
@@ -162,7 +175,6 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Dual Engine: {e}")
 
-    # Keep Master Thread Active
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
