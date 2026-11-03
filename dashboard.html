@@ -129,7 +129,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 
   </div>
 
-  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -0.25% | T - 15s | 10x Max)</div>
+  <!-- STRATEGY 2 DUAL (UPDATED WITH T - 30s & T + 90s) -->
+  <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -0.25% | T - 30s | 10x Max)</div>
   <div class="dual-panel">
     <div class="panel-header">
       <div class="panel-name">
@@ -162,8 +163,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     </div>
     <div class="metrics-row" style="grid-template-columns: repeat(4, 1fr);">
       <div class="metric-mini"><div class="metric-mini-label">Settle Epoch</div><div class="metric-mini-val" id="dual-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-      <div class="metric-mini"><div class="metric-mini-label">Entry Timing</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 15.0s</div></div>
-      <div class="metric-mini"><div class="metric-mini-label">Exit Strategy</div><div class="metric-mini-val">Reversion or T+30s</div></div>
+      <div class="metric-mini"><div class="metric-mini-label">Entry Timing</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 30.0s</div></div>
+      <div class="metric-mini"><div class="metric-mini-label">Exit Strategy</div><div class="metric-mini-val">Reversion or T+90s</div></div>
       <div class="metric-mini"><div class="metric-mini-label">Leverage / Margin</div><div class="metric-mini-val">10x ($1 Margin)</div></div>
     </div>
     <div class="ledger-block">
@@ -182,7 +183,6 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 </div>
 
 <script>
-// Live IST Clock
 setInterval(() => {
   const d = new Date();
   const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
@@ -206,7 +206,6 @@ async function fetchTelemetry() {
     if (!res.ok) throw new Error("HTTP error " + res.status);
     const data = await res.json();
 
-    // 1. Bybit Solo Update
     if (data.bybit) {
       document.getElementById('bb-drift').innerText = (data.bybit.offset || '0.0') + 'ms';
       document.getElementById('bybit-settle-val').innerText = data.bybit.settlement || '--:--:--';
@@ -217,7 +216,6 @@ async function fetchTelemetry() {
       renderCoinCards('bybit-cards-box', data.bybit.symbols, data.bybit.rates, isArmed, data.bybit.settlement);
     }
 
-    // 2. Binance Solo Update
     if (data.binance) {
       document.getElementById('bn-drift').innerText = (data.binance.offset || '0.0') + 'ms';
       document.getElementById('binance-settle-val').innerText = data.binance.settlement || '--:--:--';
@@ -228,7 +226,6 @@ async function fetchTelemetry() {
       renderCoinCards('binance-cards-box', data.binance.symbols, data.binance.rates, isArmed, data.binance.settlement);
     }
 
-    // 3. Dual Arb Update
     if (data.dual) {
       document.getElementById('dual-active-coin').innerText = `Target: ${data.dual.coin || 'Searching...'}`;
       document.getElementById('dual-settle-val').innerText = data.dual.settlement || '--:--:--';
@@ -241,14 +238,12 @@ async function fetchTelemetry() {
       dualBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
     }
 
-    // 4. Ledgers
     if (data.ledger && data.ledger.length > 0) {
       renderLedger('bybit-ledger-box', data.ledger.filter(x => x.exchange === 'Bybit'));
       renderLedger('binance-ledger-box', data.ledger.filter(x => x.exchange === 'Binance'));
       renderLedger('dual-ledger-box', data.ledger.filter(x => (x.exchange || '').includes('⇋') || (x.exchange || '').toLowerCase().includes('dual')));
     }
 
-    // 5. Console Output
     if (data.logs) {
       const logBox = document.getElementById('log-box');
       logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
@@ -256,10 +251,9 @@ async function fetchTelemetry() {
     }
 
   } catch(e) {
-    // Network delay or momentary disconnect handled cleanly
   } finally {
     isFetching = false;
-    setTimeout(fetchTelemetry, 1000); // Chained poll ensures zero connection pile-up
+    setTimeout(fetchTelemetry, 1000);
   }
 }
 
@@ -296,7 +290,6 @@ function renderLedger(containerId, trades) {
   `).join('');
 }
 
-// Start polling
 fetchTelemetry();
 </script>
 </body>
