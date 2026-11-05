@@ -47,7 +47,7 @@ def precision_wait_until(target_time_ms):
 def scan_top_funding_opportunities(http_client, add_ui_log, dashboard_data, data_lock):
     try:
         tickers = http_client.get_tickers(category="linear")["result"]["list"]
-    except Exception as e:
+    except Exception:
         return []
 
     now_ms = int(get_synced_time_ms())
@@ -156,13 +156,17 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
         except Exception:
             live_price, live_rate = coin_plan['last_price'], rate
 
-        multiplier = 1.50 if abs(live_rate) >= 0.02 else 1.20
+        # 110% LIMIT ORDER MULTIPLIER & 0.6% MIN FLOOR
+        multiplier = 1.10
         effective_discount = max(0.006, abs(live_rate) * multiplier)
         raw_limit_price = live_price * (1.0 - effective_discount)
 
         limit_price = round(math.floor(raw_limit_price / tick_size) * tick_size, price_decimals)
         limit_price_str = f"{limit_price:.{price_decimals}f}"
-        sl_price = round(math.floor((limit_price * 0.99) / tick_size) * tick_size, price_decimals)
+
+        # 0.7% STOP LOSS (0.993)
+        raw_sl_price = limit_price * (1.0 - 0.007)
+        sl_price = round(math.floor(raw_sl_price / tick_size) * tick_size, price_decimals)
         sl_price_str = f"{sl_price:.{price_decimals}f}"
 
         entry_resp = http_client.place_order(
@@ -173,7 +177,7 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
         if entry_resp.get("retCode") == 0:
             limit_order_id = entry_resp["result"].get("orderId", "")
             entry_result_str = "LIMIT PLACED"
-            add_ui_log(f"🎯 [Bybit] [{symbol}] BUY LIMIT at {limit_price_str} (Disc: {effective_discount*100:.2f}%)")
+            add_ui_log(f"🎯 [Bybit] [{symbol}] BUY LIMIT at {limit_price_str} (Disc 110%: {effective_discount*100:.2f}% | SL -0.7%: {sl_price_str})")
         else:
             entry_result_str = "REJECTED"
     except Exception:
@@ -224,14 +228,14 @@ def parallel_coin_executor(http_client, coin_plan, settle_epoch, add_ui_log, add
     add_ledger_entry({
         "exchange": "Bybit", "coin": symbol, "rate": rate_str,
         "entry_time": entry_time_str, "exit_time": exit_time_str,
-        "detail": f"Limit: {limit_price_str} | Qty: {qty} ({leverage}x) | {entry_result_str} / {exit_result_str}",
+        "detail": f"Limit (110%): {limit_price_str} | SL (-0.7%): {sl_price_str} | Qty: {qty} ({leverage}x) | {entry_result_str} / {exit_result_str}",
         "badge_text": "CAPTURED" if pos_filled else "UNFILLED",
         "badge_class": "status-success" if pos_filled else "status-warn"
     })
 
 def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🚀 Bybit Engine Initialized (Threshold <= -0.4% | Dynamic Re-Scan Enabled)")
+    add_ui_log("🚀 Bybit Engine Initialized (Limit 110% | SL -0.7% | Dynamic Re-Scan Enabled)")
 
     while True:
         sync_bybit_clock(http_client, dashboard_data, data_lock)
@@ -257,7 +261,6 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
         t_precalc = settle_epoch - 2000
         last_rescan_time = time.time()
 
-        # Dynamic ARMED loop: Refreshes every 15s to catch new deeper coins like CATUSDT
         while True:
             now_ms = get_synced_time_ms()
             if now_ms >= t_precalc:
