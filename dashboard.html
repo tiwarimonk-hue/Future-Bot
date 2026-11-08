@@ -12,21 +12,21 @@
   --binance-yellow: #f0b90b; --dual-blue: #38bdf8; --neon-green: #0ecb81; --neon-red: #f6465d;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, sans-serif; }
-body { background-color: var(--bg-main); color: var(--text-main); padding: 16px; display: flex; justify-content: center; min-height: 100vh; }
-.terminal-wrapper { width: 100%; max-width: 1440px; display: flex; flex-direction: column; gap: 16px; }
+body { background-color: var(--bg-main); color: var(--text-main); padding: 14px; display: flex; justify-content: center; min-height: 100vh; }
+.terminal-wrapper { width: 100%; max-width: 1480px; display: flex; flex-direction: column; gap: 14px; }
 
 .top-strip { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; }
 .pulse-dot { width: 9px; height: 9px; background: var(--neon-green); border-radius: 50%; box-shadow: 0 0 10px var(--neon-green); }
-.system-stats { display: flex; gap: 14px; align-items: center; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+.system-stats { display: flex; gap: 12px; align-items: center; font-size: 11px; font-family: 'JetBrains Mono', monospace; flex-wrap: wrap; }
 .stat-pill { background: var(--bg-panel); border: 1px solid var(--border); padding: 5px 10px; border-radius: 6px; color: var(--text-dim); }
 .stat-pill b { color: var(--text-main); }
 
 .strategy-title-strip { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); }
-.two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media(max-width: 980px) { .two-col-grid { grid-template-columns: 1fr; } }
+.two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media(max-width: 1024px) { .two-col-grid { grid-template-columns: 1fr; } }
 
-.exchange-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.exchange-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .exchange-panel.bybit-theme { border-top: 3px solid var(--bybit-gold); }
 .exchange-panel.binance-theme { border-top: 3px solid var(--binance-yellow); }
 
@@ -36,51 +36,48 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 .badge-armed, .status-success { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border: 1px solid rgba(14, 203, 129, 0.35); }
 .badge-scanning, .status-warn { background: rgba(247, 166, 0, 0.15); color: var(--bybit-gold); border: 1px solid rgba(247, 166, 0, 0.35); }
 
-/* MANUAL TOGGLE BUTTON STYLING */
 .trade-toggle-btn {
-  cursor: pointer;
-  border: 1px solid var(--border);
-  padding: 5px 12px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 800;
-  font-family: 'JetBrains Mono', monospace;
-  transition: all 0.2s ease;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  cursor: pointer; border: 1px solid var(--border); padding: 5px 12px; border-radius: 6px;
+  font-size: 11px; font-weight: 800; font-family: 'JetBrains Mono', monospace;
+  transition: all 0.2s ease; display: flex; align-items: center; gap: 6px;
 }
-.btn-trade-on {
-  background: rgba(14, 203, 129, 0.18);
-  color: var(--neon-green);
-  border-color: rgba(14, 203, 129, 0.5);
-}
-.btn-trade-on:hover {
-  background: rgba(14, 203, 129, 0.3);
-}
-.btn-trade-off {
-  background: rgba(246, 70, 93, 0.18);
-  color: var(--neon-red);
-  border-color: rgba(246, 70, 93, 0.5);
-}
-.btn-trade-off:hover {
-  background: rgba(246, 70, 93, 0.3);
-}
+.btn-trade-on { background: rgba(14, 203, 129, 0.18); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.5); }
+.btn-trade-off { background: rgba(246, 70, 93, 0.18); color: var(--neon-red); border-color: rgba(246, 70, 93, 0.5); }
 
-.target-card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.target-card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
 .coin-box { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 4px; position: relative; }
-.coin-box.armed-highlight { border-color: rgba(14, 203, 129, 0.4); background: rgba(14, 203, 129, 0.04); }
+.coin-box.armed-highlight { border-color: rgba(14, 203, 129, 0.45); background: rgba(14, 203, 129, 0.05); }
 .coin-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 700; }
-.cycle-tag { font-size: 9px; font-family: 'JetBrains Mono', monospace; padding: 2px 4px; border-radius: 3px; background: rgba(56, 189, 248, 0.15); color: var(--dual-blue); }
+.cycle-tag { font-size: 9px; font-family: 'JetBrains Mono', monospace; padding: 2px 5px; border-radius: 3px; background: rgba(56, 189, 248, 0.15); color: var(--dual-blue); }
 .coin-rate { font-size: 15px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--neon-green); }
 .armed-chip { position: absolute; bottom: 6px; right: 6px; font-size: 8px; font-weight: 800; background: var(--neon-green); color: #000; padding: 1px 5px; border-radius: 3px; }
+.armed-chip.manual-chip { background: var(--dual-blue); color: #000; }
 
 .metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.metric-mini { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.metric-mini { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; }
 .metric-mini-label { font-size: 9px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; }
-.metric-mini-val { font-size: 12px; font-weight: 700; color: var(--text-main); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
+.metric-mini-val { font-size: 11px; font-weight: 700; color: var(--text-main); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
 
-.dual-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); border-top: 3px solid var(--dual-blue); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+/* TOP 10 NEGATIVE WATCHLIST TABLE */
+.watchlist-block { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.watchlist-title { font-size: 11px; font-weight: 800; color: var(--text-dim); text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; }
+.watchlist-table-wrap { max-height: 290px; overflow-y: auto; }
+.watchlist-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+.watchlist-table th { text-align: left; font-size: 9px; color: var(--text-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); text-transform: uppercase; }
+.watchlist-table td { padding: 6px 6px; border-bottom: 1px solid rgba(35, 43, 54, 0.5); vertical-align: middle; }
+.watchlist-table tr:last-child td { border-bottom: none; }
+.watchlist-table tr.row-armed { background: rgba(14, 203, 129, 0.06); }
+
+.arm-btn {
+  cursor: pointer; border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 800;
+  font-family: 'JetBrains Mono', monospace; border: 1px solid transparent; transition: all 0.15s;
+}
+.arm-btn-auto { background: rgba(14, 203, 129, 0.2); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.45); }
+.arm-btn-manual { background: rgba(56, 189, 248, 0.22); color: var(--dual-blue); border-color: rgba(56, 189, 248, 0.5); }
+.arm-btn-off { background: rgba(118, 131, 150, 0.14); color: var(--text-dim); border-color: var(--border); }
+.arm-btn-off:hover { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.4); }
+
+.dual-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); border-top: 3px solid var(--dual-blue); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .dual-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: center; }
 @media(max-width: 850px) { .dual-grid { grid-template-columns: 1fr; text-align: center; } }
 .leg-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
@@ -94,7 +91,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 .ledger-scroll { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .trade-item { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11px; display: flex; flex-direction: column; gap: 3px; }
 .trade-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
-.trade-desc { color: var(--text-dim); font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+.trade-desc { color: var(--text-dim); font-size: 10px; font-family: 'JetBrains Mono', monospace; line-height: 1.4; }
 
 .console-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .console-box { background: #05070a; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; height: 160px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--neon-green); line-height: 1.5; }
@@ -109,14 +106,15 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
       <span>QUANT FUNDING COCKPIT</span>
     </div>
     <div class="system-stats">
+      <div class="stat-pill">MARGIN: <b>$0.50 (20x)</b></div>
       <div class="stat-pill">BYBIT OFFSET: <b id="bb-drift">0.0ms</b></div>
       <div class="stat-pill">BINANCE OFFSET: <b id="bn-drift">0.0ms</b></div>
       <div class="stat-pill">IST TIME: <b id="clock-ist">--:--:--</b></div>
     </div>
   </div>
 
-  <!-- STRATEGY 1: SOLO (UPDATED TO T-1s MKT ENTRY | EXACT T SELL LIMIT 20% | T+4s HARD EXIT) -->
-  <div class="strategy-title-strip">⚡ Strategy 1: Parallel Solo Capture (T - 1.0s Mkt Entry | Exact T Sell Limit 20% | T + 4.0s Hard Exit | 20x Max)</div>
+  <!-- STRATEGY 1: SOLO EXTREME CAPTURE -->
+  <div class="strategy-title-strip">⚡ Strategy 1: Solo Capture ($0.5 Margin | T-1s Mkt | Exact T Funding +5% Buffered Sell Lim | T+4s Hard Exit)</div>
   <div class="two-col-grid">
     
     <!-- BYBIT SOLO -->
@@ -125,16 +123,43 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
         <div class="panel-name"><span style="color:var(--bybit-gold);">●</span> Bybit Linear</div>
         <div class="badge badge-scanning" id="bybit-status-badge">SCANNING</div>
       </div>
+
       <div class="target-card-row" id="bybit-cards-box"></div>
+
       <div class="metrics-row">
-        <div class="metric-mini"><div class="metric-mini-label">Settle Time</div><div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Mkt / Sell Lim</div><div class="metric-mini-val" style="color:var(--neon-green);">T-1s / T (20%)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Ladder</div><div class="metric-mini-val" style="color:var(--neon-green);">20%-90% (+5% Buf)</div></div>
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
+
+      <!-- TOP 10 NEGATIVE WATCHLIST (BYBIT) -->
+      <div class="watchlist-block">
+        <div class="watchlist-title">
+          <span>📊 Top 10 Negative Coins (&lt; 0% Live)</span>
+          <span style="font-size:9px; color:var(--dual-blue);">Click to ARM / DISARM</span>
+        </div>
+        <div class="watchlist-table-wrap">
+          <table class="watchlist-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Coin</th>
+                <th>Rate</th>
+                <th>Next Funding (IST)</th>
+                <th style="text-align:right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="bybit-top10-body">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">Loading Top 10...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="ledger-block">
-        <div class="ledger-header-text">📋 Bybit Execution Ledger (Fill Speed in ms)</div>
+        <div class="ledger-header-text">📋 Bybit Execution Ledger (ms Precision)</div>
         <div class="ledger-scroll" id="bybit-ledger-box">
-          <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Bybit trade...</div>
+          <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Waiting for first Bybit trade...</div>
         </div>
       </div>
     </div>
@@ -145,23 +170,50 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
         <div class="panel-name"><span style="color:var(--binance-yellow);">●</span> Binance Futures</div>
         <div class="badge badge-scanning" id="binance-status-badge">SCANNING</div>
       </div>
+
       <div class="target-card-row" id="binance-cards-box"></div>
+
       <div class="metrics-row">
-        <div class="metric-mini"><div class="metric-mini-label">Settle Time</div><div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Mkt / Sell Lim</div><div class="metric-mini-val" style="color:var(--neon-green);">T-1s / T (20%)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Ladder</div><div class="metric-mini-val" style="color:var(--neon-green);">20%-90% (+5% Buf)</div></div>
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
+
+      <!-- TOP 10 NEGATIVE WATCHLIST (BINANCE) -->
+      <div class="watchlist-block">
+        <div class="watchlist-title">
+          <span>📊 Top 10 Negative Coins (&lt; 0% Live)</span>
+          <span style="font-size:9px; color:var(--dual-blue);">Click to ARM / DISARM</span>
+        </div>
+        <div class="watchlist-table-wrap">
+          <table class="watchlist-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Coin</th>
+                <th>Rate</th>
+                <th>Next Funding (IST)</th>
+                <th style="text-align:right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="binance-top10-body">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">Loading Top 10...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="ledger-block">
-        <div class="ledger-header-text">📋 Binance Execution Ledger (Fill Speed in ms)</div>
+        <div class="ledger-header-text">📋 Binance Execution Ledger (ms Precision)</div>
         <div class="ledger-scroll" id="binance-ledger-box">
-          <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Binance trade...</div>
+          <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Waiting for first Binance trade...</div>
         </div>
       </div>
     </div>
 
   </div>
 
-  <!-- STRATEGY 2: DUAL WITH MANUAL TOGGLE -->
+  <!-- STRATEGY 2: DUAL DELTA-NEUTRAL ARBITRAGE -->
   <div class="strategy-title-strip">🛡 Strategy 2: Cross-Exchange Delta-Neutral Arbitrage (&le; -1.0% | T - 1m Entry | T + 7m Exit | 10x Max)</div>
   <div class="dual-panel">
     <div class="panel-header">
@@ -170,7 +222,6 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
         <span style="font-size:12px; font-weight:600; color:var(--text-dim); margin-left:10px;" id="dual-active-coin">Target: Searching Pair...</span>
       </div>
       <div style="display:flex; align-items:center; gap:10px;">
-        <!-- CLICKABLE MANUAL SAFETY BUTTON -->
         <button id="dual-trade-toggle-btn" onclick="toggleDualTrade()" class="trade-toggle-btn btn-trade-on">
           <span>●</span> <span id="dual-toggle-text">DUAL TRADE: ENABLED</span>
         </button>
@@ -208,7 +259,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     <div class="ledger-block">
       <div class="ledger-header-text">📋 Dual Arbitrage Execution Ledger</div>
       <div class="ledger-scroll" id="dual-ledger-box">
-        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Cross-Arb trade...</div>
+        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Waiting for first Cross-Arb trade...</div>
       </div>
     </div>
   </div>
@@ -222,16 +273,36 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 </div>
 
 <script>
+let latestTop10 = { bybit: [], binance: [] };
+
+// Live IST Clock & Watchlist Countdowns
 setInterval(() => {
-  const d = new Date();
+  const now = Date.now();
+  const d = new Date(now);
   const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
   const ist = new Date(utc + (3600000 * 5.5));
   document.getElementById('clock-ist').innerText = ist.toTimeString().split(' ')[0];
+
+  document.querySelectorAll('.cd-timer').forEach(el => {
+    const target = parseInt(el.getAttribute('data-epoch'), 10);
+    if (!target) return;
+    const diff = Math.max(0, Math.floor((target - now) / 1000));
+    const hrs = String(Math.floor(diff / 3600)).padStart(2, '0');
+    const mins = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+    const secs = String(diff % 60).padStart(2, '0');
+    el.innerText = `${hrs}:${mins}:${secs}`;
+  });
 }, 1000);
 
-let isFetching = false;
+function formatCountdown(targetEpoch) {
+  if (!targetEpoch) return "--:--:--";
+  const diff = Math.max(0, Math.floor((targetEpoch - Date.now()) / 1000));
+  const hrs = String(Math.floor(diff / 3600)).padStart(2, '0');
+  const mins = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+  const secs = String(diff % 60).padStart(2, '0');
+  return `${hrs}:${mins}:${secs}`;
+}
 
-// MANUAL BUTTON CLICK HANDLER
 async function toggleDualTrade() {
   const btn = document.getElementById('dual-trade-toggle-btn');
   btn.style.opacity = '0.5';
@@ -240,9 +311,7 @@ async function toggleDualTrade() {
     const data = await res.json();
     updateToggleUI(data.trade_enabled);
   } catch(e) {}
-  finally {
-    btn.style.opacity = '1';
-  }
+  finally { btn.style.opacity = '1'; }
 }
 
 function updateToggleUI(isEnabled) {
@@ -257,8 +326,21 @@ function updateToggleUI(isEnabled) {
   }
 }
 
-async function fetchTelemetry() {
-  if (isFetching) return;
+async function toggleCoinArm(exchange, symbol, btnEl) {
+  if (btnEl) btnEl.style.opacity = '0.5';
+  try {
+    await fetch(`/api/toggle_coin?exchange=${exchange}&symbol=${encodeURIComponent(symbol)}`);
+    await fetchTelemetry(true);
+  } catch(e) {}
+  finally {
+    if (btnEl) btnEl.style.opacity = '1';
+  }
+}
+
+let isFetching = false;
+
+async function fetchTelemetry(force = false) {
+  if (isFetching && !force) return;
   isFetching = true;
 
   const controller = new AbortController();
@@ -279,7 +361,8 @@ async function fetchTelemetry() {
       const bbBadge = document.getElementById('bybit-status-badge');
       bbBadge.innerText = data.bybit.status || 'SCANNING';
       bbBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
-      renderCoinCards('bybit-cards-box', data.bybit.symbols, data.bybit.rates, isArmed, data.bybit.settlement);
+      renderArmedCards('bybit-cards-box', data.bybit.top10 || []);
+      renderTop10Table('bybit', 'bybit-top10-body', data.bybit.top10 || []);
     }
 
     // 2. Binance Solo
@@ -290,7 +373,8 @@ async function fetchTelemetry() {
       const bnBadge = document.getElementById('binance-status-badge');
       bnBadge.innerText = data.binance.status || 'SCANNING';
       bnBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
-      renderCoinCards('binance-cards-box', data.binance.symbols, data.binance.rates, isArmed, data.binance.settlement);
+      renderArmedCards('binance-cards-box', data.binance.top10 || []);
+      renderTop10Table('binance', 'binance-top10-body', data.binance.top10 || []);
     }
 
     // 3. Dual Arbitrage
@@ -300,11 +384,9 @@ async function fetchTelemetry() {
       document.getElementById('dual-spread-val').innerText = data.dual.spread || '--%';
       document.getElementById('dual-leg1-rate').innerText = data.dual.bybit_rate || '--%';
       document.getElementById('dual-leg2-rate').innerText = data.dual.binance_rate || '--%';
-
       if (data.dual.trade_enabled !== undefined) {
         updateToggleUI(data.dual.trade_enabled);
       }
-
       const isArmed = (data.dual.status || '').toUpperCase().includes('ARMED');
       const dualBadge = document.getElementById('dual-status-badge');
       dualBadge.innerText = data.dual.status || 'MONITORING SPREAD';
@@ -328,26 +410,57 @@ async function fetchTelemetry() {
   } catch(e) {
   } finally {
     isFetching = false;
-    setTimeout(fetchTelemetry, 1000);
+    if (!force) setTimeout(fetchTelemetry, 1200);
   }
 }
 
-function renderCoinCards(containerId, symbolsStr, ratesStr, isArmed, settleTime) {
+function renderArmedCards(containerId, top10List) {
   const container = document.getElementById(containerId);
-  if (!symbolsStr || symbolsStr.includes('Scanning')) {
-    container.innerHTML = `<div class="coin-box"><div class="coin-head"><span>SCANNING...</span><span class="cycle-tag">Auto</span></div><div class="coin-rate" style="font-size:12px; color:var(--text-dim);">No &le; -0.4%</div></div>`;
+  const armed = top10List.filter(c => c.is_armed);
+  if (!armed || armed.length === 0) {
+    container.innerHTML = `<div class="coin-box"><div class="coin-head"><span>NO ARMED COINS</span><span class="cycle-tag">Auto/Manual</span></div><div class="coin-rate" style="font-size:11px; color:var(--text-dim);">Auto &le; -0.4% or Click ARM below</div></div>`;
     return;
   }
-  const symbols = symbolsStr.split(',').map(s => s.trim());
-  const rates = (ratesStr || '').split(',').map(r => r.trim());
-  container.innerHTML = symbols.map((sym, i) => `
-    <div class="coin-box ${isArmed ? 'armed-highlight' : ''}">
-      <div class="coin-head"><span>${sym}</span><span class="cycle-tag">1H</span></div>
-      <div class="coin-rate">${rates[i] || '--'}</div>
-      <div style="font-size:9px; color:var(--text-dim);">Settle: ${settleTime || '--'}</div>
-      ${isArmed ? `<div class="armed-chip">ARMED</div>` : ''}
+  container.innerHTML = armed.map(c => `
+    <div class="coin-box armed-highlight">
+      <div class="coin-head"><span>${c.symbol}</span><span class="cycle-tag">${c.cycle || '1H'}</span></div>
+      <div class="coin-rate">${c.rate_str}</div>
+      <div style="font-size:9px; color:var(--text-dim);">Settle: ${c.settle_str} (<span class="cd-timer" data-epoch="${c.next_funding_time}">${formatCountdown(c.next_funding_time)}</span>)</div>
+      <div class="armed-chip ${c.arm_mode === 'MANUAL' ? 'manual-chip' : ''}">${c.arm_mode} ARMED</div>
     </div>
   `).join('');
+}
+
+function renderTop10Table(exchange, tbodyId, top10List) {
+  const tbody = document.getElementById(tbodyId);
+  if (!top10List || top10List.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">No negative funding coins right now</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = top10List.map((c, idx) => {
+    let btnClass = 'arm-btn-off';
+    let btnText = 'ARM';
+    if (c.is_armed && c.arm_mode === 'AUTO') {
+      btnClass = 'arm-btn-auto';
+      btnText = 'AUTO ARMED (DISARM)';
+    } else if (c.is_armed && c.arm_mode === 'MANUAL') {
+      btnClass = 'arm-btn-manual';
+      btnText = 'MANUAL ARMED (DISARM)';
+    }
+    return `
+      <tr class="${c.is_armed ? 'row-armed' : ''}">
+        <td style="color:var(--text-dim);">${idx + 1}</td>
+        <td style="font-weight:700; color:var(--text-main);">${c.symbol} <span class="cycle-tag">${c.cycle || '1H'}</span></td>
+        <td style="font-weight:800; color:var(--neon-green);">${c.rate_str}</td>
+        <td style="color:var(--text-dim);">
+          ${c.settle_str} <span style="color:var(--dual-blue);">(<span class="cd-timer" data-epoch="${c.next_funding_time}">${formatCountdown(c.next_funding_time)}</span>)</span>
+        </td>
+        <td style="text-align:right;">
+          <button class="arm-btn ${btnClass}" onclick="toggleCoinArm('${exchange}', '${c.symbol}', this)">${btnText}</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
 }
 
 function renderLedger(containerId, trades) {
