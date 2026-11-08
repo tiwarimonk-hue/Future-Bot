@@ -14,6 +14,7 @@ MIN_FUNDING_RATE_THRESHOLD = -0.004   # -0.4% Auto Top 3 Threshold
 INITIAL_ENTRY_MARGIN_USD = 0.5        # $0.5 Margin
 MAX_TARGET_COINS = 3
 MAX_ALLOWED_LEVERAGE = 20.0
+SELL_LIMIT_SLIPPAGE_PCT = 0.001       # 0.10% below live price at T+15ms
 
 clock_offset_ms = 0.0
 active_executors = set()
@@ -79,7 +80,7 @@ def scan_market_and_sync_state(http_client, dashboard_data, data_lock):
             continue
 
         time_diff = next_time_ms - now_ms
-        if time_diff <= 2000:
+        if time_diff <= 1500:
             continue
 
         raw_interval = t.get("fundingIntervalHour", "")
@@ -106,7 +107,13 @@ def scan_market_and_sync_state(http_client, dashboard_data, data_lock):
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
-    auto_eligible = [c for c in all_negative if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD and c['symbol'] != dual_coin_armed and c['next_funding_time'] - now_ms > 5000]
+    # Auto Top 3 (<= -0.4%, active up to T-1.5s so T-10s thread launcher never misses)
+    auto_eligible = [
+        c for c in all_negative
+        if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD
+        and c['symbol'] != dual_coin_armed
+        and (c['next_funding_time'] - now_ms) > 1500
+    ]
     auto_top3_syms = []
     if auto_eligible:
         earliest_time = min(c['next_funding_time'] for c in auto_eligible)
@@ -218,7 +225,8 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
     exec_key = (symbol, settle_epoch)
 
     try:
-        precision_wait_until(settle_epoch - 1150)
+        # Prepare parameters at T - 1500ms
+        precision_wait_until(settle_epoch - 1500)
 
         with data_lock:
             if symbol in dashboard_data['bybit'].get('manual_disarmed', []):
@@ -245,19 +253,12 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
         leverage = coin_plan['leverage']
         rate_str = f"{rate*100:+.4f}%"
 
+        # TIMING MATRIX (BYBIT):
+        # Entry: T - 1000ms | Sell Limit Trigger: T + 15ms | Cancel Limit: T + 900ms | Hard Exit: T + 4000ms
         t_entry = settle_epoch - 1000
-        t_settle = settle_epoch
+        t_sell_trigger = settle_epoch + 15
         t_limit_cancel = settle_epoch + 900
         t_hard_exit = settle_epoch + 4000
-
-        baseline_tx_time = 0
-        try:
-            tx_resp = http_client.get_transaction_log(accountType="UNIFIED", category="linear", type="SETTLEMENT", limit=5)
-            for item in tx_resp.get("result", {}).get("list", []):
-                if item.get("symbol") == symbol:
-                    baseline_tx_time = max(baseline_tx_time, int(item.get("transactionTime", 0)))
-        except Exception:
-            pass
 
         # 1. MARKET BUY ENTRY AT T - 1s
         precision_wait_until(t_entry)
@@ -287,7 +288,7 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             })
             return
 
-        # 2. FETCH ACTUAL FILLED PRICE & PRE-CALCULATE 20%..90% LADDER
+        # 2. FETCH ACTUAL FILLED PRICE & POSITION SIZE
         time.sleep(0.06)
         actual_entry_price = live_price
         filled_qty_float = float(qty)
@@ -304,56 +305,24 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
 
         filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
         entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
-        abs_rate = abs(rate)
+        add_ui_log(f"🚀 [Bybit] [{symbol}] MKT BUY FILLED @ {entry_price_str} | Waiting for T+15ms...")
 
-        limit_ladder = {}
-        for pct in range(20, 95, 5):
-            raw_p = actual_entry_price * (1.0 - (abs_rate * (pct / 100.0)))
-            limit_ladder[pct] = round(math.floor(raw_p / tick_size) * tick_size, price_decimals)
-
-        add_ui_log(f"🚀 [Bybit] [{symbol}] MKT BUY @ {entry_price_str} | Ladder 20%-90% Ready ({limit_ladder[20]:.{price_decimals}f}..{limit_ladder[90]:.{price_decimals}f})")
-
-        # 3. WAIT FOR EXACT TIMESTAMP T & POLL FUNDING CREDIT
-        precision_wait_until(t_settle)
-        funding_credited = False
-        funding_fetch_ms = 0.0
-        fallback_deadline = t_settle + 750
-
-        while get_synced_time_ms() < fallback_deadline:
-            try:
-                tx_resp = http_client.get_transaction_log(accountType="UNIFIED", category="linear", type="SETTLEMENT", limit=5)
-                for item in tx_resp.get("result", {}).get("list", []):
-                    if item.get("symbol") == symbol:
-                        tx_t = int(item.get("transactionTime", 0))
-                        if tx_t >= (t_settle - 500) and tx_t > baseline_tx_time:
-                            funding_credited = True
-                            funding_fetch_ms = round(max(1.0, get_synced_time_ms() - t_settle), 1)
-                            break
-                if funding_credited:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.015)
-
-        if not funding_credited:
-            funding_fetch_ms = round(get_synced_time_ms() - t_settle, 1)
-
-        # 4. CHECK MARKET DROP % AT CREDIT TIME & FIRE +5% BUFFERED SELL LIMIT IMMEDIATELY
+        # 3. WAIT FOR T + 15ms, FETCH LIVE PRICE & SEND -0.10% SELL LIMIT
+        precision_wait_until(t_sell_trigger)
         try:
             cur_p = float(http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]["lastPrice"])
         except Exception:
             cur_p = actual_entry_price
 
-        raw_price_drop_pct = ((actual_entry_price - cur_p) / actual_entry_price * 100.0) if actual_entry_price > 0 else 0.0
-        expected_drop = actual_entry_price * abs_rate
-        funding_drop_pct = ((actual_entry_price - cur_p) / expected_drop * 100.0) if expected_drop > 0 else 0.0
+        raw_drop_pct = ((actual_entry_price - cur_p) / actual_entry_price * 100.0) if actual_entry_price > 0 else 0.0
+        cur_p_str = f"{cur_p:.{price_decimals}f}"
 
-        next_tier = math.ceil(funding_drop_pct / 5.0) * 5
-        selected_tier = max(20, min(90, next_tier + 5))
-        sell_limit_price = limit_ladder[selected_tier]
+        # 0.10% below live market price at T+15ms so it fills immediately
+        raw_sell_limit = cur_p * (1.0 - SELL_LIMIT_SLIPPAGE_PCT)
+        sell_limit_price = max(tick_size, round(math.floor(raw_sell_limit / tick_size) * tick_size, price_decimals))
         limit_price_str = f"{sell_limit_price:.{price_decimals}f}"
 
-        limit_fire_ms = round(get_synced_time_ms() - t_settle, 1)
+        limit_fire_ms = round(get_synced_time_ms() - settle_epoch, 1)
         limit_fire_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         t_limit_sent_local = time.time() * 1000
         limit_order_id = None
@@ -366,13 +335,13 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             )
             if lim_resp.get("retCode") == 0:
                 limit_order_id = lim_resp["result"].get("orderId", "")
-                add_ui_log(f"🎯 [Bybit] [{symbol}] Fund Fetch +{funding_fetch_ms}ms | Mkt Drop {raw_price_drop_pct:.2f}% ({funding_drop_pct:.1f}% Fund) -> Fired {selected_tier}% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
+                add_ui_log(f"🎯 [Bybit] [{symbol}] @ T+15ms Live: {cur_p_str} (Drop {raw_drop_pct:.2f}%) -> Fired -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
             else:
                 add_ui_log(f"⚠️ [Bybit] [{symbol}] Sell Limit Rejected: {lim_resp.get('retMsg')}")
         except Exception as e:
             add_ui_log(f"⚠️ [Bybit] [{symbol}] Sell Limit Exception: {e}")
 
-        # 5. MONITOR LIMIT FILL UNTIL T + 900ms, THEN CANCEL IF UNFILLED
+        # 4. MONITOR LIMIT FILL UNTIL T + 900ms, THEN CANCEL IF UNFILLED
         limit_filled = False
         fill_duration_ms = None
         exit_time_str = "--"
@@ -388,10 +357,10 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
                             c_t = int(hist_list[0].get("createdTime", 0))
                             u_t = int(hist_list[0].get("updatedTime", 0))
                             ex_diff = u_t - c_t
-                            fill_duration_ms = ex_diff if ex_diff > 0 else round((time.time() * 1000) - t_limit_sent_local, 1)
+                            fill_duration_ms = ex_diff if ex_diff > 0 else round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
                             limit_filled = True
                             exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                            add_ui_log(f"⚡ [Bybit] [{symbol}] LIMIT ({selected_tier}%) FILLED IN {fill_duration_ms}ms @ {limit_price_str}!")
+                            add_ui_log(f"⚡ [Bybit] [{symbol}] SELL LIMIT FILLED IN {fill_duration_ms}ms @ {limit_price_str}!")
                             break
                         else:
                             break
@@ -418,14 +387,14 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
                         c_t = int(hist_list[0].get("createdTime", 0))
                         u_t = int(hist_list[0].get("updatedTime", 0))
                         ex_diff = u_t - c_t
-                        fill_duration_ms = ex_diff if ex_diff > 0 else round((time.time() * 1000) - t_limit_sent_local, 1)
+                        fill_duration_ms = ex_diff if ex_diff > 0 else round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
                         limit_filled = True
                         exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                        add_ui_log(f"⚡ [Bybit] [{symbol}] LIMIT ({selected_tier}%) FILLED JUST BEFORE CANCEL IN {fill_duration_ms}ms!")
+                        add_ui_log(f"⚡ [Bybit] [{symbol}] SELL LIMIT FILLED JUST BEFORE CANCEL IN {fill_duration_ms}ms!")
                 except Exception:
                     pass
 
-        # 6. HARD EXIT AT T + 4s IF LIMIT WAS CANCELLED / UNFILLED
+        # 5. HARD EXIT AT T + 4s IF LIMIT WAS CANCELLED / UNFILLED
         if not limit_filled:
             precision_wait_until(t_hard_exit)
             exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
@@ -440,7 +409,7 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             except Exception:
                 pass
 
-        # 7. EMERGENCY SWEEPS AT T + 15s & T + 30s
+        # 6. EMERGENCY SWEEPS AT T + 15s & T + 30s
         for stage_ms in [settle_epoch + 15000, settle_epoch + 30000]:
             precision_wait_until(stage_ms)
             try:
@@ -460,8 +429,6 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             if symbol in dashboard_data['bybit'].get('manual_armed', []):
                 dashboard_data['bybit']['manual_armed'].remove(symbol)
 
-        fetch_tag = f"+{funding_fetch_ms}ms" if funding_credited else f"+{funding_fetch_ms}ms(FB)"
-        drop_tag = f"{raw_price_drop_pct:.2f}% ({funding_drop_pct:.1f}% of Fund)"
         exit_status_tag = f"Fill: {fill_duration_ms}ms" if limit_filled else "Cancelled @ T+900ms -> Hard Exit @ T+4s"
         badge_txt = f"FILLED ({fill_duration_ms}ms)" if limit_filled else "HARD EXIT (T+4s)"
 
@@ -471,7 +438,7 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             "rate": rate_str,
             "entry_time": f"{entry_time_str} (@ {entry_price_str})",
             "exit_time": exit_time_str,
-            "detail": f"Fund Fetch: {fetch_tag} | Mkt Drop @ Credit: {drop_tag} | {selected_tier}% Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
+            "detail": f"T+15ms Live: {cur_p_str} (Drop: {raw_drop_pct:.2f}%) | -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
             "badge_text": badge_txt,
             "badge_class": "status-success" if limit_filled else "status-warn"
         })
@@ -482,7 +449,7 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
 
 def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🚀 Bybit Engine Active ($0.5 Margin | T+900ms Lim Cancel | T+4s Hard Exit | Top 20 Live)")
+    add_ui_log("🚀 Bybit Engine Active ($0.5 Margin | T+15ms -0.10% Sell Lim | T+900ms Cancel | T+4s Hard Exit)")
     last_clock_sync = 0.0
 
     while True:
@@ -499,7 +466,8 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
                 settle_epoch = c['next_funding_time']
                 time_left = settle_epoch - now_ms
 
-                if 0 < time_left <= 4500:
+                # Launch dedicated executor 10s before settlement for both AUTO and MANUAL coins
+                if 1500 < time_left <= 10000:
                     exec_key = (sym, settle_epoch)
                     with executors_lock:
                         if exec_key not in active_executors:
@@ -511,7 +479,7 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
                             ).start()
                             add_ui_log(f"⚡ [Bybit] Launching Execution Thread for {sym} ({c['arm_mode']})...")
 
-            time.sleep(1.2)
+            time.sleep(1.0)
         except Exception as e:
             add_ui_log(f"⚠️ [Bybit] Loop Recovered: {e}")
             time.sleep(2)
