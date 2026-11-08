@@ -10,12 +10,15 @@ IST = timezone(timedelta(hours=5, minutes=30))
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_BINANCE_API_KEY')
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', 'YOUR_BINANCE_API_SECRET')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.004
-INITIAL_ENTRY_MARGIN_USD = 1.0
+MIN_FUNDING_RATE_THRESHOLD = -0.004   # -0.4% Auto Top 3 Threshold
+INITIAL_ENTRY_MARGIN_USD = 0.5        # $0.5 Margin
 MAX_TARGET_COINS = 3
 MAX_ALLOWED_LEVERAGE = 20
 
 binance_offset_ms = 0.0
+active_executors = set()
+executors_lock = threading.Lock()
+funding_intervals_map = {}
 
 def sync_binance_clock(client, dashboard_data, data_lock):
     global binance_offset_ms
@@ -27,6 +30,18 @@ def sync_binance_clock(client, dashboard_data, data_lock):
         binance_offset_ms = (server_time + ((t_recv - t_send) / 2.0)) - t_recv
         with data_lock:
             dashboard_data['binance']['offset'] = round(binance_offset_ms, 2)
+    except Exception:
+        pass
+
+def refresh_funding_intervals(client):
+    global funding_intervals_map
+    try:
+        info_list = client.funding_info()
+        for item in info_list:
+            sym = item.get("symbol", "")
+            hrs = item.get("fundingIntervalHours")
+            if sym and hrs:
+                funding_intervals_map[sym] = f"{hrs}H"
     except Exception:
         pass
 
@@ -44,24 +59,25 @@ def precision_wait_until(target_time_ms):
         elif diff > 2:
             time.sleep(0.0005)
 
-def scan_top_funding_opportunities(client, add_ui_log, dashboard_data, data_lock):
+def scan_market_and_sync_state(client, dashboard_data, data_lock):
     try:
         premiums = client.mark_price()
     except Exception:
         return []
 
     now_ms = int(get_synced_time_ms())
-    valid_candidates = []
+    all_negative = []
 
-    dual_coin_armed = "--"
     with data_lock:
         dual_status = dashboard_data.get('dual', {}).get('status', '')
-        if "ARMED" in dual_status.upper():
-            dual_coin_armed = dashboard_data.get('dual', {}).get('coin', '--')
+        dual_coin_armed = dashboard_data.get('dual', {}).get('coin', '--') if "ARMED" in dual_status.upper() else "--"
+        m_armed = list(dashboard_data['binance'].get('manual_armed', []))
+        m_disarmed = list(dashboard_data['binance'].get('manual_disarmed', []))
 
+    ticker_map = {}
     for item in premiums:
         sym = item.get("symbol", "")
-        if not sym.endswith("USDT") or sym == dual_coin_armed:
+        if not sym.endswith("USDT"):
             continue
 
         raw_rate = item.get("lastFundingRate", "")
@@ -71,28 +87,105 @@ def scan_top_funding_opportunities(client, add_ui_log, dashboard_data, data_lock
         try:
             rate = float(raw_rate)
             next_time_ms = int(raw_next)
+            mark_price = float(item.get("markPrice", 0))
         except ValueError:
             continue
 
         time_diff = next_time_ms - now_ms
-        if time_diff > 30000 and rate <= MIN_FUNDING_RATE_THRESHOLD:
-            valid_candidates.append({
-                "symbol": sym,
-                "funding_rate": rate,
-                "next_funding_time": next_time_ms,
-                "last_price": float(item.get("markPrice", 0))
-            })
+        if time_diff <= 2000:
+            continue
 
-    if not valid_candidates:
-        return []
+        cycle_str = funding_intervals_map.get(sym)
+        if not cycle_str:
+            est_h = max(1, round(time_diff / 3600000))
+            cycle_str = f"{est_h}H"
 
-    earliest_time = min(c['next_funding_time'] for c in valid_candidates)
-    imminent = [c for c in valid_candidates if abs(c['next_funding_time'] - earliest_time) <= 600000]
-    imminent.sort(key=lambda x: x['funding_rate'])
-    return imminent[:MAX_TARGET_COINS]
+        settle_dt = datetime.fromtimestamp(next_time_ms / 1000, tz=IST)
+        coin_obj = {
+            "symbol": sym,
+            "funding_rate": rate,
+            "rate_str": f"{rate*100:+.4f}%",
+            "next_funding_time": next_time_ms,
+            "settle_str": settle_dt.strftime('%H:%M:%S IST'),
+            "cycle": cycle_str,
+            "last_price": mark_price
+        }
+        ticker_map[sym] = coin_obj
 
-def prepare_coin_parameters(client, symbol, price, exchange_info, margin_usd=1.0):
-    sym_info = next((s for s in exchange_info['symbols'] if s['symbol'] == symbol), None)
+        if rate < 0:
+            all_negative.append(coin_obj)
+
+    all_negative.sort(key=lambda x: x['funding_rate'])
+
+    # Auto Top 3 (<= -0.4%, excluding dual coin)
+    auto_eligible = [c for c in all_negative if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD and c['symbol'] != dual_coin_armed and c['next_funding_time'] - now_ms > 5000]
+    auto_top3_syms = []
+    if auto_eligible:
+        earliest_time = min(c['next_funding_time'] for c in auto_eligible)
+        imminent = [c for c in auto_eligible if abs(c['next_funding_time'] - earliest_time) <= 600000]
+        imminent.sort(key=lambda x: x['funding_rate'])
+        auto_top3_syms = [c['symbol'] for c in imminent[:MAX_TARGET_COINS]]
+
+    valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0 and s != dual_coin_armed]
+    valid_m_disarmed = [s for s in m_disarmed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
+
+    effective_armed = []
+    seen = set()
+    for sym in auto_top3_syms:
+        if sym not in valid_m_disarmed and sym not in seen:
+            c = dict(ticker_map[sym])
+            c['arm_mode'] = "AUTO"
+            effective_armed.append(c)
+            seen.add(sym)
+
+    for sym in valid_m_armed:
+        if sym not in seen:
+            c = dict(ticker_map[sym])
+            c['arm_mode'] = "MANUAL"
+            effective_armed.append(c)
+            seen.add(sym)
+
+    effective_armed.sort(key=lambda x: (x['next_funding_time'], x['funding_rate']))
+
+    top10_list = []
+    for c in all_negative[:10]:
+        sym = c['symbol']
+        if sym in seen:
+            mode = "MANUAL" if sym in valid_m_armed else "AUTO"
+            armed_flag = True
+        else:
+            mode = "DISARMED"
+            armed_flag = False
+        top10_list.append({
+            "symbol": sym,
+            "rate": c['funding_rate'],
+            "rate_str": c['rate_str'],
+            "next_funding_time": c['next_funding_time'],
+            "settle_str": c['settle_str'],
+            "cycle": c['cycle'],
+            "arm_mode": mode,
+            "is_armed": armed_flag
+        })
+
+    with data_lock:
+        dashboard_data['binance']['manual_armed'] = valid_m_armed
+        dashboard_data['binance']['manual_disarmed'] = valid_m_disarmed
+        dashboard_data['binance']['top10'] = top10_list
+        if effective_armed:
+            dashboard_data['binance']['status'] = f"ARMED ({len(effective_armed)} Coins)"
+            dashboard_data['binance']['symbols'] = ", ".join([f"{c['symbol']} ({c['arm_mode']})" for c in effective_armed])
+            dashboard_data['binance']['rates'] = ", ".join([c['rate_str'] for c in effective_armed])
+            dashboard_data['binance']['settlement'] = effective_armed[0]['settle_str']
+        else:
+            dashboard_data['binance']['status'] = "SCANNING (Top 10 Live)"
+            dashboard_data['binance']['symbols'] = "Scanning..."
+            dashboard_data['binance']['rates'] = "--"
+            dashboard_data['binance']['settlement'] = "--"
+
+    return effective_armed
+
+def prepare_coin_parameters(client, symbol, price, exchange_info, margin_usd=0.5):
+    sym_info = next((s for s in exchange_info.get('symbols', []) if s['symbol'] == symbol), None)
     qty_step, min_qty, tick_size, min_notional = 1.0, 1.0, 0.0001, 5.0
 
     if sym_info:
@@ -118,7 +211,8 @@ def prepare_coin_parameters(client, symbol, price, exchange_info, margin_usd=1.0
 
     notional = margin_usd * applied_leverage
     calc_qty = math.floor((notional / price) / qty_step) * qty_step
-    if calc_qty < min_qty: calc_qty = min_qty
+    if calc_qty < min_qty:
+        calc_qty = min_qty
     if (calc_qty * price) < min_notional:
         calc_qty = math.ceil((min_notional / price) / qty_step) * qty_step
 
@@ -129,261 +223,296 @@ def prepare_coin_parameters(client, symbol, price, exchange_info, margin_usd=1.0
         "tick_size": tick_size, "last_price": price
     }
 
-def parallel_coin_executor(client, coin_plan, settle_epoch, add_ui_log, add_ledger_entry):
-    symbol = coin_plan['symbol']
-    rate = coin_plan['rate']
-    rate_str = coin_plan['rate_str']
-    qty = coin_plan['qty']
-    qty_decimals = coin_plan['qty_decimals']
-    price_decimals = coin_plan['price_decimals']
-    tick_size = coin_plan['tick_size']
-    leverage = coin_plan['leverage']
-
-    # TIMING: Market Entry at T - 1s, Sell Limit at Exact T, Hard Exit at T + 4s
-    t_entry = settle_epoch - 1000
-    t_limit_fire = settle_epoch
-    t_hard_exit = settle_epoch + 4000
-
-    entry_result_str = "--"
-    exit_result_str = "--"
-    limit_price_str = "--"
-    entry_price_str = "--"
-    fill_time_ms = None
-    limit_filled = False
-    entry_success = False
-
-    # 1. MARKET BUY ENTRY AT T - 1s
-    precision_wait_until(t_entry)
-    entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-
-    actual_entry_price = coin_plan['last_price']
-    filled_qty_float = float(qty)
+def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_log, add_ledger_entry):
+    symbol = coin_meta['symbol']
+    settle_epoch = coin_meta['next_funding_time']
+    arm_mode = coin_meta.get('arm_mode', 'AUTO')
+    exec_key = (symbol, settle_epoch)
 
     try:
-        entry_resp = client.new_order(
-            symbol=symbol,
-            side="BUY",
-            type="MARKET",
-            quantity=qty
-        )
-        entry_success = True
-        entry_result_str = "MKT FILLED"
-        if float(entry_resp.get("avgPrice", 0)) > 0:
-            actual_entry_price = float(entry_resp["avgPrice"])
-        if float(entry_resp.get("executedQty", 0)) > 0:
-            filled_qty_float = float(entry_resp["executedQty"])
-    except Exception as e:
-        entry_result_str = f"FAILED ({e})"
-        add_ui_log(f"❌ [Binance] [{symbol}] Market Entry Error: {e}")
+        # Wait until T - 1250ms to verify manual state & prepare parameters
+        precision_wait_until(settle_epoch - 1250)
 
-    if not entry_success:
-        add_ledger_entry({
-            "exchange": "Binance", "coin": symbol, "rate": rate_str,
-            "entry_time": entry_time_str, "exit_time": "--",
-            "detail": f"Qty: {qty} ({leverage}x) | {entry_result_str}",
-            "badge_text": "ENTRY FAILED",
-            "badge_class": "status-warn"
-        })
-        return
+        with data_lock:
+            if symbol in dashboard_data['binance'].get('manual_disarmed', []):
+                add_ui_log(f"🛑 [Binance] [{symbol}] Trade aborted before entry (Manually DISARMED).")
+                return
 
-    # Verify filled position details if avgPrice was 0 in immediate response
-    if actual_entry_price == coin_plan['last_price']:
         try:
-            positions = client.get_position_risk(symbol=symbol)
-            for p in positions:
-                if float(p.get("positionAmt", 0)) > 0:
-                    filled_qty_float = float(p["positionAmt"])
-                    if float(p.get("entryPrice", 0)) > 0:
-                        actual_entry_price = float(p["entryPrice"])
-                    break
+            exchange_info = client.exchange_info()
+        except Exception:
+            exchange_info = {'symbols': []}
+
+        try:
+            mp = client.mark_price(symbol=symbol)
+            live_price = float(mp.get("markPrice", coin_meta['last_price']))
+            rate = float(mp.get("lastFundingRate", coin_meta['funding_rate']))
+        except Exception:
+            live_price = coin_meta['last_price']
+            rate = coin_meta['funding_rate']
+
+        if rate >= 0:
+            add_ui_log(f"⚠️ [Binance] [{symbol}] Funding turned non-negative ({rate*100:+.4f}%). Aborting entry.")
+            return
+
+        coin_plan = prepare_coin_parameters(client, symbol, live_price, exchange_info, INITIAL_ENTRY_MARGIN_USD)
+        qty = coin_plan['qty']
+        qty_decimals = coin_plan['qty_decimals']
+        price_decimals = coin_plan['price_decimals']
+        tick_size = coin_plan['tick_size']
+        leverage = coin_plan['leverage']
+        rate_str = f"{rate*100:+.4f}%"
+
+        t_entry = settle_epoch - 1000
+        t_settle = settle_epoch
+        t_hard_exit = settle_epoch + 4000
+
+        # Capture baseline funding income tranId before T
+        baseline_tran_id = None
+        try:
+            inc_list = client.get_income_history(symbol=symbol, incomeType="FUNDING_FEE", limit=3)
+            if inc_list:
+                baseline_tran_id = inc_list[0].get("tranId")
         except Exception:
             pass
 
-    filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
-    entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
+        # 1. MARKET BUY ENTRY AT T - 1s
+        precision_wait_until(t_entry)
+        entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+        entry_success = False
+        entry_err = ""
+        actual_entry_price = live_price
+        filled_qty_float = float(qty)
 
-    # Calculate Sell Limit Price (20% of funding rate offset)
-    funding_offset_20pct = abs(rate) * 0.20
-    raw_sell_limit = actual_entry_price * (1.0 - funding_offset_20pct)
-    sell_limit_price = round(math.floor(raw_sell_limit / tick_size) * tick_size, price_decimals)
-    limit_price_str = f"{sell_limit_price:.{price_decimals}f}"
+        try:
+            entry_resp = client.new_order(symbol=symbol, side="BUY", type="MARKET", quantity=qty)
+            entry_success = True
+            if float(entry_resp.get("avgPrice", 0)) > 0:
+                actual_entry_price = float(entry_resp["avgPrice"])
+            if float(entry_resp.get("executedQty", 0)) > 0:
+                filled_qty_float = float(entry_resp["executedQty"])
+        except Exception as e:
+            entry_err = str(e)
 
-    add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY FILLED @ {entry_price_str} | Sell Limit Ready: {limit_price_str} (20% Fund)")
+        if not entry_success:
+            add_ui_log(f"❌ [Binance] [{symbol}] Market Entry Failed: {entry_err}")
+            add_ledger_entry({
+                "exchange": "Binance", "coin": f"{symbol} [{arm_mode}]", "rate": rate_str,
+                "entry_time": entry_time_str, "exit_time": "--",
+                "detail": f"Margin: $0.5 | Qty: {qty} ({leverage}x) | Entry Failed: {entry_err}",
+                "badge_text": "ENTRY FAILED", "badge_class": "status-warn"
+            })
+            return
 
-    # 2. FIRE SELL LIMIT AT EXACT TIMESTAMP T
-    precision_wait_until(t_limit_fire)
-    t_limit_sent_ms = time.time() * 1000
-    limit_order_id = None
-
-    try:
-        lim_resp = client.new_order(
-            symbol=symbol,
-            side="SELL",
-            type="LIMIT",
-            quantity=filled_qty_str,
-            price=limit_price_str,
-            timeInForce="GTC",
-            reduceOnly=True
-        )
-        limit_order_id = lim_resp.get("orderId")
-        add_ui_log(f"🎯 [Binance] [{symbol}] SELL LIMIT FIRED AT EXACT T @ {limit_price_str}")
-
-        # Check if filled immediately on arrival
-        if lim_resp.get("status") == "FILLED":
-            fill_time_ms = round((time.time() * 1000) - t_limit_sent_ms, 1)
-            limit_filled = True
-            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            exit_result_str = f"LIMIT FILLED ({fill_time_ms}ms)"
-            add_ui_log(f"⚡ [Binance] [{symbol}] SELL LIMIT FILLED IN {fill_time_ms}ms @ {limit_price_str}!")
-    except Exception as e:
-        add_ui_log(f"⚠️ [Binance] [{symbol}] Sell Limit Exception: {e}")
-
-    # 3. MONITOR SELL LIMIT FILL IN MILLISECONDS (T to T + 4s)
-    if limit_order_id and not limit_filled:
-        while get_synced_time_ms() < t_hard_exit:
+        # Verify actual entry price via position risk if needed
+        if actual_entry_price == live_price:
             try:
-                q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
-                if q_resp.get("status") == "FILLED":
-                    c_time = int(q_resp.get("time", 0))
-                    u_time = int(q_resp.get("updateTime", 0))
-                    ex_ms = u_time - c_time
-                    fill_time_ms = ex_ms if ex_ms > 0 else round((time.time() * 1000) - t_limit_sent_ms, 1)
-                    limit_filled = True
-                    exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                    exit_result_str = f"LIMIT FILLED ({fill_time_ms}ms)"
-                    add_ui_log(f"⚡ [Binance] [{symbol}] SELL LIMIT FILLED IN {fill_time_ms}ms @ {limit_price_str}!")
+                positions = client.get_position_risk(symbol=symbol)
+                for p in positions:
+                    if float(p.get("positionAmt", 0)) > 0:
+                        filled_qty_float = float(p["positionAmt"])
+                        if float(p.get("entryPrice", 0)) > 0:
+                            actual_entry_price = float(p["entryPrice"])
+                        break
+            except Exception:
+                pass
+
+        filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
+        entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
+        abs_rate = abs(rate)
+
+        # 2. PRE-CALCULATE 20%..90% SELL LIMIT LADDER IN RAM
+        limit_ladder = {}
+        for pct in range(20, 95, 5):
+            raw_p = actual_entry_price * (1.0 - (abs_rate * (pct / 100.0)))
+            limit_ladder[pct] = round(math.floor(raw_p / tick_size) * tick_size, price_decimals)
+
+        add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY @ {entry_price_str} | Ladder 20%-90% Ready ({limit_ladder[20]:.{price_decimals}f}..{limit_ladder[90]:.{price_decimals}f})")
+
+        # 3. WAIT FOR EXACT TIMESTAMP T & POLL FUNDING CREDIT
+        precision_wait_until(t_settle)
+        funding_credited = False
+        funding_credit_ms = 0.0
+        fallback_deadline = t_settle + 2500
+
+        while get_synced_time_ms() < fallback_deadline:
+            try:
+                inc_list = client.get_income_history(symbol=symbol, incomeType="FUNDING_FEE", limit=3)
+                if inc_list:
+                    latest = inc_list[0]
+                    inc_t = int(latest.get("time", 0))
+                    if latest.get("tranId") != baseline_tran_id and inc_t >= (t_settle - 500):
+                        funding_credited = True
+                        funding_credit_ms = round(max(1.0, get_synced_time_ms() - t_settle), 1)
+                        break
+            except Exception:
+                pass
+            time.sleep(0.025)  # 25ms poll
+
+        if not funding_credited:
+            funding_credit_ms = round(get_synced_time_ms() - t_settle, 1)
+
+        # 4. CHECK MARKET DROP % OF FUNDING & FIRE +5% EXTRA BUFFERED SELL LIMIT IMMEDIATELY
+        try:
+            cur_p = float(client.ticker_price(symbol=symbol)["price"])
+        except Exception:
+            cur_p = actual_entry_price
+
+        expected_drop = actual_entry_price * abs_rate
+        drop_pct = ((actual_entry_price - cur_p) / expected_drop * 100.0) if expected_drop > 0 else 0.0
+
+        # Nearest 5% tier + 5% extra safety buffer (e.g., 32% -> 35% + 5% = 40%), clamped [20, 90]
+        next_tier = math.ceil(drop_pct / 5.0) * 5
+        selected_tier = max(20, min(90, next_tier + 5))
+        sell_limit_price = limit_ladder[selected_tier]
+        limit_price_str = f"{sell_limit_price:.{price_decimals}f}"
+
+        limit_fire_ms = round(get_synced_time_ms() - t_settle, 1)
+        limit_fire_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+        t_limit_sent_local = time.time() * 1000
+        limit_order_id = None
+        limit_filled = False
+        fill_duration_ms = None
+        exit_time_str = "--"
+
+        try:
+            lim_resp = client.new_order(
+                symbol=symbol, side="SELL", type="LIMIT",
+                quantity=filled_qty_str, price=limit_price_str,
+                timeInForce="GTC", reduceOnly=True
+            )
+            limit_order_id = lim_resp.get("orderId")
+            add_ui_log(f"🎯 [Binance] [{symbol}] Funding +{funding_credit_ms}ms | Drop {drop_pct:.1f}% -> Fired {selected_tier}% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
+
+            if lim_resp.get("status") == "FILLED":
+                fill_duration_ms = round((time.time() * 1000) - t_limit_sent_local, 1)
+                limit_filled = True
+                exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                add_ui_log(f"⚡ [Binance] [{symbol}] LIMIT ({selected_tier}%) FILLED IMMEDIATELY IN {fill_duration_ms}ms!")
+        except Exception as e:
+            add_ui_log(f"⚠️ [Binance] [{symbol}] Sell Limit Exception: {e}")
+
+        # 5. MONITOR LIMIT FILL SPEED UNTIL T + 4s
+        if limit_order_id and not limit_filled:
+            while get_synced_time_ms() < t_hard_exit:
+                try:
+                    q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
+                    if q_resp.get("status") == "FILLED":
+                        c_t = int(q_resp.get("time", 0))
+                        u_t = int(q_resp.get("updateTime", 0))
+                        ex_diff = u_t - c_t
+                        fill_duration_ms = ex_diff if ex_diff > 0 else round((time.time() * 1000) - t_limit_sent_local, 1)
+                        limit_filled = True
+                        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                        add_ui_log(f"⚡ [Binance] [{symbol}] LIMIT ({selected_tier}%) FILLED IN {fill_duration_ms}ms @ {limit_price_str}!")
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.04)
+
+        # 6. HARD EXIT AT T + 4s IF UNFILLED
+        if not limit_filled:
+            precision_wait_until(t_hard_exit)
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            try:
+                client.cancel_open_orders(symbol=symbol)
+            except Exception:
+                pass
+
+            try:
+                positions = client.get_position_risk(symbol=symbol)
+                pos_size = 0.0
+                for p in positions:
+                    if float(p.get("positionAmt", 0)) > 0:
+                        pos_size = float(p.get("positionAmt"))
+                        break
+                if pos_size > 0:
+                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
+                    client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
+                    add_ui_log(f"🛑 [Binance] [{symbol}] LIMIT UNFILLED -> HARD EXIT AT T+4s: {rem_q}")
+            except Exception:
+                pass
+
+        # 7. EMERGENCY SWEEPS AT T + 15s & T + 30s
+        for stage_ms in [settle_epoch + 15000, settle_epoch + 30000]:
+            precision_wait_until(stage_ms)
+            try:
+                positions = client.get_position_risk(symbol=symbol)
+                pos_size = 0.0
+                for p in positions:
+                    if float(p.get("positionAmt", 0)) > 0:
+                        pos_size = float(p.get("positionAmt"))
+                        break
+                if pos_size > 0:
+                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
+                    client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
+                    add_ui_log(f"🛡 [Binance] [{symbol}] EMERGENCY EXIT: {rem_q}")
+                else:
                     break
             except Exception:
                 pass
-            time.sleep(0.04)  # 40ms high-speed poll
 
-    # 4. HARD EXIT AT T + 4s IF LIMIT NOT FILLED
-    if not limit_filled:
-        precision_wait_until(t_hard_exit)
-        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-        try:
-            client.cancel_open_orders(symbol=symbol)
-        except Exception:
-            pass
+        with data_lock:
+            if symbol in dashboard_data['binance'].get('manual_armed', []):
+                dashboard_data['binance']['manual_armed'].remove(symbol)
 
-        try:
-            positions = client.get_position_risk(symbol=symbol)
-            pos_size = 0.0
-            for p in positions:
-                if float(p.get("positionAmt", 0)) > 0:
-                    pos_size = float(p.get("positionAmt"))
-                    break
+        cred_tag = f"+{funding_credit_ms}ms" if funding_credited else f"+{funding_credit_ms}ms(FB)"
+        fill_tag = f"Fill: {fill_duration_ms}ms" if limit_filled else "Unfilled -> Hard Exit @ T+4s"
+        badge_txt = f"FILLED ({fill_duration_ms}ms)" if limit_filled else "HARD EXIT (T+4s)"
 
-            if pos_size > 0:
-                rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
-                client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
-                exit_result_str = "HARD EXIT (T+4s)"
-                add_ui_log(f"🛑 [Binance] [{symbol}] LIMIT UNFILLED -> HARD EXIT CLOSED AT T+4s: {rem_q}")
-            else:
-                exit_result_str = "FLAT"
-        except Exception:
-            exit_result_str = "EXIT FAILED"
+        add_ledger_entry({
+            "exchange": "Binance",
+            "coin": f"{symbol} [{arm_mode}]",
+            "rate": rate_str,
+            "entry_time": f"{entry_time_str} (@ {entry_price_str})",
+            "exit_time": exit_time_str,
+            "detail": f"Fund Credit: {cred_tag} | Drop: {drop_pct:.1f}% -> {selected_tier}% Lim @ {limit_price_str} (Fired +{limit_fire_ms}ms @ {limit_fire_time_str}) | {fill_tag} | Qty: {filled_qty_str} ({leverage}x)",
+            "badge_text": badge_txt,
+            "badge_class": "status-success" if limit_filled else "status-warn"
+        })
 
-    # 5. EMERGENCY SWEEP AT T + 15s & T + 30s
-    for stage_ms in [settle_epoch + 15000, settle_epoch + 30000]:
-        precision_wait_until(stage_ms)
-        try:
-            positions = client.get_position_risk(symbol=symbol)
-            pos_size = 0.0
-            for p in positions:
-                if float(p.get("positionAmt", 0)) > 0:
-                    pos_size = float(p.get("positionAmt"))
-                    break
-            if pos_size > 0:
-                rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
-                client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
-                add_ui_log(f"🛡 [Binance] [{symbol}] EMERGENCY EXIT: {rem_q}")
-            else:
-                break
-        except Exception:
-            pass
-
-    fill_badge = f"FILLED ({fill_time_ms}ms)" if limit_filled else "HARD EXIT (T+4s)"
-    fill_detail = f"Fill Speed: {fill_time_ms}ms" if limit_filled else "Limit Unfilled (Hard Closed @ T+4s)"
-
-    add_ledger_entry({
-        "exchange": "Binance",
-        "coin": symbol,
-        "rate": rate_str,
-        "entry_time": entry_time_str,
-        "exit_time": exit_time_str,
-        "detail": f"Mkt Entry: {entry_price_str} | Sell Lim (20%): {limit_price_str} | {fill_detail} | Qty: {filled_qty_str} ({leverage}x)",
-        "badge_text": fill_badge,
-        "badge_class": "status-success" if limit_filled else "status-warn"
-    })
+    finally:
+        with executors_lock:
+            active_executors.discard(exec_key)
 
 def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Binance Engine Active (T-1s Mkt Entry | Exact T Sell Limit 20% | T+4s Hard Exit)")
+    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | +5% Buffered Sell Limit | Top 10 Live Watchlist)")
+    refresh_funding_intervals(client)
+    last_clock_sync = 0.0
+    last_interval_sync = time.time()
 
     while True:
-        sync_binance_clock(client, dashboard_data, data_lock)
-        targets = scan_top_funding_opportunities(client, add_ui_log, dashboard_data, data_lock)
+        try:
+            if time.time() - last_clock_sync >= 15.0:
+                sync_binance_clock(client, dashboard_data, data_lock)
+                last_clock_sync = time.time()
 
-        if not targets:
-            with data_lock:
-                dashboard_data['binance']['status'] = "SCANNING (&le; -0.4%)"
-                dashboard_data['binance']['symbols'] = "Scanning..."
-                dashboard_data['binance']['rates'] = "--"
-            time.sleep(3)
-            continue
+            if time.time() - last_interval_sync >= 300.0:
+                refresh_funding_intervals(client)
+                last_interval_sync = time.time()
 
-        settle_epoch = targets[0]['next_funding_time']
-        settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
-
-        with data_lock:
-            dashboard_data['binance']['status'] = f"ARMED ({len(targets)} Coins)"
-            dashboard_data['binance']['symbols'] = ", ".join([c['symbol'] for c in targets])
-            dashboard_data['binance']['rates'] = ", ".join([f"{c['funding_rate']*100:+.4f}%" for c in targets])
-            dashboard_data['binance']['settlement'] = settle_dt.strftime('%H:%M:%S IST')
-
-        t_precalc = settle_epoch - 3000
-        last_rescan_time = time.time()
-
-        while True:
+            armed_coins = scan_market_and_sync_state(client, dashboard_data, data_lock)
             now_ms = get_synced_time_ms()
-            if now_ms >= t_precalc:
-                break
-            time.sleep(1.0)
 
-            if time.time() - last_rescan_time >= 15.0:
-                last_rescan_time = time.time()
-                fresh_targets = scan_top_funding_opportunities(client, add_ui_log, dashboard_data, data_lock)
-                if fresh_targets and fresh_targets[0]['next_funding_time'] == settle_epoch:
-                    current_symbols = [t['symbol'] for t in targets]
-                    fresh_symbols = [t['symbol'] for t in fresh_targets]
-                    if current_symbols != fresh_symbols:
-                        targets = fresh_targets
-                        with data_lock:
-                            dashboard_data['binance']['status'] = f"ARMED ({len(targets)} Coins)"
-                            dashboard_data['binance']['symbols'] = ", ".join([c['symbol'] for c in targets])
-                            dashboard_data['binance']['rates'] = ", ".join([f"{c['funding_rate']*100:+.4f}%" for c in targets])
-                        add_ui_log(f"🔄 [Binance] Targets updated dynamically: {dashboard_data['binance']['symbols']}")
+            for c in armed_coins:
+                sym = c['symbol']
+                settle_epoch = c['next_funding_time']
+                time_left = settle_epoch - now_ms
 
-        precision_wait_until(t_precalc)
-        sync_binance_clock(client, dashboard_data, data_lock)
+                if 0 < time_left <= 4500:
+                    exec_key = (sym, settle_epoch)
+                    with executors_lock:
+                        if exec_key not in active_executors:
+                            active_executors.add(exec_key)
+                            threading.Thread(
+                                target=parallel_coin_executor,
+                                args=(client, c, dashboard_data, data_lock, add_ui_log, add_ledger_entry),
+                                daemon=True
+                            ).start()
+                            add_ui_log(f"⚡ [Binance] Launching Execution Thread for {sym} ({c['arm_mode']})...")
 
-        try: exchange_info = client.exchange_info()
-        except Exception: exchange_info = {'symbols': []}
-
-        prepared_plans = []
-        for t in targets:
-            sym = t['symbol']
-            try: live_price = float(client.ticker_price(symbol=sym)['price'])
-            except Exception: live_price = t['last_price']
-
-            calc = prepare_coin_parameters(client, sym, live_price, exchange_info, INITIAL_ENTRY_MARGIN_USD)
-            calc['rate'] = t['funding_rate']
-            calc['rate_str'] = f"{t['funding_rate']*100:+.4f}%"
-            prepared_plans.append(calc)
-
-        threads = [threading.Thread(target=parallel_coin_executor, args=(client, p, settle_epoch, add_ui_log, add_ledger_entry), daemon=True) for p in prepared_plans]
-        for th in threads: th.start()
-        for th in threads: th.join()
-
-        time.sleep(5)
+            time.sleep(1.2)
+        except Exception as e:
+            add_ui_log(f"⚠️ [Binance] Loop Recovered: {e}")
+            time.sleep(2)
