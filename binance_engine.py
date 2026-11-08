@@ -117,7 +117,6 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
-    # Auto Top 3 (<= -0.4%, excluding dual coin)
     auto_eligible = [c for c in all_negative if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD and c['symbol'] != dual_coin_armed and c['next_funding_time'] - now_ms > 5000]
     auto_top3_syms = []
     if auto_eligible:
@@ -230,7 +229,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
     exec_key = (symbol, settle_epoch)
 
     try:
-        # Wait until T - 1250ms to verify manual state & prepare parameters
         precision_wait_until(settle_epoch - 1250)
 
         with data_lock:
@@ -263,8 +261,11 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         leverage = coin_plan['leverage']
         rate_str = f"{rate*100:+.4f}%"
 
+        # TIMING MATRIX:
+        # Entry: T - 1000ms | Settle: T | Cancel Sell Limit: T + 900ms | Hard Exit: T + 4000ms
         t_entry = settle_epoch - 1000
         t_settle = settle_epoch
+        t_limit_cancel = settle_epoch + 900
         t_hard_exit = settle_epoch + 4000
 
         # Capture baseline funding income tranId before T
@@ -304,7 +305,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
             })
             return
 
-        # Verify actual entry price via position risk if needed
         if actual_entry_price == live_price:
             try:
                 positions = client.get_position_risk(symbol=symbol)
@@ -329,11 +329,11 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
         add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY @ {entry_price_str} | Ladder 20%-90% Ready ({limit_ladder[20]:.{price_decimals}f}..{limit_ladder[90]:.{price_decimals}f})")
 
-        # 3. WAIT FOR EXACT TIMESTAMP T & POLL FUNDING CREDIT
+        # 3. WAIT FOR EXACT TIMESTAMP T & POLL FUNDING CREDIT (Fallback at T + 750ms so limit fires before T + 900ms)
         precision_wait_until(t_settle)
         funding_credited = False
-        funding_credit_ms = 0.0
-        fallback_deadline = t_settle + 2500
+        funding_fetch_ms = 0.0
+        fallback_deadline = t_settle + 750
 
         while get_synced_time_ms() < fallback_deadline:
             try:
@@ -343,26 +343,26 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                     inc_t = int(latest.get("time", 0))
                     if latest.get("tranId") != baseline_tran_id and inc_t >= (t_settle - 500):
                         funding_credited = True
-                        funding_credit_ms = round(max(1.0, get_synced_time_ms() - t_settle), 1)
+                        funding_fetch_ms = round(max(1.0, get_synced_time_ms() - t_settle), 1)
                         break
             except Exception:
                 pass
-            time.sleep(0.025)  # 25ms poll
+            time.sleep(0.015)
 
         if not funding_credited:
-            funding_credit_ms = round(get_synced_time_ms() - t_settle, 1)
+            funding_fetch_ms = round(get_synced_time_ms() - t_settle, 1)
 
-        # 4. CHECK MARKET DROP % OF FUNDING & FIRE +5% EXTRA BUFFERED SELL LIMIT IMMEDIATELY
+        # 4. CHECK MARKET DROP % AT CREDIT TIME & FIRE +5% BUFFERED SELL LIMIT IMMEDIATELY
         try:
             cur_p = float(client.ticker_price(symbol=symbol)["price"])
         except Exception:
             cur_p = actual_entry_price
 
+        raw_price_drop_pct = ((actual_entry_price - cur_p) / actual_entry_price * 100.0) if actual_entry_price > 0 else 0.0
         expected_drop = actual_entry_price * abs_rate
-        drop_pct = ((actual_entry_price - cur_p) / expected_drop * 100.0) if expected_drop > 0 else 0.0
+        funding_drop_pct = ((actual_entry_price - cur_p) / expected_drop * 100.0) if expected_drop > 0 else 0.0
 
-        # Nearest 5% tier + 5% extra safety buffer (e.g., 32% -> 35% + 5% = 40%), clamped [20, 90]
-        next_tier = math.ceil(drop_pct / 5.0) * 5
+        next_tier = math.ceil(funding_drop_pct / 5.0) * 5
         selected_tier = max(20, min(90, next_tier + 5))
         sell_limit_price = limit_ladder[selected_tier]
         limit_price_str = f"{sell_limit_price:.{price_decimals}f}"
@@ -382,7 +382,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                 timeInForce="GTC", reduceOnly=True
             )
             limit_order_id = lim_resp.get("orderId")
-            add_ui_log(f"🎯 [Binance] [{symbol}] Funding +{funding_credit_ms}ms | Drop {drop_pct:.1f}% -> Fired {selected_tier}% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
+            add_ui_log(f"🎯 [Binance] [{symbol}] Fund Fetch +{funding_fetch_ms}ms | Mkt Drop {raw_price_drop_pct:.2f}% ({funding_drop_pct:.1f}% Fund) -> Fired {selected_tier}% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
 
             if lim_resp.get("status") == "FILLED":
                 fill_duration_ms = round((time.time() * 1000) - t_limit_sent_local, 1)
@@ -392,9 +392,9 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         except Exception as e:
             add_ui_log(f"⚠️ [Binance] [{symbol}] Sell Limit Exception: {e}")
 
-        # 5. MONITOR LIMIT FILL SPEED UNTIL T + 4s
+        # 5. MONITOR LIMIT FILL UNTIL T + 900ms, THEN CANCEL IF UNFILLED
         if limit_order_id and not limit_filled:
-            while get_synced_time_ms() < t_hard_exit:
+            while get_synced_time_ms() < t_limit_cancel:
                 try:
                     q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
                     if q_resp.get("status") == "FILLED":
@@ -408,17 +408,36 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                         break
                 except Exception:
                     pass
-                time.sleep(0.04)
+                time.sleep(0.025)
 
-        # 6. HARD EXIT AT T + 4s IF UNFILLED
+        # Cancel Sell Limit at T + 900ms if not filled
         if not limit_filled:
-            precision_wait_until(t_hard_exit)
-            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            precision_wait_until(t_limit_cancel)
             try:
                 client.cancel_open_orders(symbol=symbol)
+                add_ui_log(f"⏱ [Binance] [{symbol}] Limit unfilled at T+900ms -> Cancelled! Waiting for T+4s Hard Exit...")
             except Exception:
                 pass
 
+            # Race-condition check: verify if limit order filled right at T+900ms before cancel
+            if limit_order_id:
+                try:
+                    q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
+                    if q_resp.get("status") == "FILLED":
+                        c_t = int(q_resp.get("time", 0))
+                        u_t = int(q_resp.get("updateTime", 0))
+                        ex_diff = u_t - c_t
+                        fill_duration_ms = ex_diff if ex_diff > 0 else round((time.time() * 1000) - t_limit_sent_local, 1)
+                        limit_filled = True
+                        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                        add_ui_log(f"⚡ [Binance] [{symbol}] LIMIT ({selected_tier}%) FILLED JUST BEFORE CANCEL IN {fill_duration_ms}ms!")
+                except Exception:
+                    pass
+
+        # 6. HARD EXIT AT T + 4s IF LIMIT WAS CANCELLED / UNFILLED
+        if not limit_filled:
+            precision_wait_until(t_hard_exit)
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
             try:
                 positions = client.get_position_risk(symbol=symbol)
                 pos_size = 0.0
@@ -429,7 +448,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                 if pos_size > 0:
                     rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
                     client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
-                    add_ui_log(f"🛑 [Binance] [{symbol}] LIMIT UNFILLED -> HARD EXIT AT T+4s: {rem_q}")
+                    add_ui_log(f"🛑 [Binance] [{symbol}] HARD EXIT EXECUTED AT T+4.0s: {rem_q}")
             except Exception:
                 pass
 
@@ -456,8 +475,9 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
             if symbol in dashboard_data['binance'].get('manual_armed', []):
                 dashboard_data['binance']['manual_armed'].remove(symbol)
 
-        cred_tag = f"+{funding_credit_ms}ms" if funding_credited else f"+{funding_credit_ms}ms(FB)"
-        fill_tag = f"Fill: {fill_duration_ms}ms" if limit_filled else "Unfilled -> Hard Exit @ T+4s"
+        fetch_tag = f"+{funding_fetch_ms}ms" if funding_credited else f"+{funding_fetch_ms}ms(FB)"
+        drop_tag = f"{raw_price_drop_pct:.2f}% ({funding_drop_pct:.1f}% of Fund)"
+        exit_status_tag = f"Fill: {fill_duration_ms}ms" if limit_filled else "Cancelled @ T+900ms -> Hard Exit @ T+4s"
         badge_txt = f"FILLED ({fill_duration_ms}ms)" if limit_filled else "HARD EXIT (T+4s)"
 
         add_ledger_entry({
@@ -466,7 +486,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
             "rate": rate_str,
             "entry_time": f"{entry_time_str} (@ {entry_price_str})",
             "exit_time": exit_time_str,
-            "detail": f"Fund Credit: {cred_tag} | Drop: {drop_pct:.1f}% -> {selected_tier}% Lim @ {limit_price_str} (Fired +{limit_fire_ms}ms @ {limit_fire_time_str}) | {fill_tag} | Qty: {filled_qty_str} ({leverage}x)",
+            "detail": f"Fund Fetch: {fetch_tag} | Mkt Drop @ Credit: {drop_tag} | {selected_tier}% Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
             "badge_text": badge_txt,
             "badge_class": "status-success" if limit_filled else "status-warn"
         })
@@ -477,7 +497,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
 def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | +5% Buffered Sell Limit | Top 10 Live Watchlist)")
+    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T+900ms Lim Cancel | T+4s Hard Exit)")
     refresh_funding_intervals(client)
     last_clock_sync = 0.0
     last_interval_sync = time.time()
