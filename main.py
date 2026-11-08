@@ -1,6 +1,8 @@
 import os
 import json
+import time
 import threading
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone, timedelta
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -15,14 +17,20 @@ dashboard_data = {
         "symbols": "Scanning Market...",
         "rates": "--",
         "settlement": "--",
-        "offset": 0.0
+        "offset": 0.0,
+        "top10": [],
+        "manual_armed": [],
+        "manual_disarmed": []
     },
     "binance": {
         "status": "Initializing Engine...",
         "symbols": "Scanning Market...",
         "rates": "--",
         "settlement": "--",
-        "offset": 0.0
+        "offset": 0.0,
+        "top10": [],
+        "manual_armed": [],
+        "manual_disarmed": []
     },
     "dual": {
         "status": "Initializing Engine...",
@@ -32,7 +40,7 @@ dashboard_data = {
         "spread": "--",
         "settlement": "--",
         "legs": "Synced",
-        "trade_enabled": True   # Manual Trade Safety Toggle
+        "trade_enabled": True
     },
     "logs": [],
     "ledger": []
@@ -50,7 +58,7 @@ def add_ui_log(message):
 def add_ledger_entry(trade_info):
     with data_lock:
         dashboard_data['ledger'].insert(0, trade_info)
-        if len(dashboard_data['ledger']) > 40:
+        if len(dashboard_data['ledger']) > 50:
             dashboard_data['ledger'].pop()
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -63,43 +71,92 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
+    def _send_json(self, obj):
+        self.send_response(200)
+        self.send_header("Content-type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(json.dumps(obj).encode('utf-8'))
+        self.wfile.flush()
+
     def do_GET(self):
         try:
+            parsed = urlparse(self.path)
+            path = parsed.path
+            params = parse_qs(parsed.query)
+
             # 1. API Telemetry
-            if self.path == '/api/status':
+            if path == '/api/status':
+                with data_lock:
+                    payload = json.dumps(dashboard_data).encode('utf-8')
                 self.send_response(200)
                 self.send_header("Content-type", "application/json; charset=utf-8")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Connection", "close")
                 self.end_headers()
-
-                with data_lock:
-                    payload = json.dumps(dashboard_data).encode('utf-8')
-
                 self.wfile.write(payload)
                 self.wfile.flush()
                 return
 
-            # 2. Manual Trade Toggle Endpoint
-            if self.path == '/api/toggle_dual':
+            # 2. Dual Engine Toggle
+            if path == '/api/toggle_dual':
                 with data_lock:
                     curr_val = dashboard_data['dual'].get('trade_enabled', True)
                     dashboard_data['dual']['trade_enabled'] = not curr_val
                     new_val = dashboard_data['dual']['trade_enabled']
-                    status_str = "ENABLED" if new_val else "DISABLED"
-
+                status_str = "ENABLED" if new_val else "DISABLED"
                 add_ui_log(f"🔘 [User Action] Dual Engine Auto-Trading manually set to: {status_str}")
-
-                self.send_response(200)
-                self.send_header("Content-type", "application/json; charset=utf-8")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(json.dumps({"trade_enabled": new_val}).encode('utf-8'))
-                self.wfile.flush()
+                self._send_json({"trade_enabled": new_val})
                 return
 
-            # 3. HTML Delivery
+            # 3. Manual Coin ARM / DISARM Toggle (Bybit & Binance)
+            if path == '/api/toggle_coin':
+                ex = params.get('exchange', [''])[0].lower()
+                sym = params.get('symbol', [''])[0].upper()
+                if ex in ('bybit', 'binance') and sym:
+                    action_taken = ""
+                    with data_lock:
+                        ex_data = dashboard_data[ex]
+                        m_armed = ex_data.setdefault('manual_armed', [])
+                        m_disarmed = ex_data.setdefault('manual_disarmed', [])
+                        top10 = ex_data.get('top10', [])
+
+                        # Determine current armed state
+                        currently_armed = False
+                        for item in top10:
+                            if item['symbol'] == sym:
+                                currently_armed = item.get('is_armed', False)
+                                break
+                        if not top10:
+                            currently_armed = sym in m_armed
+
+                        if currently_armed:
+                            if sym in m_armed:
+                                m_armed.remove(sym)
+                            if sym not in m_disarmed:
+                                m_disarmed.append(sym)
+                            action_taken = "DISARMED"
+                            for item in top10:
+                                if item['symbol'] == sym:
+                                    item['is_armed'] = False
+                                    item['arm_mode'] = "DISARMED"
+                        else:
+                            if sym in m_disarmed:
+                                m_disarmed.remove(sym)
+                            if sym not in m_armed:
+                                m_armed.append(sym)
+                            action_taken = "MANUAL ARMED"
+                            for item in top10:
+                                if item['symbol'] == sym:
+                                    item['is_armed'] = True
+                                    item['arm_mode'] = "MANUAL"
+
+                    add_ui_log(f"🔘 [{ex.upper()}] User manually {action_taken}: {sym}")
+                    self._send_json({"ok": True, "exchange": ex, "symbol": sym, "action": action_taken})
+                    return
+
+            # 4. HTML Delivery
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.send_header("Connection", "close")
@@ -134,7 +191,7 @@ def run_web_server():
             time.sleep(1)
 
 if __name__ == '__main__':
-    add_ui_log("⚡ Master Controller Starting...")
+    add_ui_log("⚡ Master Controller Starting ($0.5 Margin | +5% Buffered Sell Limit | Top 10 Manual Control)...")
 
     # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
