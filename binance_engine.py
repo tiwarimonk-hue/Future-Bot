@@ -146,8 +146,9 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
 
     effective_armed.sort(key=lambda x: (x['next_funding_time'], x['funding_rate']))
 
-    top10_list = []
-    for c in all_negative[:10]:
+    # TOP 20 NEGATIVE WATCHLIST
+    top20_list = []
+    for c in all_negative[:20]:
         sym = c['symbol']
         if sym in seen:
             mode = "MANUAL" if sym in valid_m_armed else "AUTO"
@@ -155,7 +156,7 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
         else:
             mode = "DISARMED"
             armed_flag = False
-        top10_list.append({
+        top20_list.append({
             "symbol": sym,
             "rate": c['funding_rate'],
             "rate_str": c['rate_str'],
@@ -169,14 +170,14 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
     with data_lock:
         dashboard_data['binance']['manual_armed'] = valid_m_armed
         dashboard_data['binance']['manual_disarmed'] = valid_m_disarmed
-        dashboard_data['binance']['top10'] = top10_list
+        dashboard_data['binance']['top20'] = top20_list
         if effective_armed:
             dashboard_data['binance']['status'] = f"ARMED ({len(effective_armed)} Coins)"
             dashboard_data['binance']['symbols'] = ", ".join([f"{c['symbol']} ({c['arm_mode']})" for c in effective_armed])
             dashboard_data['binance']['rates'] = ", ".join([c['rate_str'] for c in effective_armed])
             dashboard_data['binance']['settlement'] = effective_armed[0]['settle_str']
         else:
-            dashboard_data['binance']['status'] = "SCANNING (Top 10 Live)"
+            dashboard_data['binance']['status'] = "SCANNING (Top 20 Live)"
             dashboard_data['binance']['symbols'] = "Scanning..."
             dashboard_data['binance']['rates'] = "--"
             dashboard_data['binance']['settlement'] = "--"
@@ -261,14 +262,11 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         leverage = coin_plan['leverage']
         rate_str = f"{rate*100:+.4f}%"
 
-        # TIMING MATRIX:
-        # Entry: T - 1000ms | Settle: T | Cancel Sell Limit: T + 900ms | Hard Exit: T + 4000ms
         t_entry = settle_epoch - 1000
         t_settle = settle_epoch
         t_limit_cancel = settle_epoch + 900
         t_hard_exit = settle_epoch + 4000
 
-        # Capture baseline funding income tranId before T
         baseline_tran_id = None
         try:
             inc_list = client.get_income_history(symbol=symbol, incomeType="FUNDING_FEE", limit=3)
@@ -329,7 +327,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
         add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY @ {entry_price_str} | Ladder 20%-90% Ready ({limit_ladder[20]:.{price_decimals}f}..{limit_ladder[90]:.{price_decimals}f})")
 
-        # 3. WAIT FOR EXACT TIMESTAMP T & POLL FUNDING CREDIT (Fallback at T + 750ms so limit fires before T + 900ms)
+        # 3. WAIT FOR EXACT TIMESTAMP T & POLL FUNDING CREDIT
         precision_wait_until(t_settle)
         funding_credited = False
         funding_fetch_ms = 0.0
@@ -410,7 +408,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                     pass
                 time.sleep(0.025)
 
-        # Cancel Sell Limit at T + 900ms if not filled
         if not limit_filled:
             precision_wait_until(t_limit_cancel)
             try:
@@ -419,7 +416,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
             except Exception:
                 pass
 
-            # Race-condition check: verify if limit order filled right at T+900ms before cancel
             if limit_order_id:
                 try:
                     q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
@@ -497,7 +493,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
 def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T+900ms Lim Cancel | T+4s Hard Exit)")
+    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T+900ms Lim Cancel | T+4s Hard Exit | Top 20 Live)")
     refresh_funding_intervals(client)
     last_clock_sync = 0.0
     last_interval_sync = time.time()
