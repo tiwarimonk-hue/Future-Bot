@@ -58,12 +58,12 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 .metric-mini-label { font-size: 9px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; }
 .metric-mini-val { font-size: 11px; font-weight: 700; color: var(--text-main); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
 
-/* TOP 10 NEGATIVE WATCHLIST TABLE */
+/* TOP 20 NEGATIVE WATCHLIST TABLE */
 .watchlist-block { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .watchlist-title { font-size: 11px; font-weight: 800; color: var(--text-dim); text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; }
-.watchlist-table-wrap { max-height: 290px; overflow-y: auto; }
+.watchlist-table-wrap { max-height: 420px; overflow-y: auto; }
 .watchlist-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
-.watchlist-table th { text-align: left; font-size: 9px; color: var(--text-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); text-transform: uppercase; }
+.watchlist-table th { text-align: left; font-size: 9px; color: var(--text-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); text-transform: uppercase; position: sticky; top: 0; background: var(--bg-panel); z-index: 2; }
 .watchlist-table td { padding: 6px 6px; border-bottom: 1px solid rgba(35, 43, 54, 0.5); vertical-align: middle; }
 .watchlist-table tr:last-child td { border-bottom: none; }
 .watchlist-table tr.row-armed { background: rgba(14, 203, 129, 0.06); }
@@ -132,10 +132,10 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
 
-      <!-- TOP 10 NEGATIVE WATCHLIST (BYBIT) -->
+      <!-- TOP 20 NEGATIVE WATCHLIST (BYBIT) -->
       <div class="watchlist-block">
         <div class="watchlist-title">
-          <span>📊 Top 10 Negative Coins (&lt; 0% Live)</span>
+          <span>📊 Top 20 Negative Coins (&lt; 0% Live)</span>
           <span style="font-size:9px; color:var(--dual-blue);">Click to ARM / DISARM</span>
         </div>
         <div class="watchlist-table-wrap">
@@ -149,8 +149,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
                 <th style="text-align:right;">Action</th>
               </tr>
             </thead>
-            <tbody id="bybit-top10-body">
-              <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">Loading Top 10...</td></tr>
+            <tbody id="bybit-top20-body">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">Loading Top 20...</td></tr>
             </tbody>
           </table>
         </div>
@@ -179,10 +179,10 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
 
-      <!-- TOP 10 NEGATIVE WATCHLIST (BINANCE) -->
+      <!-- TOP 20 NEGATIVE WATCHLIST (BINANCE) -->
       <div class="watchlist-block">
         <div class="watchlist-title">
-          <span>📊 Top 10 Negative Coins (&lt; 0% Live)</span>
+          <span>📊 Top 20 Negative Coins (&lt; 0% Live)</span>
           <span style="font-size:9px; color:var(--dual-blue);">Click to ARM / DISARM</span>
         </div>
         <div class="watchlist-table-wrap">
@@ -196,8 +196,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
                 <th style="text-align:right;">Action</th>
               </tr>
             </thead>
-            <tbody id="binance-top10-body">
-              <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">Loading Top 10...</td></tr>
+            <tbody id="binance-top20-body">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">Loading Top 20...</td></tr>
             </tbody>
           </table>
         </div>
@@ -359,8 +359,8 @@ async function fetchTelemetry(force = false) {
       const bbBadge = document.getElementById('bybit-status-badge');
       bbBadge.innerText = data.bybit.status || 'SCANNING';
       bbBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
-      renderArmedCards('bybit-cards-box', data.bybit.top10 || []);
-      renderTop10Table('bybit', 'bybit-top10-body', data.bybit.top10 || []);
+      renderArmedCards('bybit-cards-box', data.bybit.top20 || []);
+      renderTop20Table('bybit', 'bybit-top20-body', data.bybit.top20 || []);
     }
 
     // 2. Binance Solo
@@ -371,8 +371,8 @@ async function fetchTelemetry(force = false) {
       const bnBadge = document.getElementById('binance-status-badge');
       bnBadge.innerText = data.binance.status || 'SCANNING';
       bnBadge.className = isArmed ? 'badge badge-armed' : 'badge badge-scanning';
-      renderArmedCards('binance-cards-box', data.binance.top10 || []);
-      renderTop10Table('binance', 'binance-top10-body', data.binance.top10 || []);
+      renderArmedCards('binance-cards-box', data.binance.top20 || []);
+      renderTop20Table('binance', 'binance-top20-body', data.binance.top20 || []);
     }
 
     // 3. Dual Arbitrage
@@ -412,9 +412,9 @@ async function fetchTelemetry(force = false) {
   }
 }
 
-function renderArmedCards(containerId, top10List) {
+function renderArmedCards(containerId, top20List) {
   const container = document.getElementById(containerId);
-  const armed = top10List.filter(c => c.is_armed);
+  const armed = top20List.filter(c => c.is_armed);
   if (!armed || armed.length === 0) {
     container.innerHTML = `<div class="coin-box"><div class="coin-head"><span>NO ARMED COINS</span><span class="cycle-tag">Auto/Manual</span></div><div class="coin-rate" style="font-size:11px; color:var(--text-dim);">Auto &le; -0.4% or Click ARM below</div></div>`;
     return;
@@ -429,13 +429,13 @@ function renderArmedCards(containerId, top10List) {
   `).join('');
 }
 
-function renderTop10Table(exchange, tbodyId, top10List) {
+function renderTop20Table(exchange, tbodyId, top20List) {
   const tbody = document.getElementById(tbodyId);
-  if (!top10List || top10List.length === 0) {
+  if (!top20List || top20List.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:10px;">No negative funding coins right now</td></tr>`;
     return;
   }
-  tbody.innerHTML = top10List.map((c, idx) => {
+  tbody.innerHTML = top20List.map((c, idx) => {
     let btnClass = 'arm-btn-off';
     let btnText = 'ARM';
     if (c.is_armed && c.arm_mode === 'AUTO') {
