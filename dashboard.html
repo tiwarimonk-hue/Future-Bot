@@ -30,11 +30,11 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 .exchange-panel.bybit-theme { border-top: 3px solid var(--bybit-gold); }
 .exchange-panel.binance-theme { border-top: 3px solid var(--binance-yellow); }
 
-.panel-header { display: flex; justify-content: space-between; align-items: center; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
 .panel-name { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .badge { font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 5px; text-transform: uppercase; font-family: 'JetBrains Mono', monospace; }
-.badge-armed { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border: 1px solid rgba(14, 203, 129, 0.3); }
-.badge-scanning { background: rgba(247, 166, 0, 0.12); color: var(--bybit-gold); border: 1px solid rgba(247, 166, 0, 0.25); }
+.badge-armed, .status-success { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border: 1px solid rgba(14, 203, 129, 0.35); }
+.badge-scanning, .status-warn { background: rgba(247, 166, 0, 0.15); color: var(--bybit-gold); border: 1px solid rgba(247, 166, 0, 0.35); }
 
 /* MANUAL TOGGLE BUTTON STYLING */
 .trade-toggle-btn {
@@ -91,7 +91,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
 
 .ledger-block { display: flex; flex-direction: column; gap: 6px; }
 .ledger-header-text { font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; }
-.ledger-scroll { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.ledger-scroll { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .trade-item { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11px; display: flex; flex-direction: column; gap: 3px; }
 .trade-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
 .trade-desc { color: var(--text-dim); font-size: 10px; font-family: 'JetBrains Mono', monospace; }
@@ -115,8 +115,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
     </div>
   </div>
 
-  <!-- STRATEGY 1: SOLO -->
-  <div class="strategy-title-strip">⚡ Strategy 1: Parallel Solo Extreme Capture (T - 250ms Limit | 20x Max | &le; -0.4%)</div>
+  <!-- STRATEGY 1: SOLO (UPDATED TO T-1s MKT ENTRY | EXACT T SELL LIMIT 20% | T+4s HARD EXIT) -->
+  <div class="strategy-title-strip">⚡ Strategy 1: Parallel Solo Capture (T - 1.0s Mkt Entry | Exact T Sell Limit 20% | T + 4.0s Hard Exit | 20x Max)</div>
   <div class="two-col-grid">
     
     <!-- BYBIT SOLO -->
@@ -128,11 +128,11 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
       <div class="target-card-row" id="bybit-cards-box"></div>
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Settle Time</div><div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Limit Entry</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 250ms</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 7.0s</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Mkt / Sell Lim</div><div class="metric-mini-val" style="color:var(--neon-green);">T-1s / T (20%)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
       <div class="ledger-block">
-        <div class="ledger-header-text">📋 Bybit Execution Ledger</div>
+        <div class="ledger-header-text">📋 Bybit Execution Ledger (Fill Speed in ms)</div>
         <div class="ledger-scroll" id="bybit-ledger-box">
           <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Bybit trade...</div>
         </div>
@@ -148,11 +148,11 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 16px;
       <div class="target-card-row" id="binance-cards-box"></div>
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Settle Time</div><div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Limit Entry</div><div class="metric-mini-val" style="color:var(--neon-green);">T - 250ms</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 7.0s</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Mkt / Sell Lim</div><div class="metric-mini-val" style="color:var(--neon-green);">T-1s / T (20%)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
       <div class="ledger-block">
-        <div class="ledger-header-text">📋 Binance Execution Ledger</div>
+        <div class="ledger-header-text">📋 Binance Execution Ledger (Fill Speed in ms)</div>
         <div class="ledger-scroll" id="binance-ledger-box">
           <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:15px;">Waiting for first Binance trade...</div>
         </div>
