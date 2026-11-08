@@ -14,7 +14,7 @@ MIN_FUNDING_RATE_THRESHOLD = -0.004   # -0.4% Auto Top 3 Threshold
 INITIAL_ENTRY_MARGIN_USD = 0.5        # $0.5 Margin
 MAX_TARGET_COINS = 3
 MAX_ALLOWED_LEVERAGE = 20
-SELL_LIMIT_SLIPPAGE_PCT = 0.001       # 0.10% below live price at T+50ms
+SELL_LIMIT_SLIPPAGE_PCT = 0.001       # 0.10% below live price at T+150ms
 
 binance_offset_ms = 0.0
 active_executors = set()
@@ -271,9 +271,9 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         rate_str = f"{rate*100:+.4f}%"
 
         # TIMING MATRIX (BINANCE):
-        # Entry: T - 1000ms | Sell Limit Trigger: T + 50ms | Cancel Limit: T + 900ms | Hard Exit: T + 4000ms
+        # Entry: T - 1000ms | Sell Limit Trigger: T + 150ms | Cancel Limit: T + 900ms | Hard Exit: T + 4000ms
         t_entry = settle_epoch - 1000
-        t_sell_trigger = settle_epoch + 50
+        t_sell_trigger = settle_epoch + 150
         t_limit_cancel = settle_epoch + 900
         t_hard_exit = settle_epoch + 4000
 
@@ -319,9 +319,9 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
         filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
         entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
-        add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY FILLED @ {entry_price_str} | Waiting for T+50ms...")
+        add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY FILLED @ {entry_price_str} | Waiting for T+150ms...")
 
-        # 2. WAIT FOR T + 50ms, FETCH LIVE PRICE & SEND -0.10% SELL LIMIT
+        # 2. WAIT FOR T + 150ms, FETCH LIVE PRICE & SEND -0.10% SELL LIMIT
         precision_wait_until(t_sell_trigger)
         try:
             cur_p = float(client.ticker_price(symbol=symbol)["price"])
@@ -331,7 +331,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         raw_drop_pct = ((actual_entry_price - cur_p) / actual_entry_price * 100.0) if actual_entry_price > 0 else 0.0
         cur_p_str = f"{cur_p:.{price_decimals}f}"
 
-        # 0.10% below live market price at T+50ms so it fills immediately
+        # 0.10% below live market price at T+150ms so it fills immediately
         raw_sell_limit = cur_p * (1.0 - SELL_LIMIT_SLIPPAGE_PCT)
         sell_limit_price = max(tick_size, round(math.floor(raw_sell_limit / tick_size) * tick_size, price_decimals))
         limit_price_str = f"{sell_limit_price:.{price_decimals}f}"
@@ -351,7 +351,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                 timeInForce="GTC", reduceOnly=True
             )
             limit_order_id = lim_resp.get("orderId")
-            add_ui_log(f"🎯 [Binance] [{symbol}] @ T+50ms Live: {cur_p_str} (Drop {raw_drop_pct:.2f}%) -> Fired -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
+            add_ui_log(f"🎯 [Binance] [{symbol}] @ T+150ms Live: {cur_p_str} (Drop {raw_drop_pct:.2f}%) -> Fired -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
 
             if lim_resp.get("status") == "FILLED":
                 fill_duration_ms = round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
@@ -451,7 +451,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
             "rate": rate_str,
             "entry_time": f"{entry_time_str} (@ {entry_price_str})",
             "exit_time": exit_time_str,
-            "detail": f"T+50ms Live: {cur_p_str} (Drop: {raw_drop_pct:.2f}%) | -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
+            "detail": f"T+150ms Live: {cur_p_str} (Drop: {raw_drop_pct:.2f}%) | -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
             "badge_text": badge_txt,
             "badge_class": "status-success" if limit_filled else "status-warn"
         })
@@ -462,7 +462,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
 def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T+50ms -0.10% Sell Lim | T+900ms Cancel | T+4s Hard Exit)")
+    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T+150ms -0.10% Sell Lim | T+900ms Cancel | T+4s Hard Exit)")
     refresh_funding_intervals(client)
     last_clock_sync = 0.0
     last_interval_sync = time.time()
