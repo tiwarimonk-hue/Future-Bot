@@ -114,7 +114,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
   </div>
 
   <!-- STRATEGY 1: SOLO EXTREME CAPTURE -->
-  <div class="strategy-title-strip">⚡ Strategy 1: Solo Capture ($0.5 Margin | T-1s Mkt | +5% Buffered Sell Lim [Cancel T+900ms] | T+4s Hard Exit)</div>
+  <div class="strategy-title-strip">⚡ Strategy 1: Solo Capture ($0.5 Margin | T-1s Mkt | Bybit T+15ms / Binance T+250ms [-0.10% Lim] | Cancel T+900ms | Hard Exit T+4s)</div>
   <div class="two-col-grid">
     
     <!-- BYBIT SOLO -->
@@ -128,8 +128,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Window</div><div class="metric-mini-val" style="color:var(--neon-green);">Fire @ Credit | Cancel T+900ms</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Trigger</div><div class="metric-mini-val" style="color:var(--neon-green);">T+15ms (-0.10%)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Cancel / Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T+900ms / T+4s</div></div>
       </div>
 
       <!-- TOP 20 NEGATIVE WATCHLIST (BYBIT) -->
@@ -175,8 +175,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Window</div><div class="metric-mini-val" style="color:var(--neon-green);">Fire @ Credit | Cancel T+900ms</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Trigger</div><div class="metric-mini-val" style="color:var(--neon-green);">T+250ms (-0.10%)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Cancel / Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T+900ms / T+4s</div></div>
       </div>
 
       <!-- TOP 20 NEGATIVE WATCHLIST (BINANCE) -->
