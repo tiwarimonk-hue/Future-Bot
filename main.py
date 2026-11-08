@@ -18,7 +18,7 @@ dashboard_data = {
         "rates": "--",
         "settlement": "--",
         "offset": 0.0,
-        "top10": [],
+        "top20": [],
         "manual_armed": [],
         "manual_disarmed": []
     },
@@ -28,7 +28,7 @@ dashboard_data = {
         "rates": "--",
         "settlement": "--",
         "offset": 0.0,
-        "top10": [],
+        "top20": [],
         "manual_armed": [],
         "manual_disarmed": []
     },
@@ -110,7 +110,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"trade_enabled": new_val})
                 return
 
-            # 3. Manual Coin ARM / DISARM Toggle (Bybit & Binance)
+            # 3. Manual Coin ARM / DISARM Toggle (Bybit & Binance Top 20)
             if path == '/api/toggle_coin':
                 ex = params.get('exchange', [''])[0].lower()
                 sym = params.get('symbol', [''])[0].upper()
@@ -120,15 +120,14 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                         ex_data = dashboard_data[ex]
                         m_armed = ex_data.setdefault('manual_armed', [])
                         m_disarmed = ex_data.setdefault('manual_disarmed', [])
-                        top10 = ex_data.get('top10', [])
+                        top20 = ex_data.get('top20', [])
 
-                        # Determine current armed state
                         currently_armed = False
-                        for item in top10:
+                        for item in top20:
                             if item['symbol'] == sym:
                                 currently_armed = item.get('is_armed', False)
                                 break
-                        if not top10:
+                        if not top20:
                             currently_armed = sym in m_armed
 
                         if currently_armed:
@@ -137,7 +136,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                             if sym not in m_disarmed:
                                 m_disarmed.append(sym)
                             action_taken = "DISARMED"
-                            for item in top10:
+                            for item in top20:
                                 if item['symbol'] == sym:
                                     item['is_armed'] = False
                                     item['arm_mode'] = "DISARMED"
@@ -147,7 +146,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                             if sym not in m_armed:
                                 m_armed.append(sym)
                             action_taken = "MANUAL ARMED"
-                            for item in top10:
+                            for item in top20:
                                 if item['symbol'] == sym:
                                     item['is_armed'] = True
                                     item['arm_mode'] = "MANUAL"
@@ -191,7 +190,7 @@ def run_web_server():
             time.sleep(1)
 
 if __name__ == '__main__':
-    add_ui_log("⚡ Master Controller Starting ($0.5 Margin | +5% Buffered Sell Limit | Top 10 Manual Control)...")
+    add_ui_log("⚡ Master Controller Starting ($0.5 Margin | +5% Buffered Sell Limit | Top 20 Manual Control)...")
 
     # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
