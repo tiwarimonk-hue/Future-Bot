@@ -88,7 +88,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
 .ledger-block { display: flex; flex-direction: column; gap: 6px; }
 .ledger-header-text { font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; }
-.ledger-scroll { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.ledger-scroll { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .trade-item { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11px; display: flex; flex-direction: column; gap: 3px; }
 .trade-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
 .trade-desc { color: var(--text-dim); font-size: 10px; font-family: 'JetBrains Mono', monospace; line-height: 1.4; }
@@ -114,7 +114,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
   </div>
 
   <!-- STRATEGY 1: SOLO EXTREME CAPTURE -->
-  <div class="strategy-title-strip">⚡ Strategy 1: Solo Capture ($0.5 Margin | T-1s Mkt | Exact T Funding +5% Buffered Sell Lim | T+4s Hard Exit)</div>
+  <div class="strategy-title-strip">⚡ Strategy 1: Solo Capture ($0.5 Margin | T-1s Mkt | +5% Buffered Sell Lim [Cancel T+900ms] | T+4s Hard Exit)</div>
   <div class="two-col-grid">
     
     <!-- BYBIT SOLO -->
@@ -128,7 +128,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Ladder</div><div class="metric-mini-val" style="color:var(--neon-green);">20%-90% (+5% Buf)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Window</div><div class="metric-mini-val" style="color:var(--neon-green);">Fire @ Credit | Cancel T+900ms</div></div>
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
 
@@ -157,7 +157,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
       </div>
 
       <div class="ledger-block">
-        <div class="ledger-header-text">📋 Bybit Execution Ledger (ms Precision)</div>
+        <div class="ledger-header-text">📋 Bybit Execution Ledger (ms Precision &amp; Drop %)</div>
         <div class="ledger-scroll" id="bybit-ledger-box">
           <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Waiting for first Bybit trade...</div>
         </div>
@@ -175,7 +175,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Ladder</div><div class="metric-mini-val" style="color:var(--neon-green);">20%-90% (+5% Buf)</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Sell Limit Window</div><div class="metric-mini-val" style="color:var(--neon-green);">Fire @ Credit | Cancel T+900ms</div></div>
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">T + 4.0s</div></div>
       </div>
 
@@ -204,7 +204,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
       </div>
 
       <div class="ledger-block">
-        <div class="ledger-header-text">📋 Binance Execution Ledger (ms Precision)</div>
+        <div class="ledger-header-text">📋 Binance Execution Ledger (ms Precision &amp; Drop %)</div>
         <div class="ledger-scroll" id="binance-ledger-box">
           <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Waiting for first Binance trade...</div>
         </div>
@@ -273,8 +273,6 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 </div>
 
 <script>
-let latestTop10 = { bybit: [], binance: [] };
-
 // Live IST Clock & Watchlist Countdowns
 setInterval(() => {
   const now = Date.now();
