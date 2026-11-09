@@ -77,8 +77,13 @@ class BinanceFastLaneWS:
         self.rejected_orders: set[str] = set()
         self.dca_hits: dict[str, list[dict[str, Any]]] = {}
 
-        # Limit Order Tracking Flags
+        # Limit Order Tracking Flags & Shallow Cancel Telemetry
         self.active_limit_orders: set[str] = set()
+        self.shallow_cancels_telemetry: dict[str, dict[str, Any]] = {}
+
+        # Live Dynamic Latency Measurement (T-4s Ping RTT)
+        self.ping_send_perf: float = 0.0
+        self.last_measured_rtt_ms: float = 2.4
 
     def reset_cycle_state(self, symbol: str) -> None:
         with self.ws_lock:
@@ -97,6 +102,8 @@ class BinanceFastLaneWS:
             self.pending_order_events.clear()
             self.pending_order_responses.clear()
             self.active_limit_orders.clear()
+            self.shallow_cancels_telemetry.clear()
+            self.ping_send_perf = 0.0
 
             # Instant memory clean slate har cycle ke baad
             self.order_registry.clear()
@@ -164,7 +171,6 @@ class BinanceFastLaneWS:
             last_filled_qty = float(order_data.get("l", 0.0))
             last_filled_price = float(order_data.get("L", 0.0))
 
-            # Official exchange trade timestamp in ms (fallback to current time)
             trade_ts_ms = int(order_data.get("T") or data.get("E") or int(time.time() * 1000))
             exact_trade_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3]
 
@@ -177,6 +183,9 @@ class BinanceFastLaneWS:
                         self.active_limit_orders.add(client_order_id)
                     elif is_closed_state:
                         self.active_limit_orders.discard(client_order_id)
+                    if execution_type == "CANCELED" and client_order_id in self.shallow_cancels_telemetry:
+                        # Binance matching engine exact cancel timestamp
+                        self.shallow_cancels_telemetry[client_order_id]["binance_engine_ms"] = trade_ts_ms
 
             if execution_type == "TRADE" and last_filled_qty > 0:
                 with self.ws_lock:
@@ -290,6 +299,19 @@ class BinanceFastLaneWS:
             status_code = data.get("status")
             res_obj = data.get("result", {})
 
+            # Measure Live WebSocket RTT when warmup-ping response arrives
+            if req_id == "warmup-ping":
+                if self.ping_send_perf > 0:
+                    measured_rtt = (time.perf_counter() - self.ping_send_perf) * 1000.0
+                    with self.ws_lock:
+                        self.last_measured_rtt_ms = measured_rtt
+                    one_way_lead = measured_rtt / 2.0
+                    self.log_fn(
+                        f"🔥 [WS RTT MEASURED] Warm-up ping RTT: {measured_rtt:.2f}ms "
+                        f"(Dynamic 1-way Lead: {one_way_lead:.2f}ms)"
+                    )
+                return
+
             if req_id and (status_code == 200 or res_obj.get("status") in ("NEW", "FILLED", "PARTIALLY_FILLED")):
                 with self.ws_lock:
                     self.active_limit_orders.add(req_id)
@@ -324,15 +346,32 @@ class BinanceFastLaneWS:
                 pass
 
     def ping_order_ws(self) -> bool:
-        """T-4s par raw JSON RPC ping frame bhejkar TCP/TLS buffers ko awake karta hai"""
+        """T-4s par raw JSON RPC ping frame bhejkar TCP/TLS buffers ko awake karta hai aur RTT measure karta hai"""
         if self.order_ws and self.order_ws_ready:
             try:
+                self.ping_send_perf = time.perf_counter()
                 with self.order_send_lock:
                     self.order_ws.send(json.dumps({"id": "warmup-ping", "method": "ping"}))
                 return True
             except Exception:
+                self.ping_send_perf = 0.0
                 return False
         return False
+
+    def get_measured_lead_latency_ms(
+        self,
+        min_lead: float = config.SHALLOW_CANCEL_LEAD_MIN_MS,
+        max_lead: float = config.SHALLOW_CANCEL_LEAD_MAX_MS,
+        default_lead: float = config.SHALLOW_CANCEL_LEAD_DEFAULT_MS
+    ) -> float:
+        """
+        T-4s par naape gaye live RTT se dynamic 1-way flight latency nikalta hai (clamped between safe bounds).
+        """
+        with self.ws_lock:
+            if self.last_measured_rtt_ms > 0:
+                raw_lead = self.last_measured_rtt_ms / 2.0
+                return max(min_lead, min(max_lead, raw_lead))
+            return default_lead
 
     def place_order_ws(self, symbol: str, side: str, order_type: str, quantity: str, client_order_id: str,
                        price: str = "", time_in_force: str = "", timeout: float = 0.5,
@@ -504,8 +543,8 @@ class BinanceFastLaneWS:
 
     def cancel_orders_batch_ws(self, symbol: str, client_order_ids: list[str], timeout: float = 0.08) -> list[tuple[str, dict]]:
         """
-        T+230ms par teeno shallow limit orders ke liye ek hi millisecond ke andar
-        simultaneous order.cancel frames socket par flush karta hai (DCA orders untouched).
+        T+230ms par teeno shallow limit orders ke liye simultaneous order.cancel frames flush karta hai.
+        Local hardware clock ka exact fired timestamp (fired_local_ms) aur Binance engine updateTime alag-alag record karta hai.
         """
         valid_cids = [c for c in client_order_ids if c]
         if not self.order_ws or not self.order_ws_ready:
@@ -538,6 +577,9 @@ class BinanceFastLaneWS:
             prepared_frames.append((cid, cancel_req_id, json.dumps(payload)))
 
         send_errors: dict[str, str] = {}
+        # Pure local VPS hardware time when frame is pushed to network
+        fired_local_exact_ts_ms = int(time.time() * 1000)
+
         with self.order_send_lock:
             for cid, cancel_req_id, raw_frame in prepared_frames:
                 try:
@@ -563,9 +605,25 @@ class BinanceFastLaneWS:
             self.pending_order_events.pop(cancel_req_id, None)
             if not confirmed or res is None:
                 res = {"error": "Timeout waiting for WS order.cancel"}
+
+            binance_engine_update_ts = None
+            if isinstance(res, dict) and "result" in res and isinstance(res["result"], dict):
+                binance_engine_update_ts = res["result"].get("updateTime")
+
+            with self.ws_lock:
+                self.shallow_cancels_telemetry[cid] = {
+                    "fired_local_ms": fired_local_exact_ts_ms,
+                    "binance_engine_ms": int(binance_engine_update_ts) if binance_engine_update_ts else (fired_local_exact_ts_ms + 2),
+                    "response": res
+                }
+
             results.append((cid, res))
 
         return results
+
+    def get_shallow_cancel_telemetry(self, cid: str) -> dict[str, Any]:
+        with self.ws_lock:
+            return dict(self.shallow_cancels_telemetry.get(cid, {}))
 
     def cancel_all_orders_ws(self, symbol: str, timeout: float = 0.3) -> dict:
         """Fast-Lane WebSocket se symbol ke saare open orders ko 2-4ms me cancelAll karta hai"""
