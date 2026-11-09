@@ -71,8 +71,8 @@ def precision_wait_until(target_time_ms):
 
 def get_interval_priority(cycle_str):
     if "1H" in cycle_str: return 1
-    if "4H" in cycle_str: return 4
-    if "8H" in cycle_str: return 8
+    if "4H" in cycle_str: return 2
+    if "8H" in cycle_str: return 3
     return 99
 
 
@@ -136,7 +136,7 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_acti
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
-    # Auto eligible within -0.34% to -0.05% range, sorted by 1H / 4H / 8H priority
+    # Strict Priority: 1H interval first, then 4H, then 8H, regardless of funding rate magnitude
     auto_eligible = [
         c for c in all_negative
         if MIN_FUNDING_RATE_THRESHOLD <= c['funding_rate'] <= MAX_FUNDING_RATE_THRESHOLD
@@ -404,7 +404,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
 def start_strategy2_loop(dashboard_data, data_lock, add_ui_log, add_s2_ledger_entry, get_s1_active_coins_fn):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Strategy 2 Active ($0.5 Margin | T+220ms Mkt Buy | Range: -0.34% to -0.05% | 1H/4H/8H Priority)")
+    add_ui_log("🚀 Strategy 2 Active ($0.5 Margin | T+220ms Mkt Buy | Range: -0.34% to -0.05% | 1H Priority)")
     refresh_funding_intervals(client)
     last_clock_sync = 0.0
     last_interval_sync = time.time()
