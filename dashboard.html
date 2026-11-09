@@ -30,7 +30,6 @@
 
         .sub-section-title { font-size: 0.82rem; color: var(--blue); margin: 12px 0 6px 0; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
         
-        /* Armed Mini-Boxes Container */
         .armed-chips-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
         .armed-chip { background: rgba(0, 240, 255, 0.08); border: 1px solid var(--accent-cyan); border-radius: 6px; padding: 6px 10px; font-size: 0.78rem; display: flex; flex-direction: column; min-width: 90px; }
         .armed-chip .coin { font-weight: bold; color: var(--accent-cyan); }
@@ -41,10 +40,9 @@
         .radar-table th, .ledger-table th { background-color: rgba(255,255,255,0.02); color: var(--text-muted); font-weight: 600; }
         .radar-table tr:hover, .ledger-table tr:hover { background-color: rgba(255,255,255,0.01); }
 
-        .btn-action { background: var(--green); color: #000; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
-        .btn-action:hover { opacity: 0.8; }
-        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
-        .btn-disarm:hover { opacity: 0.8; }
+        /* Custom Checkbox Gole */
+        .arm-checkbox { width: 18px; height: 18px; accent-color: var(--green); cursor: pointer; }
+        .disarm-checkbox { width: 18px; height: 18px; accent-color: var(--red); cursor: pointer; }
 
         .ledger-card { background: rgba(0,0,0,0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
         .ledger-header { display: flex; justify-content: space-between; color: var(--accent-cyan); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
@@ -78,7 +76,7 @@
             <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
-        <div class="sub-section-title"><span>Top 20 Funding Radar (Click Arm / Disarm)</span></div>
+        <div class="sub-section-title"><span>Top 20 Funding Radar (Tick to Arm / Unarm)</span></div>
         <div style="max-height: 200px; overflow-y: auto;">
             <table class="radar-table">
                 <thead>
@@ -87,11 +85,12 @@
                         <th>Funding Rate</th>
                         <th>Next Settlement</th>
                         <th>Mode</th>
-                        <th>Action</th>
+                        <th style="text-align:center;">Arm (🟢)</th>
+                        <th style="text-align:center;">Unarm (🔴)</th>
                     </tr>
                 </thead>
                 <tbody id="s1-radar-body">
-                    <tr><td colspan="5" class="empty-state">Loading Strategy 1 Radar...</td></tr>
+                    <tr><td colspan="6" class="empty-state">Loading Strategy 1 Radar...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -107,10 +106,10 @@
     <div class="strategy-container">
         <div class="strategy-header">
             <div class="strategy-title">
-                <span>STRATEGY 2: AUTO TOP-3 QUANT ARBITRAGE (T+220ms Market Entry | Range: -0.34% to -0.05%)</span>
+                <span>STRATEGY 2: AUTO TOP-3 QUANT ARBITRAGE (Range: -0.34% to -0.05% | 1H Priority)</span>
             </div>
             <div class="strategy-features">
-                Features: $0.5 Margin ($10 Notional @ 20x) | T+220ms Precise Market Buy | 1H/4H/8H Priority Order | Max 5 Armed Coins | +0.10% Take Profit Limit.
+                Features: $0.5 Margin | T+220ms Market Buy | 1H/4H/8H Priority Order | Max 5 Armed Coins | +0.10% Take Profit.
             </div>
         </div>
 
@@ -119,7 +118,7 @@
             <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
-        <div class="sub-section-title"><span>Top 20 Negative Funding Radar (Click Arm / Disarm)</span></div>
+        <div class="sub-section-title"><span>Top 20 Negative Funding Radar (Tick to Arm / Unarm)</span></div>
         <div style="max-height: 200px; overflow-y: auto;">
             <table class="radar-table">
                 <thead>
@@ -128,11 +127,12 @@
                         <th>Funding Rate</th>
                         <th>Next Settlement</th>
                         <th>Mode</th>
-                        <th>Action</th>
+                        <th style="text-align:center;">Arm (🟢)</th>
+                        <th style="text-align:center;">Unarm (🔴)</th>
                     </tr>
                 </thead>
                 <tbody id="s2-radar-body">
-                    <tr><td colspan="5" class="empty-state">Loading Strategy 2 Radar...</td></tr>
+                    <tr><td colspan="6" class="empty-state">Loading Strategy 2 Radar...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -157,7 +157,8 @@
     </div>
 
     <script>
-        async function toggleArm(strategy, symbol, action) {
+        async function handleArmCheck(strategy, symbol, isArmedChecked) {
+            let action = isArmedChecked ? 'arm' : 'disarm';
             try {
                 await fetch('/api/arm-control', {
                     method: 'POST',
@@ -165,7 +166,7 @@
                     body: JSON.stringify({ strategy, symbol, action })
                 });
                 fetchDashboardData();
-            } catch(e) { console.error("Arm toggle error:", e); }
+            } catch(e) { console.error("Arm control error:", e); }
         }
 
         async function fetchDashboardData() {
@@ -186,10 +187,20 @@
                                 </div>
                             `;
                         }
-                        let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(1, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(1, '${c.symbol}', 'arm')">Arm</button>`;
-                        s1RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
+                        let armChecked = c.is_armed ? 'checked' : '';
+                        let disarmChecked = !c.is_armed ? 'checked' : '';
+                        s1RadarHtml += `
+                            <tr>
+                                <td><strong>${c.symbol}</strong></td>
+                                <td style="color:var(--red);">${c.rate_str}</td>
+                                <td>${c.settle_str}</td>
+                                <td>${c.arm_mode}</td>
+                                <td style="text-align:center;"><input type="checkbox" class="arm-checkbox" ${armChecked} onchange="handleArmCheck(1, '${c.symbol}', this.checked)"></td>
+                                <td style="text-align:center;"><input type="checkbox" class="disarm-checkbox" ${disarmChecked} onchange="handleArmCheck(1, '${c.symbol}', !this.checked)"></td>
+                            </tr>
+                        `;
                     });
-                } else { s1RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                } else { s1RadarHtml = `<tr><td colspan="6" class="empty-state">No negative funding coins found.</td></tr>`; }
                 
                 document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
                 document.getElementById('s1-armed-chips').innerHTML = s1ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
@@ -248,10 +259,20 @@
                                 </div>
                             `;
                         }
-                        let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(2, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(2, '${c.symbol}', 'arm')">Arm</button>`;
-                        s2RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
+                        let armChecked = c.is_armed ? 'checked' : '';
+                        let disarmChecked = !c.is_armed ? 'checked' : '';
+                        s2RadarHtml += `
+                            <tr>
+                                <td><strong>${c.symbol}</strong></td>
+                                <td style="color:var(--red);">${c.rate_str}</td>
+                                <td>${c.settle_str}</td>
+                                <td>${c.arm_mode}</td>
+                                <td style="text-align:center;"><input type="checkbox" class="arm-checkbox" ${armChecked} onchange="handleArmCheck(2, '${c.symbol}', this.checked)"></td>
+                                <td style="text-align:center;"><input type="checkbox" class="disarm-checkbox" ${disarmChecked} onchange="handleArmCheck(2, '${c.symbol}', !this.checked)"></td>
+                            </tr>
+                        `;
                     });
-                } else { s2RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                } else { s2RadarHtml = `<tr><td colspan="6" class="empty-state">No negative funding coins found.</td></tr>`; }
                 
                 document.getElementById('s2-radar-body').innerHTML = s2RadarHtml;
                 document.getElementById('s2-armed-chips').innerHTML = s2ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
