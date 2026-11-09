@@ -44,19 +44,26 @@ def fast_cancel_shallow_orders(ws_pipeline, symbol: str, shallow_cids: Sequence[
     """
     T+230ms par keval upar ke 3 Shallow Limit Orders (30%, 50%, 70%) ko ek hi millisecond
     me simultaneous WS cancel frames bhejkar cancel karta hai.
-    Niche ke DCA orders aur already filled shallow positions 100% surakshit rehte hain.
+    Local VPS hardware time aur Binance Engine updateTime alag-alag report karta hai.
     """
     now_cancel_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
     add_ui_log(
-        f"⚡ [T+{config.SHALLOW_CANCEL_AFTER_SETTLE_MS}ms SHALLOW CANCEL BURST ({now_cancel_dt})] "
+        f"⚡ [SHALLOW CANCEL BURST at {now_cancel_dt}] "
         f"Firing simultaneous WS cancel for 3 shallow orders on {symbol}..."
     )
     results = ws_pipeline.cancel_orders_batch_ws(symbol, list(shallow_cids), timeout=0.08)
     for cid, res in results:
+        telem = ws_pipeline.get_shallow_cancel_telemetry(cid)
+        f_ms = telem.get("fired_local_ms", 0)
+        b_ms = telem.get("binance_engine_ms", 0)
+        lat = max(0, b_ms - f_ms) if (f_ms > 0 and b_ms > 0) else 0
+        f_str = datetime.fromtimestamp(f_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if f_ms > 0 else "--"
+        b_str = datetime.fromtimestamp(b_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if b_ms > 0 else "--"
+
         err_obj = res.get("error", {}) if isinstance(res, dict) else {}
         err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
         if isinstance(res, dict) and res.get("status") == 200 and not res.get("error"):
-            add_ui_log(f"✅ [SHALLOW CANCEL CONFIRMED] {cid} canceled via WS.")
+            add_ui_log(f"✅ [SHALLOW CANCEL CONFIRMED] {cid} | Fired (Local): {f_str} | Binance (Engine): {b_str} (RTT: {lat}ms)")
         elif err_code == -2011:
             add_ui_log(f"ℹ️ [SHALLOW ALREADY FILLED/CLOSED] {cid} ignored safely by exchange.")
         else:
