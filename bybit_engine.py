@@ -14,7 +14,8 @@ MIN_FUNDING_RATE_THRESHOLD = -0.004   # -0.4% Auto Top 3 Threshold
 INITIAL_ENTRY_MARGIN_USD = 0.5        # $0.5 Margin
 MAX_TARGET_COINS = 3
 MAX_ALLOWED_LEVERAGE = 20.0
-SELL_LIMIT_SLIPPAGE_PCT = 0.001       # 0.10% below live price at T+15ms
+TP_PROFIT_PCT = 0.001                 # +0.10% above entry price
+HARD_EXIT_SECONDS = 600               # 10 Minutes hard exit
 
 clock_offset_ms = 0.0
 active_executors = set()
@@ -57,8 +58,6 @@ def scan_market_and_sync_state(http_client, dashboard_data, data_lock):
     all_negative = []
 
     with data_lock:
-        dual_status = dashboard_data.get('dual', {}).get('status', '')
-        dual_coin_armed = dashboard_data.get('dual', {}).get('coin', '--') if "ARMED" in dual_status.upper() else "--"
         m_armed = list(dashboard_data['bybit'].get('manual_armed', []))
         m_disarmed = list(dashboard_data['bybit'].get('manual_disarmed', []))
 
@@ -107,11 +106,10 @@ def scan_market_and_sync_state(http_client, dashboard_data, data_lock):
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
-    # Auto Top 3 (<= -0.4%, active up to T-1.5s so T-10s thread launcher never misses)
+    # Auto Top 3 (<= -0.4%)
     auto_eligible = [
         c for c in all_negative
         if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD
-        and c['symbol'] != dual_coin_armed
         and (c['next_funding_time'] - now_ms) > 1500
     ]
     auto_top3_syms = []
@@ -121,7 +119,7 @@ def scan_market_and_sync_state(http_client, dashboard_data, data_lock):
         imminent.sort(key=lambda x: x['funding_rate'])
         auto_top3_syms = [c['symbol'] for c in imminent[:MAX_TARGET_COINS]]
 
-    valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0 and s != dual_coin_armed]
+    valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
     valid_m_disarmed = [s for s in m_disarmed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
 
     effective_armed = []
@@ -142,7 +140,6 @@ def scan_market_and_sync_state(http_client, dashboard_data, data_lock):
 
     effective_armed.sort(key=lambda x: (x['next_funding_time'], x['funding_rate']))
 
-    # TOP 20 NEGATIVE WATCHLIST
     top20_list = []
     for c in all_negative[:20]:
         sym = c['symbol']
@@ -225,7 +222,6 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
     exec_key = (symbol, settle_epoch)
 
     try:
-        # Prepare parameters at T - 1500ms
         precision_wait_until(settle_epoch - 1500)
 
         with data_lock:
@@ -253,12 +249,8 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
         leverage = coin_plan['leverage']
         rate_str = f"{rate*100:+.4f}%"
 
-        # TIMING MATRIX (BYBIT):
-        # Entry: T - 1000ms | Sell Limit Trigger: T + 15ms | Cancel Limit: T + 900ms | Hard Exit: T + 4000ms
         t_entry = settle_epoch - 1000
-        t_sell_trigger = settle_epoch + 15
-        t_limit_cancel = settle_epoch + 900
-        t_hard_exit = settle_epoch + 4000
+        t_hard_exit = settle_epoch + (HARD_EXIT_SECONDS * 1000)
 
         # 1. MARKET BUY ENTRY AT T - 1s
         precision_wait_until(t_entry)
@@ -289,7 +281,7 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             return
 
         # 2. FETCH ACTUAL FILLED PRICE & POSITION SIZE
-        time.sleep(0.06)
+        time.sleep(0.08)
         actual_entry_price = live_price
         filled_qty_float = float(qty)
 
@@ -305,132 +297,108 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
 
         filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
         entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
-        add_ui_log(f"🚀 [Bybit] [{symbol}] MKT BUY FILLED @ {entry_price_str} | Waiting for T+15ms...")
 
-        # 3. WAIT FOR T + 15ms, FETCH LIVE PRICE & SEND -0.10% SELL LIMIT
-        precision_wait_until(t_sell_trigger)
-        try:
-            cur_p = float(http_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]["lastPrice"])
-        except Exception:
-            cur_p = actual_entry_price
-
-        raw_drop_pct = ((actual_entry_price - cur_p) / actual_entry_price * 100.0) if actual_entry_price > 0 else 0.0
-        cur_p_str = f"{cur_p:.{price_decimals}f}"
-
-        # 0.10% below live market price at T+15ms so it fills immediately
-        raw_sell_limit = cur_p * (1.0 - SELL_LIMIT_SLIPPAGE_PCT)
-        sell_limit_price = max(tick_size, round(math.floor(raw_sell_limit / tick_size) * tick_size, price_decimals))
-        limit_price_str = f"{sell_limit_price:.{price_decimals}f}"
-
-        limit_fire_ms = round(get_synced_time_ms() - settle_epoch, 1)
-        limit_fire_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-        t_limit_sent_local = time.time() * 1000
-        limit_order_id = None
+        # 3. PLACE STOP LOSS AT 200% OF FUNDING RATE BELOW ENTRY
+        sl_discount = 2.0 * abs(rate)
+        raw_sl_price = actual_entry_price * (1.0 - sl_discount)
+        sl_price = max(tick_size, round(math.floor(raw_sl_price / tick_size) * tick_size, price_decimals))
+        sl_price_str = f"{sl_price:.{price_decimals}f}"
 
         try:
-            lim_resp = http_client.place_order(
-                category="linear", symbol=symbol, side="Sell", orderType="Limit",
-                price=limit_price_str, qty=filled_qty_str, timeInForce="GTC",
-                reduceOnly=True, positionIdx=0
+            http_client.set_trading_stop(
+                category="linear", symbol=symbol,
+                stopLoss=sl_price_str, slTriggerBy="LastPrice", positionIdx=0
             )
-            if lim_resp.get("retCode") == 0:
-                limit_order_id = lim_resp["result"].get("orderId", "")
-                add_ui_log(f"🎯 [Bybit] [{symbol}] @ T+15ms Live: {cur_p_str} (Drop {raw_drop_pct:.2f}%) -> Fired -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
-            else:
-                add_ui_log(f"⚠️ [Bybit] [{symbol}] Sell Limit Rejected: {lim_resp.get('retMsg')}")
         except Exception as e:
-            add_ui_log(f"⚠️ [Bybit] [{symbol}] Sell Limit Exception: {e}")
+            add_ui_log(f"⚠️ [Bybit] [{symbol}] SL Set Warning: {e}")
 
-        # 4. MONITOR LIMIT FILL UNTIL T + 900ms, THEN CANCEL IF UNFILLED
-        limit_filled = False
-        fill_duration_ms = None
+        # 4. PLACE +0.10% TAKE PROFIT SELL LIMIT ABOVE ENTRY
+        raw_tp_price = actual_entry_price * (1.0 + TP_PROFIT_PCT)
+        tp_price = round(math.ceil(raw_tp_price / tick_size) * tick_size, price_decimals)
+        if tp_price <= actual_entry_price:
+            tp_price = round(actual_entry_price + tick_size, price_decimals)
+        tp_price_str = f"{tp_price:.{price_decimals}f}"
+
+        tp_order_id = None
+        t_tp_sent_ms = time.time() * 1000
+        try:
+            tp_resp = http_client.place_order(
+                category="linear", symbol=symbol, side="Sell",
+                orderType="Limit", price=tp_price_str, qty=filled_qty_str,
+                timeInForce="GTC", reduceOnly=True, positionIdx=0
+            )
+            if tp_resp.get("retCode") == 0:
+                tp_order_id = tp_resp["result"].get("orderId", "")
+            else:
+                add_ui_log(f"⚠️ [Bybit] [{symbol}] +0.10% TP Limit Rejected: {tp_resp.get('retMsg')}")
+        except Exception as e:
+            add_ui_log(f"⚠️ [Bybit] [{symbol}] +0.10% TP Limit Exception: {e}")
+
+        add_ui_log(f"🚀 [Bybit] [{symbol}] MKT BUY @ {entry_price_str} | SL (-200% Fund): {sl_price_str} | TP Lim (+0.10%): {tp_price_str} | 10m Window")
+
+        # 5. MONITOR TP LIMIT / SL FOR UP TO 10 MINUTES
+        exit_outcome = "HARD EXIT (10m)"
         exit_time_str = "--"
+        badge_class = "status-warn"
+        position_closed = False
 
-        if limit_order_id:
-            while get_synced_time_ms() < t_limit_cancel:
-                try:
-                    open_res = http_client.get_open_orders(category="linear", symbol=symbol, orderId=limit_order_id)
-                    if not open_res.get("result", {}).get("list", []):
-                        hist_res = http_client.get_order_history(category="linear", symbol=symbol, orderId=limit_order_id)
-                        hist_list = hist_res.get("result", {}).get("list", [])
-                        if hist_list and hist_list[0].get("orderStatus") == "Filled":
-                            c_t = int(hist_list[0].get("createdTime", 0))
-                            u_t = int(hist_list[0].get("updatedTime", 0))
-                            ex_diff = u_t - c_t
-                            fill_duration_ms = ex_diff if ex_diff > 0 else round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
-                            limit_filled = True
-                            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                            add_ui_log(f"⚡ [Bybit] [{symbol}] SELL LIMIT FILLED IN {fill_duration_ms}ms @ {limit_price_str}!")
-                            break
-                        else:
-                            break
-                except Exception:
-                    pass
-                time.sleep(0.025)
-
-        if not limit_filled:
-            precision_wait_until(t_limit_cancel)
+        while get_synced_time_ms() < t_hard_exit:
             try:
-                if limit_order_id:
-                    http_client.cancel_order(category="linear", symbol=symbol, orderId=limit_order_id)
-                else:
-                    http_client.cancel_all_orders(category="linear", symbol=symbol)
-                add_ui_log(f"⏱ [Bybit] [{symbol}] Limit unfilled at T+900ms -> Cancelled! Waiting for T+4s Hard Exit...")
-            except Exception:
-                pass
+                pos_list = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"]
+                pos_size = float(pos_list[0].get("size", 0)) if pos_list else 0.0
 
-            if limit_order_id:
-                try:
-                    hist_res = http_client.get_order_history(category="linear", symbol=symbol, orderId=limit_order_id)
-                    hist_list = hist_res.get("result", {}).get("list", [])
-                    if hist_list and hist_list[0].get("orderStatus") == "Filled":
-                        c_t = int(hist_list[0].get("createdTime", 0))
-                        u_t = int(hist_list[0].get("updatedTime", 0))
-                        ex_diff = u_t - c_t
-                        fill_duration_ms = ex_diff if ex_diff > 0 else round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
-                        limit_filled = True
-                        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                        add_ui_log(f"⚡ [Bybit] [{symbol}] SELL LIMIT FILLED JUST BEFORE CANCEL IN {fill_duration_ms}ms!")
-                except Exception:
-                    pass
-
-        # 5. HARD EXIT AT T + 4s IF LIMIT WAS CANCELLED / UNFILLED
-        if not limit_filled:
-            precision_wait_until(t_hard_exit)
-            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-            try:
-                pos_resp = http_client.get_positions(category="linear", symbol=symbol)
-                positions = pos_resp.get("result", {}).get("list", [])
-                pos_size = float(positions[0].get("size", 0)) if positions else 0.0
-                if pos_size > 0:
-                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
-                    http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=rem_q, reduceOnly=True, positionIdx=0)
-                    add_ui_log(f"🛑 [Bybit] [{symbol}] HARD EXIT EXECUTED AT T+4.0s: {rem_q}")
-            except Exception:
-                pass
-
-        # 6. EMERGENCY SWEEPS AT T + 15s & T + 30s
-        for stage_ms in [settle_epoch + 15000, settle_epoch + 30000]:
-            precision_wait_until(stage_ms)
-            try:
-                pos_resp = http_client.get_positions(category="linear", symbol=symbol)
-                positions = pos_resp.get("result", {}).get("list", [])
-                pos_size = float(positions[0].get("size", 0)) if positions else 0.0
-                if pos_size > 0:
-                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
-                    http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=rem_q, reduceOnly=True, positionIdx=0)
-                    add_ui_log(f"🛡 [Bybit] [{symbol}] EMERGENCY EXIT: {rem_q}")
-                else:
+                if pos_size <= 0:
+                    position_closed = True
+                    exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                    # Check if TP Limit filled or SL hit
+                    tp_filled = False
+                    if tp_order_id:
+                        hist = http_client.get_order_history(category="linear", symbol=symbol, orderId=tp_order_id).get("result", {}).get("list", [])
+                        if hist and hist[0].get("orderStatus") == "Filled":
+                            tp_filled = True
+                            c_t = int(hist[0].get("createdTime", 0))
+                            u_t = int(hist[0].get("updatedTime", 0))
+                            sec_taken = round(max(0.05, (u_t - c_t) / 1000.0), 2) if u_t > c_t else round((time.time() * 1000 - t_tp_sent_ms) / 1000.0, 2)
+                            exit_outcome = f"TP +0.10% FILLED ({sec_taken}s)"
+                            badge_class = "status-success"
+                            add_ui_log(f"🎯 [Bybit] [{symbol}] +0.10% SELL LIMIT HIT @ {tp_price_str} in {sec_taken}s!")
+                    if not tp_filled:
+                        exit_outcome = "SL HIT (-200% Fund)"
+                        badge_class = "status-warn"
+                        add_ui_log(f"🛑 [Bybit] [{symbol}] STOP LOSS HIT @ {sl_price_str}")
                     break
             except Exception:
                 pass
 
+            # Poll faster near settlement, 1s thereafter
+            sleep_sec = 0.25 if abs(get_synced_time_ms() - settle_epoch) < 10000 else 1.0
+            time.sleep(sleep_sec)
+
+        # 6. IF 10 MINUTES EXPIRE & POSITION STILL OPEN -> CANCEL & HARD EXIT
+        try:
+            http_client.cancel_all_orders(category="linear", symbol=symbol)
+        except Exception:
+            pass
+
+        if not position_closed:
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            try:
+                pos_list = http_client.get_positions(category="linear", symbol=symbol)["result"]["list"]
+                pos_size = float(pos_list[0].get("size", 0)) if pos_list else 0.0
+                if pos_size > 0:
+                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
+                    http_client.place_order(category="linear", symbol=symbol, side="Sell", orderType="Market", qty=rem_q, reduceOnly=True, positionIdx=0)
+                    exit_outcome = "HARD EXIT (10m Timeout)"
+                    add_ui_log(f"⏱ [Bybit] [{symbol}] 10m Timeout -> Hard Market Exit Executed: {rem_q}")
+                else:
+                    exit_outcome = "CLOSED"
+                    badge_class = "status-success"
+            except Exception:
+                exit_outcome = "EXIT FAILED"
+
         with data_lock:
             if symbol in dashboard_data['bybit'].get('manual_armed', []):
                 dashboard_data['bybit']['manual_armed'].remove(symbol)
-
-        exit_status_tag = f"Fill: {fill_duration_ms}ms" if limit_filled else "Cancelled @ T+900ms -> Hard Exit @ T+4s"
-        badge_txt = f"FILLED ({fill_duration_ms}ms)" if limit_filled else "HARD EXIT (T+4s)"
 
         add_ledger_entry({
             "exchange": "Bybit",
@@ -438,9 +406,9 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
             "rate": rate_str,
             "entry_time": f"{entry_time_str} (@ {entry_price_str})",
             "exit_time": exit_time_str,
-            "detail": f"T+15ms Live: {cur_p_str} (Drop: {raw_drop_pct:.2f}%) | -0.10% Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
-            "badge_text": badge_txt,
-            "badge_class": "status-success" if limit_filled else "status-warn"
+            "detail": f"SL (-200% Fund): {sl_price_str} | TP (+0.10%): {tp_price_str} | Outcome: {exit_outcome} | Qty: {filled_qty_str} ({leverage}x)",
+            "badge_text": exit_outcome,
+            "badge_class": badge_class
         })
 
     finally:
@@ -449,7 +417,7 @@ def parallel_coin_executor(http_client, coin_meta, dashboard_data, data_lock, ad
 
 def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     http_client = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
-    add_ui_log("🚀 Bybit Engine Active ($0.5 Margin | T+15ms -0.10% Sell Lim | T+900ms Cancel | T+4s Hard Exit)")
+    add_ui_log("🚀 Bybit Engine Active ($0.5 Margin | T-1s Mkt | -200% Fund SL | +0.10% TP | 10m Hard Exit)")
     last_clock_sync = 0.0
 
     while True:
@@ -466,7 +434,6 @@ def start_bybit_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
                 settle_epoch = c['next_funding_time']
                 time_left = settle_epoch - now_ms
 
-                # Launch dedicated executor 10s before settlement for both AUTO and MANUAL coins
                 if 1500 < time_left <= 10000:
                     exec_key = (sym, settle_epoch)
                     with executors_lock:
