@@ -38,7 +38,8 @@ dashboard_data = {
         "bybit_sell": [],
         "binance_buy": [],
         "binance_sell": [],
-        "armed_orders": {}   # key: "EXCHANGE:SYMBOL:SIDE" -> status dict
+        "armed_orders": {},   # key: "EXCHANGE:SYMBOL:SIDE" -> status dict
+        "test_trades": []     # Live & completed virtual paper trades
     },
     "logs": [],
     "ledger": []
@@ -142,14 +143,15 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True, "exchange": ex, "symbol": sym, "action": action_taken})
                     return
 
-            # 3. Manual Whale Signal ARM / DISARM Trigger
+            # 3. Manual Whale Signal ARM / DISARM Trigger (REAL or TEST mode)
             if path == '/api/arm_whale':
                 ex = params.get('exchange', [''])[0].upper()
                 sym = params.get('symbol', [''])[0].upper()
-                side = params.get('side', [''])[0].upper()  # BUY or SELL
+                side = params.get('side', [''])[0].upper()      # BUY or SELL
+                mode = params.get('mode', ['REAL'])[0].upper()  # REAL or TEST
                 price = float(params.get('price', ['0'])[0] or 0)
 
-                if ex in ('BYBIT', 'BINANCE') and sym and side in ('BUY', 'SELL'):
+                if ex in ('BYBIT', 'BINANCE') and sym and side in ('BUY', 'SELL') and mode in ('REAL', 'TEST'):
                     key = f"{ex}:{sym}:{side}"
                     with data_lock:
                         armed_map = dashboard_data['whale'].setdefault('armed_orders', {})
@@ -163,6 +165,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                             "exchange": ex,
                             "symbol": sym,
                             "side": side,
+                            "mode": mode,
                             "anchor_price": price,
                             "state": "WAITING_CONFIRM",
                             "confirmed": False,
@@ -172,15 +175,26 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                     import whale_engine
                     threading.Thread(
                         target=whale_engine.execute_whale_armed_trade,
-                        args=(ex, sym, side, price, dashboard_data, data_lock, add_ui_log, add_ledger_entry),
+                        args=(ex, sym, side, price, mode, dashboard_data, data_lock, add_ui_log, add_ledger_entry),
                         daemon=True
                     ).start()
 
-                    add_ui_log(f"🐋 [Whale] User ARMED {ex} {sym} ({side}) @ {price} — Waiting for Confirmation Tick...")
-                    self._send_json({"ok": True, "action": "ARMED", "key": key})
+                    add_ui_log(f"🐋 [Whale] User ARMED [{mode}] {ex} {sym} ({side}) @ {price} — Waiting for Confirmation Tick...")
+                    self._send_json({"ok": True, "action": "ARMED", "mode": mode, "key": key})
                     return
 
-            # 4. HTML Delivery
+            # 4. Manual Close for Live Virtual Test Trade
+            if path == '/api/close_test_whale':
+                test_id = params.get('id', [''])[0]
+                if test_id:
+                    with data_lock:
+                        for t in dashboard_data['whale'].get('test_trades', []):
+                            if t.get('id') == test_id and t.get('status') == 'LIVE':
+                                t['force_close'] = True
+                    self._send_json({"ok": True, "id": test_id})
+                    return
+
+            # 5. HTML Delivery
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.send_header("Connection", "close")
@@ -215,7 +229,7 @@ def run_web_server():
             time.sleep(1)
 
 if __name__ == '__main__':
-    add_ui_log("⚡ Master Controller Starting (Solo Funding + Separate Bybit/Binance Top 10 Whale Scanners)...")
+    add_ui_log("⚡ Master Controller Starting (Binance T+150ms | Whale Real & Virtual Test Mode)...")
 
     # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
@@ -240,7 +254,7 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Binance Funding Engine Launched")
+        add_ui_log("✔ Binance Funding Engine Launched (Entry @ T+150ms)")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
@@ -252,7 +266,7 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Whale Scanner Launched (5s Live Update | 2m Lock Window | Separate Top 10 Lists)")
+        add_ui_log("✔ Whale Scanner Launched ($1 Margin | 6x Lev | ±5% SL/TP | Real & Virtual Test)")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Whale Engine: {e}")
 
