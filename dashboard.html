@@ -6,50 +6,53 @@
     <title>Binance Master Quant Cockpit - Dual Strategy</title>
     <style>
         :root {
-            --bg-color: #0b0e11;
-            --card-bg: #1e2329;
-            --card-border: #2b313a;
-            --text-main: #eaecef;
-            --text-muted: #848e9c;
-            --accent-yellow: #fcd535;
-            --green: #0ecb81;
-            --red: #f6465d;
-            --orange: #f0b90b;
-            --blue: #3861fb;
+            --bg-color: #06090f;
+            --card-bg: #111827;
+            --card-border: #1f2937;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --accent-cyan: #00f0ff;
+            --accent-indigo: #6366f1;
+            --green: #10b981;
+            --red: #f43f5e;
+            --blue: #38bdf8;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 12px; font-size: 0.85rem; }
         
         header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px; }
-        h1 { font-size: 1.2rem; color: var(--accent-yellow); display: flex; align-items: center; gap: 6px; }
-        .status-badge { background: rgba(14, 203, 129, 0.15); color: var(--green); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; border: 1px solid var(--green); }
+        h1 { font-size: 1.2rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 6px; text-shadow: 0 0 10px rgba(0,240,255,0.3); }
+        .status-badge { background: rgba(16, 185, 129, 0.15); color: var(--green); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; border: 1px solid var(--green); }
 
-        .strategy-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-bottom: 20px; }
-        .strategy-header { border-bottom: 2px solid var(--accent-yellow); padding-bottom: 8px; margin-bottom: 12px; }
-        .strategy-title { font-size: 1rem; color: var(--accent-yellow); font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .strategy-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 14px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .strategy-header { border-bottom: 2px solid var(--accent-cyan); padding-bottom: 8px; margin-bottom: 12px; }
+        .strategy-title { font-size: 1rem; color: var(--accent-cyan); font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
         .strategy-features { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; line-height: 1.3; }
 
-        .sub-section-title { font-size: 0.85rem; color: var(--orange); margin: 10px 0 6px 0; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+        .sub-section-title { font-size: 0.82rem; color: var(--blue); margin: 12px 0 6px 0; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
         
-        .armed-box { background: rgba(252, 213, 53, 0.08); border: 1px solid var(--accent-yellow); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; }
+        /* Armed Mini-Boxes Container */
+        .armed-chips-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+        .armed-chip { background: rgba(0, 240, 255, 0.08); border: 1px solid var(--accent-cyan); border-radius: 6px; padding: 6px 10px; font-size: 0.78rem; display: flex; flex-direction: column; min-width: 100px; }
+        .armed-chip .coin { font-weight: bold; color: var(--accent-cyan); }
+        .armed-chip .rate { font-size: 0.72rem; color: var(--red); }
         
         .radar-table, .ledger-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 10px; }
         .radar-table th, .radar-table td, .ledger-table th, .ledger-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--card-border); }
-        .radar-table th, .ledger-table th { background-color: rgba(255,255,255,0.03); color: var(--text-muted); font-weight: 600; }
+        .radar-table th, .ledger-table th { background-color: rgba(255,255,255,0.02); color: var(--text-muted); font-weight: 600; }
         .radar-table tr:hover, .ledger-table tr:hover { background-color: rgba(255,255,255,0.01); }
 
-        .tag-success { background: rgba(14, 203, 129, 0.2); color: var(--green); padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: 600; }
-        .tag-warn { background: rgba(246, 70, 93, 0.2); color: var(--red); padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: 600; }
+        .btn-action { background: var(--green); color: #000; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
+        .btn-action:hover { opacity: 0.8; }
+        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
+        .btn-disarm:hover { opacity: 0.8; }
 
-        .btn-action { background: var(--green); color: #000; border: none; padding: 3px 8px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
-        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
-
-        /* Photo 3 Precision Ledger Card Styling */
-        .ledger-card { background: rgba(0,0,0,0.4); border: 1px solid var(--card-border); border-radius: 6px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
-        .ledger-header { display: flex; justify-content: space-between; color: var(--accent-yellow); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
+        /* Ledger Card Styling */
+        .ledger-card { background: rgba(0,0,0,0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
+        .ledger-header { display: flex; justify-content: space-between; color: var(--accent-cyan); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
         .shallow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
-        .shallow-box { background: rgba(56, 97, 251, 0.1); border: 1px solid var(--blue); border-radius: 4px; padding: 6px; font-size: 0.72rem; }
-        .shallow-box.cancelled { border-color: var(--red); background: rgba(246, 70, 93, 0.1); }
+        .shallow-box { background: rgba(56, 189, 248, 0.08); border: 1px solid var(--blue); border-radius: 5px; padding: 6px; font-size: 0.72rem; }
+        .shallow-box.cancelled { border-color: var(--red); background: rgba(244, 63, 94, 0.08); }
         
         .empty-state { text-align: center; color: var(--text-muted); padding: 15px; font-style: italic; }
     </style>
@@ -57,7 +60,7 @@
 <body>
 
     <header>
-        <h1>⚡ Binance Master Quant Cockpit</h1>
+        <h1>⚡ Master Quant Cockpit</h1>
         <div id="system-status" class="status-badge">DUAL ENGINE ACTIVE</div>
     </header>
 
@@ -72,10 +75,10 @@
             </div>
         </div>
 
-        <!-- Armed Coins Box on Top -->
-        <div class="armed-box">
-            <span>🛡️ <strong>Armed Sniper Target:</strong> <span id="s1-armed-display" style="color:var(--accent-yellow);">Scanning...</span></span>
-            <span id="s1-armed-count" style="background:var(--card-bg); padding:2px 6px; border-radius:4px; font-size:0.75rem;">Active: 0</span>
+        <!-- Armed Mini-Boxes Box on Top -->
+        <div class="sub-section-title"><span>🛡️ Armed Sniper Target Pool</span></div>
+        <div id="s1-armed-chips" class="armed-chips-container">
+            <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
         <!-- Top 20 Radar Table -->
@@ -97,7 +100,7 @@
             </table>
         </div>
 
-        <!-- Execution Ledger (Photo 3 Card Style) -->
+        <!-- Precision Ledger -->
         <div class="sub-section-title"><span>Strategy 1: Last 20 Trades Precision Ledger</span></div>
         <div id="s1-ledger-container">
             <div class="empty-state">Waiting for Strategy 1 precision execution...</div>
@@ -116,10 +119,10 @@
             </div>
         </div>
 
-        <!-- Armed Coins Box on Top -->
-        <div class="armed-box">
-            <span>🚀 <strong>Strategy 2 Armed Pool:</strong> <span id="s2-armed-display" style="color:var(--accent-yellow);">Scanning Top 20...</span></span>
-            <span id="s2-armed-count" style="background:var(--card-bg); padding:2px 6px; border-radius:4px; font-size:0.75rem;">Active: 0</span>
+        <!-- Armed Mini-Boxes Box on Top -->
+        <div class="sub-section-title"><span>🚀 Strategy 2 Active Target Pool</span></div>
+        <div id="s2-armed-chips" class="armed-chips-container">
+            <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
         <!-- Top 20 Radar Table -->
@@ -176,32 +179,28 @@
                 let res = await fetch('/api/status');
                 let data = await res.json();
 
-                // Strategy 1 Armed Header
-                if(data.target_symbol && data.target_symbol !== "Scanning...") {
-                    document.getElementById('s1-armed-display').innerHTML = `${data.target_symbol} (${data.funding_rate})`;
-                    document.getElementById('s1-armed-count').innerText = `Active: 1`;
-                } else {
-                    document.getElementById('s1-armed-display').innerText = `Scanning for best negative funding rate...`;
-                    document.getElementById('s1-armed-count').innerText = `Active: 0`;
-                }
-
-                // Strategy 1 Radar & Armed List
+                // Strategy 1 Radar & Armed Chips
                 let s1RadarHtml = "";
-                let s1ArmedList = [];
+                let s1ArmedChipsHtml = "";
                 if(data.strategy1_top20 && data.strategy1_top20.length > 0) {
                     data.strategy1_top20.forEach(c => {
-                        if(c.is_armed) s1ArmedList.push(c.symbol);
+                        if(c.is_armed) {
+                            s1ArmedChipsHtml += `
+                                <div class="armed-chip">
+                                    <span class="coin">${c.symbol}</span>
+                                    <span class="rate">${c.rate_str}</span>
+                                </div>
+                            `;
+                        }
                         let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(1, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(1, '${c.symbol}', 'arm')">Arm</button>`;
                         s1RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
                     });
                 } else { s1RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                
                 document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
-                if(s1ArmedList.length > 0 && (!data.target_symbol || data.target_symbol === "Scanning...")) {
-                    document.getElementById('s1-armed-display').innerText = s1ArmedList.join(", ");
-                    document.getElementById('s1-armed-count').innerText = `Active: ${s1ArmedList.length}`;
-                }
+                document.getElementById('s1-armed-chips').innerHTML = s1ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
 
-                // Strategy 1 Precision Ledger (Photo 3 Card Style)
+                // Strategy 1 Precision Ledger
                 let s1LedgerContainer = document.getElementById('s1-ledger-container');
                 if(data.trades && data.trades.length > 0) {
                     let html = "";
@@ -242,25 +241,26 @@
                     s1LedgerContainer.innerHTML = html;
                 }
 
-                // Strategy 2 Radar & Armed Header
+                // Strategy 2 Radar & Armed Chips
                 let s2RadarHtml = "";
-                let s2ArmedList = [];
+                let s2ArmedChipsHtml = "";
                 if(data.strategy2 && data.strategy2.top20 && data.strategy2.top20.length > 0) {
                     data.strategy2.top20.forEach(c => {
-                        if(c.is_armed) s2ArmedList.push(c.symbol);
+                        if(c.is_armed) {
+                            s2ArmedChipsHtml += `
+                                <div class="armed-chip">
+                                    <span class="coin">${c.symbol}</span>
+                                    <span class="rate">${c.rate_str}</span>
+                                </div>
+                            `;
+                        }
                         let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(2, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(2, '${c.symbol}', 'arm')">Arm</button>`;
                         s2RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
                     });
                 } else { s2RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                
                 document.getElementById('s2-radar-body').innerHTML = s2RadarHtml;
-
-                if(s2ArmedList.length > 0) {
-                    document.getElementById('s2-armed-display').innerText = s2ArmedList.join(", ");
-                    document.getElementById('s2-armed-count').innerText = `Active: ${s2ArmedList.length}`;
-                } else {
-                    document.getElementById('s2-armed-display').innerText = `No coins armed.`;
-                    document.getElementById('s2-armed-count').innerText = `Active: 0`;
-                }
+                document.getElementById('s2-armed-chips').innerHTML = s2ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
 
                 // Strategy 2 Ledger
                 let s2Body = document.getElementById('s2-ledger-body');
@@ -270,7 +270,7 @@
                         html += `
                             <tr>
                                 <td>${i+1}</td>
-                                <td><strong>${t.coin}</strong><br><span style="color:var(--accent-yellow);">${t.rate}</span></td>
+                                <td><strong>${t.coin}</strong><br><span style="color:var(--accent-cyan);">${t.rate}</span></td>
                                 <td>${t.entry_time}<br>Price: ${t.entry_price || '--'}</td>
                                 <td>${t.exit_time}<br>Price: ${t.exit_price || '--'}</td>
                                 <td>${t.detail}<br><span class="${t.badge_class}">${t.badge_text}</span></td>
