@@ -270,20 +270,14 @@ if __name__ == "__main__":
                 all_neg.sort(key=lambda x: x["rate"])
                 
                 with data_lock:
-                    manual_armed = dashboard_data["strategy1_manual_armed"]
-                    manual_disarmed = dashboard_data["strategy1_manual_disarmed"]
+                    manual_armed = list(dashboard_data["strategy1_manual_armed"])
+                    manual_disarmed = list(dashboard_data["strategy1_manual_disarmed"])
                     
-                    # Clean up manual lists against current negative tickers
-                    valid_m_armed = [s for s in manual_armed if any(c["symbol"] == s for c in all_neg)]
-                    valid_m_disarmed = [s for s in manual_disarmed if any(c["symbol"] == s for c in all_neg)]
-                    dashboard_data["strategy1_manual_armed"] = valid_m_armed
-                    dashboard_data["strategy1_manual_disarmed"] = valid_m_disarmed
-
                     top20_formatted = []
                     for item in all_neg[:20]:
                         sym = item["symbol"]
-                        is_armed = sym in valid_m_armed or (sym not in valid_m_disarmed and item["rate"] <= CONFIG["MIN_FUNDING_RATE"])
-                        mode = "MANUAL" if sym in valid_m_armed else "AUTO"
+                        is_armed = sym in manual_armed or (sym not in manual_disarmed and item["rate"] <= CONFIG["MIN_FUNDING_RATE"])
+                        mode = "MANUAL" if sym in manual_armed else ("DISARMED" if sym in manual_disarmed else "AUTO")
                         top20_formatted.append({
                             "symbol": sym,
                             "rate_str": item["rate_str"],
@@ -293,10 +287,21 @@ if __name__ == "__main__":
                         })
                     dashboard_data["strategy1_top20"] = top20_formatted
 
-                # Strategy 1 Target Selection
-                neg_coins = [c for c in all_neg if (c["symbol"] in valid_m_armed or (c["rate"] <= CONFIG["MIN_FUNDING_RATE"] and c["symbol"] not in valid_m_disarmed))]
-                if neg_coins:
-                    target = neg_coins[0]
+                # High-Priority Selection: 1st check Manual Armed, then Auto Negative threshold
+                eligible_targets = []
+                # 1. Add Manually Armed Coins
+                for sym in manual_armed:
+                    match = next((c for c in all_neg if c["symbol"] == sym), None)
+                    if match: eligible_targets.append(match)
+
+                # 2. Add Auto Eligible Coins (not in Disarmed list)
+                for c in all_neg:
+                    if c["symbol"] not in manual_disarmed and c["rate"] <= CONFIG["MIN_FUNDING_RATE"]:
+                        if not any(e["symbol"] == c["symbol"] for e in eligible_targets):
+                            eligible_targets.append(c)
+
+                if eligible_targets:
+                    target = eligible_targets[0]
                     sym = target["symbol"]
                     rate = target["rate"]
                     price = target["last_price"]
@@ -317,7 +322,7 @@ if __name__ == "__main__":
                     with data_lock:
                         dashboard_data["target_symbol"] = "Scanning..."
                         dashboard_data["funding_rate"] = "0.00%"
-            time.sleep(5.0)
+            time.sleep(3.0)
         except Exception as e:
             add_ui_log(f"⚠️ Main Loop Error: {e}")
             time.sleep(3.0)
