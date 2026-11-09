@@ -193,7 +193,7 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                             if sym in disarmed: disarmed.remove(sym)
                             if sym not in armed: armed.append(sym)
                         else:
-                            if sym in armed: armed.remove(sym)
+                            if sym in armed: armed.remove(armed)
                             if sym not in disarmed: disarmed.append(sym)
 
                 self.send_response(200)
@@ -287,14 +287,12 @@ if __name__ == "__main__":
                         })
                     dashboard_data["strategy1_top20"] = top20_formatted
 
-                # High-Priority Selection: 1st check Manual Armed, then Auto Negative threshold
+                # High-Priority Selection for Strategy 1
                 eligible_targets = []
-                # 1. Add Manually Armed Coins
                 for sym in manual_armed:
                     match = next((c for c in all_neg if c["symbol"] == sym), None)
                     if match: eligible_targets.append(match)
 
-                # 2. Add Auto Eligible Coins (not in Disarmed list)
                 for c in all_neg:
                     if c["symbol"] not in manual_disarmed and c["rate"] <= CONFIG["MIN_FUNDING_RATE"]:
                         if not any(e["symbol"] == c["symbol"] for e in eligible_targets):
