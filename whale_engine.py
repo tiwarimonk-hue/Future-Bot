@@ -19,9 +19,10 @@ WHALE_LEVERAGE = 6              # 6x Leverage ($6.0 Notional)
 WHALE_SL_PCT = 0.10             # 10% Stop Loss
 WHALE_TP_PCT = 0.10             # 10% Take Profit
 
-# Rolling baseline store: key -> {"prev_vol": float, "avg_delta": float, "last_ts": float, "spike_time": str, "spike_usd": float, "spike_mult": float, "side": str}
 market_memory = {}
-signal_cache = {}  # key -> signal dict (persists hot signals for 90s so user can click ARM smoothly)
+signal_cache = {}
+last_bn_err_log = 0.0
+last_bb_err_log = 0.0
 
 def format_usd(val):
     if val >= 1_000_000:
@@ -30,7 +31,8 @@ def format_usd(val):
         return f"${val / 1_000:.0f}K"
     return f"${val:.0f}"
 
-def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
+def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add_ui_log):
+    global last_bn_err_log, last_bb_err_log
     now_ts = time.time()
     now_ist_str = datetime.now(IST).strftime('%H:%M:%S IST')
 
@@ -52,13 +54,15 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
                     bybit_rows.append(("BYBIT", sym, price, vol24, pct24, high24, low24))
             except ValueError:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        if now_ts - last_bb_err_log > 30:
+            last_bb_err_log = now_ts
+            add_ui_log(f"⚠️ [Whale] Bybit Scan Warning: {e}")
 
-    # 2. Fetch Binance All USDT Futures 24h Tickers
+    # 2. Fetch Binance All USDT Futures 24h Tickers (Correct UMFutures method)
     binance_rows = []
     try:
-        bn_list = binance_client.ticker_24hr()
+        bn_list = binance_client.ticker_24hr_price_change()
         for t in bn_list:
             sym = t.get("symbol", "")
             if not sym.endswith("USDT"):
@@ -73,8 +77,10 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
                     binance_rows.append(("BINANCE", sym, price, vol24, pct24, high24, low24))
             except ValueError:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        if now_ts - last_bn_err_log > 30:
+            last_bn_err_log = now_ts
+            add_ui_log(f"⚠️ [Whale] Binance Scan Warning: {e}")
 
     all_rows = bybit_rows + binance_rows
 
@@ -83,7 +89,6 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
         prev = market_memory.get(m_key)
 
         if not prev:
-            # Bootstrap initial baseline using 24h average per 3s interval
             est_3s_base = max(500.0, vol24 / 28800.0)
             market_memory[m_key] = {
                 "prev_vol": vol24,
@@ -91,7 +96,6 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
                 "avg_delta": est_3s_base,
                 "last_ts": now_ts
             }
-            # Seed strong initial movers so dashboard shows live whale activity immediately
             rng = max(1e-9, high24 - low24)
             pos_in_range = (price - low24) / rng
             if vol24 >= 25_000_000 and abs(pct24) >= 4.0:
@@ -118,19 +122,17 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
         delta_vol = max(0.0, vol24 - prev["prev_vol"])
         price_diff_pct = ((price - prev["prev_price"]) / prev["prev_price"] * 100.0) if prev["prev_price"] > 0 else 0.0
 
-        # Normalize delta to 3s window
         norm_delta = delta_vol * (3.0 / dt)
         avg_d = prev["avg_delta"]
         spike_mult = (norm_delta / avg_d) if avg_d > 0 else 1.0
 
-        # Smooth rolling average (slow adaptation so spikes stand out)
         new_avg = (avg_d * 0.92) + (norm_delta * 0.08)
         prev["prev_vol"] = vol24
         prev["prev_price"] = price
         prev["avg_delta"] = max(250.0, new_avg)
         prev["last_ts"] = now_ts
 
-        # Whale Spike Detection: Abnormal capital injection (>= $25k in burst & >= 2.2x normal flow)
+        # Whale Spike Detection: >= $25k burst & >= 2.2x normal flow
         if delta_vol >= 25_000 and spike_mult >= 2.2:
             if price_diff_pct > 0.02 or (price_diff_pct >= 0 and pct24 > 1.5):
                 side = "BUY"
@@ -139,7 +141,6 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
             else:
                 continue
 
-            # Probability Score (60% to 98%)
             raw_score = 55.0 + min(22.0, spike_mult * 3.2) + min(12.0, delta_vol / 120_000.0) + min(9.0, abs(price_diff_pct) * 18.0)
             chance_pct = max(60, min(98, int(round(raw_score))))
 
@@ -157,7 +158,6 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
                 "updated_ts": now_ts
             }
 
-    # Prune signals older than 90s unless actively armed
     with data_lock:
         armed_map = dashboard_data['whale'].get('armed_orders', {})
         active_keys = set(armed_map.keys())
@@ -189,8 +189,8 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock):
         buy_list.sort(key=lambda x: (x["arm_state"] != "IDLE", x["chance_pct"], x["inflow_usd"]), reverse=True)
         sell_list.sort(key=lambda x: (x["arm_state"] != "IDLE", x["chance_pct"], x["inflow_usd"]), reverse=True)
 
-        dashboard_data['whale']['buy_signals'] = buy_list[:12]
-        dashboard_data['whale']['sell_signals'] = sell_list[:12]
+        dashboard_data['whale']['buy_signals'] = buy_list[:15]
+        dashboard_data['whale']['sell_signals'] = sell_list[:15]
         dashboard_data['whale']['status'] = f"LIVE SCAN ({len(buy_list)} Buy / {len(sell_list)} Sell Whales)"
 
 def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_data, data_lock, add_ui_log, add_ledger_entry):
@@ -209,7 +209,6 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
         if anchor_price <= 0:
             anchor_price = get_live_tick()
 
-        # 1. WAIT FOR 1 CONFIRMATION TICK (Max 15s wait)
         confirmed = False
         confirm_price = anchor_price
         deadline = time.time() + 15.0
@@ -218,13 +217,12 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
         while time.time() < deadline:
             with data_lock:
                 if key not in dashboard_data['whale'].get('armed_orders', {}):
-                    return  # User disarmed
+                    return
 
             time.sleep(0.35)
             try:
                 cur_p = get_live_tick()
                 ticks_checked += 1
-                # Confirm direction on fresh market tick
                 if side == "BUY" and (cur_p > anchor_price or (ticks_checked >= 3 and cur_p >= anchor_price)):
                     confirmed = True
                     confirm_price = cur_p
@@ -242,7 +240,6 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
             add_ui_log(f"⚠️ [Whale] [{exchange} {symbol}] Confirmation Tick Timed Out (No momentum continuation). Disarmed.")
             return
 
-        # Mark Confirmation Tick (✓) in Dashboard State
         with data_lock:
             if key in dashboard_data['whale'].get('armed_orders', {}):
                 dashboard_data['whale']['armed_orders'][key]['state'] = 'CONFIRMED'
@@ -250,8 +247,7 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
 
         add_ui_log(f"✅✓ [Whale] [{exchange} {symbol} {side}] CONFIRMATION TICK PASSED ({anchor_price} -> {confirm_price})! Firing $1.0 (6x) Entry...")
 
-        # 2. CALCULATE LOT SIZE & SET 6x LEVERAGE ($1.0 MARGIN)
-        target_notional = WHALE_MARGIN_USD * WHALE_LEVERAGE  # $6.0 Notional
+        target_notional = WHALE_MARGIN_USD * WHALE_LEVERAGE
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
 
         if exchange == "BYBIT":
@@ -293,7 +289,6 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
                 if float(pos_list[0].get("avgPrice", 0)) > 0:
                     actual_entry = float(pos_list[0]["avgPrice"])
 
-            # 10% SL & 10% TP
             if side == "BUY":
                 sl_p = max(tick_size, round(math.floor((actual_entry * (1.0 - WHALE_SL_PCT)) / tick_size) * tick_size, p_dec))
                 tp_p = round(math.ceil((actual_entry * (1.0 + WHALE_TP_PCT)) / tick_size) * tick_size, p_dec)
@@ -308,7 +303,6 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
             bybit_client.place_order(category="linear", symbol=symbol, side=close_side, orderType="Limit", price=tp_str, qty=qty_str, timeInForce="GTC", reduceOnly=True, positionIdx=0)
 
         else:
-            # BINANCE EXECUTION
             ex_info = binance_client.exchange_info()
             sym_info = next((s for s in ex_info.get('symbols', []) if s['symbol'] == symbol), None)
             qty_step, min_qty, tick_size, min_notional = 1.0, 1.0, 0.0001, 5.0
@@ -350,7 +344,6 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
                         qty_str = f"{abs(float(p['positionAmt'])):.{q_dec}f}" if q_dec > 0 else str(int(abs(float(p['positionAmt']))))
                         break
 
-            # 10% SL & 10% TP
             if side == "BUY":
                 sl_p = max(tick_size, round(math.floor((actual_entry * (1.0 - WHALE_SL_PCT)) / tick_size) * tick_size, p_dec))
                 tp_p = round(math.ceil((actual_entry * (1.0 + WHALE_TP_PCT)) / tick_size) * tick_size, p_dec)
@@ -389,12 +382,12 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, dashboard_da
 def start_whale_scanner_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     bybit_client = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
     binance_client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🐋 Whale Money Flow Engine Active (Full Market Scan | $1.0 Margin | 6x Lev | 1-Tick Confirm ✓)")
+    add_ui_log("🐋 Whale Money Flow Engine Active (Bybit + Binance Full Market Scan | $1.0 Margin | 6x Lev)")
 
     while True:
         try:
-            scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock)
-            time.sleep(2.5)
+            scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add_ui_log)
+            time.sleep(3.0)
         except Exception as e:
             add_ui_log(f"⚠️ [Whale] Scanner Recovered: {e}")
             time.sleep(3)
