@@ -13,14 +13,12 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 from dotenv import load_dotenv
 
-# Load Environment Variables
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
 API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
 API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
 
-# Master Configuration Settings
 CONFIG = {
     "BINANCE_REST_URL": "https://fapi.binance.com",
     "BINANCE_WS_URL": "wss://fstream.binance.com",
@@ -274,20 +272,29 @@ if __name__ == "__main__":
                 with data_lock:
                     manual_armed = dashboard_data["strategy1_manual_armed"]
                     manual_disarmed = dashboard_data["strategy1_manual_disarmed"]
+                    
+                    # Clean up manual lists against current negative tickers
+                    valid_m_armed = [s for s in manual_armed if any(c["symbol"] == s for c in all_neg)]
+                    valid_m_disarmed = [s for s in manual_disarmed if any(c["symbol"] == s for c in all_neg)]
+                    dashboard_data["strategy1_manual_armed"] = valid_m_armed
+                    dashboard_data["strategy1_manual_disarmed"] = valid_m_disarmed
+
                     top20_formatted = []
                     for item in all_neg[:20]:
                         sym = item["symbol"]
-                        is_armed = sym in manual_armed or (sym not in manual_disarmed and item["rate"] <= CONFIG["MIN_FUNDING_RATE"])
+                        is_armed = sym in valid_m_armed or (sym not in valid_m_disarmed and item["rate"] <= CONFIG["MIN_FUNDING_RATE"])
+                        mode = "MANUAL" if sym in valid_m_armed else "AUTO"
                         top20_formatted.append({
                             "symbol": sym,
                             "rate_str": item["rate_str"],
                             "settle_str": item["settle_str"],
-                            "arm_mode": "MANUAL" if sym in manual_armed else "AUTO",
+                            "arm_mode": mode,
                             "is_armed": is_armed
                         })
                     dashboard_data["strategy1_top20"] = top20_formatted
 
-                neg_coins = [c for c in all_neg if (c["symbol"] in manual_armed or (c["rate"] <= CONFIG["MIN_FUNDING_RATE"] and c["symbol"] not in manual_disarmed))]
+                # Strategy 1 Target Selection
+                neg_coins = [c for c in all_neg if (c["symbol"] in valid_m_armed or (c["rate"] <= CONFIG["MIN_FUNDING_RATE"] and c["symbol"] not in valid_m_disarmed))]
                 if neg_coins:
                     target = neg_coins[0]
                     sym = target["symbol"]
