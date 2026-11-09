@@ -13,7 +13,7 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, sans-serif; }
 body { background-color: var(--bg-main); color: var(--text-main); padding: 14px; display: flex; justify-content: center; min-height: 100vh; }
-.terminal-wrapper { width: 100%; max-width: 1540px; display: flex; flex-direction: column; gap: 14px; }
+.terminal-wrapper { width: 100%; max-width: 1560px; display: flex; flex-direction: column; gap: 14px; }
 
 .top-strip { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; }
@@ -24,7 +24,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
 .strategy-title-strip { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); }
 .two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media(max-width: 1080px) { .two-col-grid { grid-template-columns: 1fr; } }
+@media(max-width: 1120px) { .two-col-grid { grid-template-columns: 1fr; } }
 
 .exchange-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .exchange-panel.bybit-theme { border-top: 3px solid var(--bybit-gold); }
@@ -61,17 +61,25 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 .watchlist-table tr.row-armed { background: rgba(14, 203, 129, 0.06); }
 
 .arm-btn {
-  cursor: pointer; border-radius: 4px; padding: 4px 8px; font-size: 10px; font-weight: 800;
+  cursor: pointer; border-radius: 4px; padding: 4px 7px; font-size: 9px; font-weight: 800;
   font-family: 'JetBrains Mono', monospace; border: 1px solid transparent; transition: all 0.15s;
 }
 .arm-btn-auto { background: rgba(14, 203, 129, 0.2); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.45); }
 .arm-btn-manual { background: rgba(56, 189, 248, 0.22); color: var(--dual-blue); border-color: rgba(56, 189, 248, 0.5); }
 .arm-btn-off { background: rgba(118, 131, 150, 0.14); color: var(--text-dim); border-color: var(--border); }
 .arm-btn-off:hover { background: rgba(14, 203, 129, 0.15); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.4); }
-.arm-btn-sell-off { background: rgba(246, 70, 93, 0.12); color: var(--neon-red); border-color: rgba(246, 70, 93, 0.35); }
-.arm-btn-sell-off:hover { background: rgba(246, 70, 93, 0.25); }
+
+/* REAL vs TEST ACTION BUTTONS */
+.btn-real-buy { background: rgba(14, 203, 129, 0.18); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.45); }
+.btn-real-buy:hover { background: rgba(14, 203, 129, 0.35); color: #fff; }
+.btn-real-sell { background: rgba(246, 70, 93, 0.18); color: var(--neon-red); border-color: rgba(246, 70, 93, 0.45); }
+.btn-real-sell:hover { background: rgba(246, 70, 93, 0.35); color: #fff; }
+.btn-test-mode { background: rgba(56, 189, 248, 0.16); color: var(--dual-blue); border-color: rgba(56, 189, 248, 0.45); }
+.btn-test-mode:hover { background: rgba(56, 189, 248, 0.32); color: #fff; }
+
 .arm-btn-wait { background: rgba(247, 166, 0, 0.22); color: var(--bybit-gold); border-color: rgba(247, 166, 0, 0.5); }
 .arm-btn-confirmed { background: rgba(14, 203, 129, 0.28); color: #fff; border-color: var(--neon-green); box-shadow: 0 0 8px rgba(14, 203, 129, 0.35); }
+.arm-btn-confirmed-test { background: rgba(56, 189, 248, 0.28); color: #fff; border-color: var(--dual-blue); box-shadow: 0 0 8px rgba(56, 189, 248, 0.35); }
 
 /* WHALE PANEL STYLING */
 .whale-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); border-top: 3px solid var(--dual-blue); padding: 14px; display: flex; flex-direction: column; gap: 14px; }
@@ -81,6 +89,9 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 .whale-col-sell { background: var(--bg-panel); border: 1px solid rgba(246, 70, 93, 0.28); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .chance-pill-buy { background: rgba(14, 203, 129, 0.18); color: var(--neon-green); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; display: inline-block; }
 .chance-pill-sell { background: rgba(246, 70, 93, 0.18); color: var(--neon-red); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; display: inline-block; }
+
+/* VIRTUAL TEST MONITOR BOX */
+.virtual-monitor-box { background: rgba(18, 28, 38, 0.75); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 
 .ledger-block { display: flex; flex-direction: column; gap: 6px; }
 .ledger-header-text { font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; }
@@ -103,7 +114,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
     </div>
     <div class="system-stats">
       <div class="stat-pill">SOLO: <b>$0.50 (20x)</b></div>
-      <div class="stat-pill">WHALE: <b>$1.00 (6x | ±10%)</b></div>
+      <div class="stat-pill">WHALE: <b>$1.00 (6x | ±5%)</b></div>
       <div class="stat-pill">BYBIT OFFSET: <b id="bb-drift">0.0ms</b></div>
       <div class="stat-pill">BINANCE OFFSET: <b id="bn-drift">0.0ms</b></div>
       <div class="stat-pill">IST TIME: <b id="clock-ist">--:--:--</b></div>
@@ -111,7 +122,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
   </div>
 
   <!-- STRATEGY 1: BYBIT & BINANCE FUNDING CAPTURE -->
-  <div class="strategy-title-strip">⚡ Strategy 1: Funding Capture ($0.5 Margin | T-1s Mkt Buy | SL -200% Fund | TP +0.10% Sell Lim | 10m Hard Exit)</div>
+  <div class="strategy-title-strip">⚡ Strategy 1: Funding Capture ($0.5 Margin | Bybit T-1s / Binance T+150ms Mkt Buy | SL -200% Fund | TP +0.10% | 10m Exit)</div>
   <div class="two-col-grid">
     
     <!-- BYBIT SOLO -->
@@ -125,7 +136,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="bybit-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">SL / TP Target</div><div class="metric-mini-val" style="color:var(--neon-green);">-200% Fund / +0.10%</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Entry / SL / TP</div><div class="metric-mini-val" style="color:var(--neon-green);">T-1s | -200% | +0.10%</div></div>
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">10 Minutes</div></div>
       </div>
 
@@ -171,7 +182,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
       <div class="metrics-row">
         <div class="metric-mini"><div class="metric-mini-label">Next Armed Settle</div><div class="metric-mini-val" id="binance-settle-val" style="color:var(--dual-blue);">--:--:--</div></div>
-        <div class="metric-mini"><div class="metric-mini-label">SL / TP Target</div><div class="metric-mini-val" style="color:var(--neon-green);">-200% Fund / +0.10%</div></div>
+        <div class="metric-mini"><div class="metric-mini-label">Entry / SL / TP</div><div class="metric-mini-val" style="color:var(--neon-green);">T+150ms | -200% | +0.10%</div></div>
         <div class="metric-mini"><div class="metric-mini-label">Hard Exit</div><div class="metric-mini-val" style="color:var(--neon-red);">10 Minutes</div></div>
       </div>
 
@@ -208,8 +219,8 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
   </div>
 
-  <!-- STRATEGY 2: SEPARATE BYBIT & BINANCE WHALE TOP 10 SCANNERS -->
-  <div class="strategy-title-strip">🐋 Strategy 2: Whale Money Flow Scanner (5s Live Fetch | 2m Lock Window | Top 10 Only | $1 Margin 6x ±10%)</div>
+  <!-- STRATEGY 2: SEPARATE BYBIT & BINANCE WHALE TOP 10 SCANNERS (REAL & VIRTUAL TEST MODES) -->
+  <div class="strategy-title-strip">🐋 Strategy 2: Whale Money Flow Scanner ($1 Margin | 6x Lev | ±5% SL &amp; TP | Real Account &amp; Live Virtual Test)</div>
   <div class="whale-panel">
     <div class="panel-header">
       <div class="panel-name">
@@ -218,17 +229,43 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
       <div class="badge badge-armed" id="whale-status-badge">5S LIVE SCANNING</div>
     </div>
 
+    <!-- LIVE VIRTUAL TEST TRADES MONITOR -->
+    <div class="virtual-monitor-box">
+      <div class="watchlist-title">
+        <span style="color:var(--dual-blue);">🧪 LIVE VIRTUAL TEST TRADING MONITOR (100% REAL MARKET FEED | ±5% SL/TP)</span>
+        <span style="font-size:9px; color:var(--text-dim);">Simulates $1.0 Margin @ 6x ($6.0 Size) on live ticks</span>
+      </div>
+      <div class="watchlist-table-wrap" style="max-height: 220px;">
+        <table class="watchlist-table">
+          <thead>
+            <tr>
+              <th>Coin / Side</th>
+              <th>Entry Time &amp; Price</th>
+              <th>Live Market Price</th>
+              <th>SL (5%) / TP (5%)</th>
+              <th>Live Profit / Loss</th>
+              <th>Exit Time / Status</th>
+              <th style="text-align:right;">Control</th>
+            </tr>
+          </thead>
+          <tbody id="whale-test-trades-body">
+            <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:10px;">Click "TEST" on any Whale signal below to start a live virtual paper trade...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- SECTION A: BYBIT TOP 10 WHALE LISTS -->
     <div class="whale-ex-box" style="border-left: 3px solid var(--bybit-gold);">
       <div class="whale-ex-header">
         <span><span style="color:var(--bybit-gold);">●</span> BYBIT WHALE SIGNALS (TOP 10 ONLY)</span>
-        <span style="font-size:10px; color:var(--text-dim);">Updates every 5s | Auto-removes after 2m if untracked</span>
+        <span style="font-size:10px; color:var(--text-dim);">Choose REAL (Account) or TEST (Live Virtual)</span>
       </div>
       <div class="two-col-grid">
         <div class="whale-col-buy">
           <div class="watchlist-title">
             <span style="color:var(--neon-green);">🟢 BYBIT WHALE BUY (TOP 10)</span>
-            <span style="font-size:9px; color:var(--text-dim);">SL -10% | TP +10%</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL -5% | TP +5%</span>
           </div>
           <div class="watchlist-table-wrap">
             <table class="watchlist-table">
@@ -237,7 +274,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
                   <th># / Coin</th>
                   <th>Paisa Badha / Ghata (5s)</th>
                   <th>Bhagne Ka Chance</th>
-                  <th style="text-align:right;">Manual Arm</th>
+                  <th style="text-align:right;">Arm Mode</th>
                 </tr>
               </thead>
               <tbody id="bybit-whale-buy-body">
@@ -250,7 +287,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
         <div class="whale-col-sell">
           <div class="watchlist-title">
             <span style="color:var(--neon-red);">🔴 BYBIT WHALE SELL (TOP 10)</span>
-            <span style="font-size:9px; color:var(--text-dim);">SL +10% | TP -10%</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL +5% | TP -5%</span>
           </div>
           <div class="watchlist-table-wrap">
             <table class="watchlist-table">
@@ -259,7 +296,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
                   <th># / Coin</th>
                   <th>Paisa Badha / Ghata (5s)</th>
                   <th>Girne Ka Chance</th>
-                  <th style="text-align:right;">Manual Arm</th>
+                  <th style="text-align:right;">Arm Mode</th>
                 </tr>
               </thead>
               <tbody id="bybit-whale-sell-body">
@@ -275,13 +312,13 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
     <div class="whale-ex-box" style="border-left: 3px solid var(--binance-yellow);">
       <div class="whale-ex-header">
         <span><span style="color:var(--binance-yellow);">●</span> BINANCE WHALE SIGNALS (TOP 10 ONLY)</span>
-        <span style="font-size:10px; color:var(--text-dim);">Updates every 5s | Auto-removes after 2m if untracked</span>
+        <span style="font-size:10px; color:var(--text-dim);">Choose REAL (Account) or TEST (Live Virtual)</span>
       </div>
       <div class="two-col-grid">
         <div class="whale-col-buy">
           <div class="watchlist-title">
             <span style="color:var(--neon-green);">🟢 BINANCE WHALE BUY (TOP 10)</span>
-            <span style="font-size:9px; color:var(--text-dim);">SL -10% | TP +10%</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL -5% | TP +5%</span>
           </div>
           <div class="watchlist-table-wrap">
             <table class="watchlist-table">
@@ -290,7 +327,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
                   <th># / Coin</th>
                   <th>Paisa Badha / Ghata (5s)</th>
                   <th>Bhagne Ka Chance</th>
-                  <th style="text-align:right;">Manual Arm</th>
+                  <th style="text-align:right;">Arm Mode</th>
                 </tr>
               </thead>
               <tbody id="binance-whale-buy-body">
@@ -303,7 +340,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
         <div class="whale-col-sell">
           <div class="watchlist-title">
             <span style="color:var(--neon-red);">🔴 BINANCE WHALE SELL (TOP 10)</span>
-            <span style="font-size:9px; color:var(--text-dim);">SL +10% | TP -10%</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL +5% | TP -5%</span>
           </div>
           <div class="watchlist-table-wrap">
             <table class="watchlist-table">
@@ -312,7 +349,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
                   <th># / Coin</th>
                   <th>Paisa Badha / Ghata (5s)</th>
                   <th>Girne Ka Chance</th>
-                  <th style="text-align:right;">Manual Arm</th>
+                  <th style="text-align:right;">Arm Mode</th>
                 </tr>
               </thead>
               <tbody id="binance-whale-sell-body">
@@ -325,9 +362,9 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
     </div>
 
     <div class="ledger-block">
-      <div class="ledger-header-text">📋 Whale Execution Ledger ($1.0 Margin | 6x | Confirmation Tick ✓)</div>
+      <div class="ledger-header-text">📋 Whale Execution Ledger (Real &amp; Test History | $1.0 Margin | 6x | ±5%)</div>
       <div class="ledger-scroll" id="whale-ledger-box">
-        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Click ARM on any Bybit or Binance Whale signal above to trade with 1-tick confirmation...</div>
+        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Click REAL or TEST on any Whale signal above...</div>
       </div>
     </div>
   </div>
@@ -379,10 +416,21 @@ async function toggleCoinArm(exchange, symbol, btnEl) {
   }
 }
 
-async function armWhaleSignal(exchange, symbol, side, price, btnEl) {
+async function armWhaleSignal(exchange, symbol, side, price, mode, btnEl) {
   if (btnEl) btnEl.style.opacity = '0.5';
   try {
-    await fetch(`/api/arm_whale?exchange=${encodeURIComponent(exchange)}&symbol=${encodeURIComponent(symbol)}&side=${encodeURIComponent(side)}&price=${price}`);
+    await fetch(`/api/arm_whale?exchange=${encodeURIComponent(exchange)}&symbol=${encodeURIComponent(symbol)}&side=${encodeURIComponent(side)}&mode=${encodeURIComponent(mode)}&price=${price}`);
+    await fetchTelemetry(true);
+  } catch(e) {}
+  finally {
+    if (btnEl) btnEl.style.opacity = '1';
+  }
+}
+
+async function closeTestTrade(testId, btnEl) {
+  if (btnEl) btnEl.style.opacity = '0.5';
+  try {
+    await fetch(`/api/close_test_whale?id=${encodeURIComponent(testId)}`);
     await fetchTelemetry(true);
   } catch(e) {}
   finally {
@@ -430,9 +478,10 @@ async function fetchTelemetry(force = false) {
       renderTop20Table('binance', 'binance-top20-body', data.binance.top20 || []);
     }
 
-    // 3. Separate Bybit & Binance Whale Top 10 Lists
+    // 3. Separate Bybit & Binance Whale Top 10 Lists + Virtual Test Trades
     if (data.whale) {
       document.getElementById('whale-status-badge').innerText = data.whale.status || '5S LIVE SCANNING';
+      renderTestTradesTable('whale-test-trades-body', data.whale.test_trades || []);
       renderWhaleTable('bybit-whale-buy-body', data.whale.bybit_buy || [], 'BUY');
       renderWhaleTable('bybit-whale-sell-body', data.whale.bybit_sell || [], 'SELL');
       renderWhaleTable('binance-whale-buy-body', data.whale.binance_buy || [], 'BUY');
@@ -456,7 +505,7 @@ async function fetchTelemetry(force = false) {
   } catch(e) {
   } finally {
     isFetching = false;
-    if (!force) setTimeout(fetchTelemetry, 1200);
+    if (!force) setTimeout(fetchTelemetry, 1000);
   }
 }
 
@@ -509,6 +558,52 @@ function renderTop20Table(exchange, tbodyId, top20List) {
   }).join('');
 }
 
+function renderTestTradesTable(tbodyId, testTrades) {
+  const tbody = document.getElementById(tbodyId);
+  if (!testTrades || testTrades.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:10px;">Click "TEST" on any Whale signal below to start a live virtual paper trade...</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = testTrades.map(t => {
+    const isProfit = t.pnl_usd >= 0;
+    const pnlColor = isProfit ? 'var(--neon-green)' : 'var(--neon-red)';
+    const sign = isProfit ? '+' : '';
+    const sideColor = t.side === 'BUY' ? 'var(--neon-green)' : 'var(--neon-red)';
+    const isLive = t.status === 'LIVE';
+
+    return `
+      <tr class="${isLive ? 'row-armed' : ''}">
+        <td>
+          <span style="font-weight:800; color:var(--text-main);">${t.symbol}</span>
+          <span class="cycle-tag" style="color:${sideColor};">${t.exchange} ${t.side}</span>
+        </td>
+        <td>
+          <div style="font-weight:700; color:var(--text-main);">@ ${t.entry_price}</div>
+          <div style="font-size:9px; color:var(--text-dim);">${t.entry_time}</div>
+        </td>
+        <td style="font-weight:800; color:var(--dual-blue);">${t.live_price}</td>
+        <td style="font-size:10px;">
+          <span style="color:var(--neon-red);">SL: ${t.sl_price}</span><br>
+          <span style="color:var(--neon-green);">TP: ${t.tp_price}</span>
+        </td>
+        <td>
+          <div style="font-weight:800; font-size:12px; color:${pnlColor};">${sign}$${t.pnl_usd.toFixed(3)}</div>
+          <div style="font-size:9px; color:${pnlColor};">Move: ${sign}${t.price_pct}% (${sign}${t.roi_pct}% ROI)</div>
+        </td>
+        <td>
+          <span class="badge ${isLive ? 'badge-armed' : (isProfit ? 'status-success' : 'status-warn')}">${t.outcome}</span>
+          <div style="font-size:9px; color:var(--text-dim); margin-top:2px;">Exit: ${t.exit_time}</div>
+        </td>
+        <td style="text-align:right;">
+          ${isLive
+            ? `<button class="arm-btn btn-real-sell" onclick="closeTestTrade('${t.id}', this)">CLOSE</button>`
+            : `<span style="font-size:9px; color:var(--text-dim);">DONE</span>`}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
 function renderWhaleTable(tbodyId, signals, side) {
   const tbody = document.getElementById(tbodyId);
   if (!signals || signals.length === 0) {
@@ -527,15 +622,20 @@ function renderWhaleTable(tbodyId, signals, side) {
     const moveSign = s.price_move_pct >= 0 ? '+' : '';
     const resurgeHtml = s.is_resurge ? `<span class="resurge-tag">🔥 RE-SURGE</span>` : '';
 
-    let btnClass = side === 'BUY' ? 'arm-btn-off' : 'arm-btn-sell-off';
-    let btnText = `ARM ${side}`;
-
+    let actionHtml = '';
     if (s.arm_state === 'WAITING_CONFIRM') {
-      btnClass = 'arm-btn-wait';
-      btnText = '⏳ CONFIRM...';
+      actionHtml = `<button class="arm-btn arm-btn-wait" onclick="armWhaleSignal('${s.exchange}', '${s.symbol}', '${side}', ${s.price}, '${s.arm_mode_type || 'REAL'}', this)">⏳ ${s.arm_mode_type}...</button>`;
     } else if (s.arm_state === 'CONFIRMED' || s.arm_state === 'EXECUTED' || s.confirmed) {
-      btnClass = 'arm-btn-confirmed';
-      btnText = '✓ CONFIRMED';
+      const confClass = s.arm_mode_type === 'TEST' ? 'arm-btn-confirmed-test' : 'arm-btn-confirmed';
+      actionHtml = `<button class="arm-btn ${confClass}" onclick="armWhaleSignal('${s.exchange}', '${s.symbol}', '${side}', ${s.price}, '${s.arm_mode_type || 'REAL'}', this)">✓ ${s.arm_mode_type}</button>`;
+    } else {
+      const realBtnClass = side === 'BUY' ? 'btn-real-buy' : 'btn-real-sell';
+      actionHtml = `
+        <div style="display:flex; gap:4px; justify-content:flex-end;">
+          <button class="arm-btn ${realBtnClass}" onclick="armWhaleSignal('${s.exchange}', '${s.symbol}', '${side}', ${s.price}, 'REAL', this)">REAL</button>
+          <button class="arm-btn btn-test-mode" onclick="armWhaleSignal('${s.exchange}', '${s.symbol}', '${side}', ${s.price}, 'TEST', this)">TEST</button>
+        </div>
+      `;
     }
 
     return `
@@ -559,7 +659,7 @@ function renderWhaleTable(tbodyId, signals, side) {
           <div style="font-size:9px; color:var(--text-dim); margin-top:2px;">Vol: ${s.spike_mult}x</div>
         </td>
         <td style="text-align:right;">
-          <button class="arm-btn ${btnClass}" onclick="armWhaleSignal('${s.exchange}', '${s.symbol}', '${side}', ${s.price}, this)">${btnText}</button>
+          ${actionHtml}
         </td>
       </tr>
     `;
