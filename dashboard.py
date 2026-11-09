@@ -15,48 +15,73 @@ trade_history_strat2: list[dict] = []
 
 BLOCKED_COINS_FILE = Path(__file__).resolve().parent / "blocked_coins.json"
 
+
 def load_blocked_coins() -> dict[str, list[str]]:
+    """Disk se blocked_coins.json load karta hai (Persistent across server restarts)"""
     default_data = {"temporary": [], "permanent": []}
     if not BLOCKED_COINS_FILE.exists():
         try:
-            with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f: json.dump(default_data, f, indent=2)
-        except Exception: pass
+            with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f:
+                json.dump(default_data, f, indent=2)
+        except Exception:
+            pass
         return default_data
     try:
         with open(BLOCKED_COINS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if not isinstance(data, dict): data = default_data
-            if "temporary" not in data or not isinstance(data["temporary"], list): data["temporary"] = []
-            if "permanent" not in data or not isinstance(data["permanent"], list): data["permanent"] = []
+            if not isinstance(data, dict):
+                data = default_data
+            if "temporary" not in data or not isinstance(data["temporary"], list):
+                data["temporary"] = []
+            if "permanent" not in data or not isinstance(data["permanent"], list):
+                data["permanent"] = []
             return data
     except Exception as e:
+        print(f"⚠️ [BLOCKED COINS LOAD ERROR]: {e}", flush=True)
         return default_data
 
+
 def save_blocked_coins(data: dict[str, list[str]]) -> bool:
+    """Disk par blocked_coins.json atomically save karta hai"""
     try:
-        with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, indent=2)
+        with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
         return True
     except Exception as e:
+        print(f"⚠️ [BLOCKED COINS SAVE ERROR]: {e}", flush=True)
         return False
+
 
 def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
     symbol = symbol.strip().upper()
-    if not symbol: return False, "Invalid symbol"
-    if block_type not in ("temporary", "permanent"): return False, "Invalid block type"
+    if not symbol:
+        return False, "Invalid symbol"
+    if block_type not in ("temporary", "permanent"):
+        return False, "Invalid block type"
+
     with data_lock:
         data = load_blocked_coins()
         if block_type == "temporary":
-            if symbol in data["permanent"]: data["permanent"].remove(symbol)
-            if symbol not in data["temporary"]: data["temporary"].append(symbol)
-        else:
-            if symbol in data["temporary"]: data["temporary"].remove(symbol)
-            if symbol not in data["permanent"]: data["permanent"].append(symbol)
+            if symbol in data["permanent"]:
+                data["permanent"].remove(symbol)
+            if symbol not in data["temporary"]:
+                data["temporary"].append(symbol)
+        else:  # permanent
+            if symbol in data["temporary"]:
+                data["temporary"].remove(symbol)
+            if symbol not in data["permanent"]:
+                data["permanent"].append(symbol)
+
         save_blocked_coins(data)
         dashboard_data["blocked_coins"] = data
         dashboard_data["force_rescan"] = True
-        if dashboard_data.get("manual_selected_symbol") == symbol: dashboard_data["manual_selected_symbol"] = ""
+
+        if dashboard_data.get("manual_selected_symbol") == symbol:
+            dashboard_data["manual_selected_symbol"] = ""
+
     add_ui_log(f"🚫 [COIN BLOCKED] {symbol} moved to {block_type.upper()} block list.")
     return True, f"{symbol} added to {block_type} block list"
+
 
 def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
     symbol = symbol.strip().upper()
@@ -73,6 +98,7 @@ def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
             if symbol in data.get("permanent", []):
                 data["permanent"].remove(symbol)
                 removed = True
+
         if removed:
             save_blocked_coins(data)
             dashboard_data["blocked_coins"] = data
@@ -80,6 +106,7 @@ def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
             add_ui_log(f"✅ [COIN UNBLOCKED] {symbol} removed from block list.")
             return True, f"{symbol} unblocked successfully"
         return False, f"{symbol} not found in block list"
+
 
 dashboard_data = {
     "target_symbol": "Scanning...",
@@ -99,16 +126,28 @@ dashboard_data = {
     "force_rescan": False,
     "top_5_candidates": [],
     "blocked_coins": load_blocked_coins(),
-    "binance": {}
+    "binance": {
+        "offset": 0.0,
+        "status": "SCANNING (Top 20 Live)",
+        "symbols": "Scanning...",
+        "rates": "--",
+        "settlement": "--",
+        "manual_armed": [],
+        "manual_disarmed": [],
+        "top20": []
+    }
 }
+
 
 def add_ui_log(message: str) -> None:
     timestamp = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
     print(f"[{timestamp}] {message}", flush=True)
 
+
 def set_dashboard_status(status_msg: str) -> None:
     with data_lock:
         dashboard_data["status"] = status_msg
+
 
 def record_completed_trade(trade_record: dict) -> None:
     with data_lock:
@@ -124,88 +163,157 @@ def record_completed_trade(trade_record: dict) -> None:
                 trade_history_strat1.pop()
             dashboard_data["trades"] = list(trade_history_strat1)
 
+
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
+
     def do_HEAD(self) -> None:
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
+
     def do_POST(self) -> None:
         content_len = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else ""
+
         if self.path == "/api/toggle-trading":
             with data_lock:
                 dashboard_data["trading_enabled"] = not dashboard_data["trading_enabled"]
                 current_state = dashboard_data["trading_enabled"]
-                if current_state: dashboard_data["force_rescan"] = True
-            add_ui_log(f"🔘 [TRADING TOGGLED] Master Switch is now {'ON' if current_state else 'OFF'}")
+                if current_state:
+                    dashboard_data["force_rescan"] = True
+            add_ui_log(f"🔘 [TRADING TOGGLED] Master Switch is now {'ON (Instant Scan Triggered)' if current_state else 'OFF'}")
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "trading_enabled": current_state}).encode("utf-8"))
             return
+
         elif self.path == "/api/reset-auto":
             try:
                 with data_lock:
                     if dashboard_data["selection_locked"]:
-                        self.send_response(403); self.end_headers()
-                        self.wfile.write(json.dumps({"success": False, "message": "Locked"}).encode("utf-8"))
+                        self.send_response(403)
+                        self.send_header("Content-type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
                         return
+
                     dashboard_data["manual_selected_symbol"] = ""
                     dashboard_data["force_rescan"] = True
-                self.send_response(200); self.send_header("Content-type", "application/json"); self.end_headers()
+
+                add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Resetting manual target...")
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
                 self.wfile.write(json.dumps({"success": True, "mode": "AUTOMATIC"}).encode("utf-8"))
                 return
             except Exception as e:
-                self.send_response(400); self.end_headers(); self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8")); return
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                return
+
         elif self.path == "/api/select-coin":
             try:
                 payload = json.loads(body)
                 selected_sym = payload.get("symbol", "").strip().upper()
                 with data_lock:
                     if dashboard_data["selection_locked"]:
-                        self.send_response(403); self.end_headers(); self.wfile.write(json.dumps({"success": False}).encode("utf-8")); return
+                        self.send_response(403)
+                        self.send_header("Content-type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
+                        return
+
                     blocked = load_blocked_coins()
                     if selected_sym in blocked.get("temporary", []) or selected_sym in blocked.get("permanent", []):
-                        self.send_response(400); self.end_headers(); self.wfile.write(json.dumps({"success": False, "message": "Blocked!"}).encode("utf-8")); return
+                        self.send_response(400)
+                        self.send_header("Content-type", "application/json")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "message": f"{selected_sym} is BLOCKED! Unblock it first to trade."}).encode("utf-8"))
+                        return
+
                     if dashboard_data.get("manual_selected_symbol") == selected_sym:
                         dashboard_data["manual_selected_symbol"] = ""
+                        action_msg = f"Deselected {selected_sym}. Reverting to AUTOMATIC mode."
                     else:
                         dashboard_data["manual_selected_symbol"] = selected_sym
+                        action_msg = f"Switched to MANUAL mode ({selected_sym})."
+
                     dashboard_data["force_rescan"] = True
-                self.send_response(200); self.send_header("Content-type", "application/json"); self.end_headers()
-                self.wfile.write(json.dumps({"success": True}).encode("utf-8")); return
+
+                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg} Triggering instant real-time market audit...")
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "selected": dashboard_data["manual_selected_symbol"]}).encode("utf-8"))
+                return
             except Exception as e:
-                self.send_response(400); self.end_headers(); self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8")); return
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                return
+
         elif self.path == "/api/block-coin":
             try:
                 payload = json.loads(body)
-                ok, msg = block_coin(payload.get("symbol", ""), payload.get("type", "temporary"))
-                self.send_response(200 if ok else 400); self.send_header("Content-type", "application/json"); self.end_headers()
-                self.wfile.write(json.dumps({"success": ok, "message": msg, "blocked_coins": load_blocked_coins()}).encode("utf-8")); return
+                sym = payload.get("symbol", "").strip().upper()
+                b_type = payload.get("type", "temporary").strip().lower()
+                ok, msg = block_coin(sym, b_type)
+                self.send_response(200 if ok else 400)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": ok, "message": msg, "blocked_coins": load_blocked_coins()}).encode("utf-8"))
+                return
             except Exception as e:
-                self.send_response(400); self.end_headers(); self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8")); return
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                return
+
         elif self.path == "/api/unblock-coin":
             try:
                 payload = json.loads(body)
-                ok, msg = unblock_coin(payload.get("symbol", ""), payload.get("type", ""))
-                self.send_response(200 if ok else 400); self.send_header("Content-type", "application/json"); self.end_headers()
-                self.wfile.write(json.dumps({"success": ok, "message": msg, "blocked_coins": load_blocked_coins()}).encode("utf-8")); return
+                sym = payload.get("symbol", "").strip().upper()
+                b_type = payload.get("type", "").strip().lower()
+                ok, msg = unblock_coin(sym, b_type)
+                self.send_response(200 if ok else 400)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": ok, "message": msg, "blocked_coins": load_blocked_coins()}).encode("utf-8"))
+                return
             except Exception as e:
-                self.send_response(400); self.end_headers(); self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8")); return
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                return
 
     def do_GET(self) -> None:
         if self.path == "/api/status":
-            self.send_response(200); self.send_header("Content-type", "application/json"); self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
             with data_lock:
                 dashboard_data["blocked_coins"] = load_blocked_coins()
                 payload = json.dumps(dashboard_data).encode("utf-8")
             self.wfile.write(payload)
             return
-        self.send_response(200); self.send_header("Content-type", "text/html; charset=utf-8"); self.end_headers()
-        self.wfile.write(get_dashboard_html().encode("utf-8"))
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        html_content = get_dashboard_html()
+        self.wfile.write(html_content.encode("utf-8"))
+
 
 def run_web_server() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", config.DASHBOARD_PORT), FundingDashboardHandler)
