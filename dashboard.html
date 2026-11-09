@@ -14,8 +14,8 @@
             --accent-yellow: #fcd535;
             --green: #0ecb81;
             --red: #f6465d;
-            --blue: #3861fb;
             --orange: #f0b90b;
+            --blue: #3861fb;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 12px; font-size: 0.85rem; }
@@ -31,6 +31,8 @@
 
         .sub-section-title { font-size: 0.85rem; color: var(--orange); margin: 10px 0 6px 0; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
         
+        .armed-box { background: rgba(252, 213, 53, 0.08); border: 1px solid var(--accent-yellow); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; }
+        
         .radar-table, .ledger-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 10px; }
         .radar-table th, .radar-table td, .ledger-table th, .ledger-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--card-border); }
         .radar-table th, .ledger-table th { background-color: rgba(255,255,255,0.03); color: var(--text-muted); font-weight: 600; }
@@ -38,15 +40,16 @@
 
         .tag-success { background: rgba(14, 203, 129, 0.2); color: var(--green); padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: 600; }
         .tag-warn { background: rgba(246, 70, 93, 0.2); color: var(--red); padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: 600; }
-        .tag-neutral { background: rgba(132, 142, 156, 0.2); color: var(--text-muted); padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; }
 
-        .btn-action { background: var(--accent-yellow); color: #000; border: none; padding: 2px 6px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.7rem; }
-        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 2px 6px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.7rem; }
+        .btn-action { background: var(--green); color: #000; border: none; padding: 3px 8px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
+        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
 
-        .ledger-card { background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 6px; padding: 8px; margin-bottom: 8px; font-size: 0.78rem; }
-        .ledger-header { display: flex; justify-content: space-between; color: var(--accent-yellow); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 4px; margin-bottom: 4px; }
-        .dca-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px; margin-top: 6px; }
-        .dca-box { background: rgba(255,255,255,0.02); border: 1px solid var(--card-border); border-radius: 4px; padding: 6px; font-size: 0.72rem; }
+        /* Photo 3 Precision Ledger Card Styling */
+        .ledger-card { background: rgba(0,0,0,0.4); border: 1px solid var(--card-border); border-radius: 6px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
+        .ledger-header { display: flex; justify-content: space-between; color: var(--accent-yellow); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
+        .shallow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
+        .shallow-box { background: rgba(56, 97, 251, 0.1); border: 1px solid var(--blue); border-radius: 4px; padding: 6px; font-size: 0.72rem; }
+        .shallow-box.cancelled { border-color: var(--red); background: rgba(246, 70, 93, 0.1); }
         
         .empty-state { text-align: center; color: var(--text-muted); padding: 15px; font-style: italic; }
     </style>
@@ -63,19 +66,20 @@
         <div class="strategy-header">
             <div class="strategy-title">
                 <span>STRATEGY 1: TOKYO EXTREME SNIPER (T-100ms Limit Burst)</span>
-                <span id="s1-target-pill" style="font-size: 0.75rem; color: var(--green);">Target: Scanning...</span>
             </div>
             <div class="strategy-features">
                 Features: Tokyo Fast-Lane WebSocket | Single-Shot Limit Burst | 3 Shallow Limits (30/50/70%) | DCA Grid Layers | Dynamic SL & Fast Shallow Cancel Burst.
             </div>
         </div>
 
-        <!-- Armed Coins Bar -->
-        <div class="sub-section-title"><span>Armed Coins & Status</span></div>
-        <div id="s1-armed-bar" style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">No active sniper target locked yet.</div>
+        <!-- Armed Coins Box on Top -->
+        <div class="armed-box">
+            <span>🛡️ <strong>Armed Sniper Target:</strong> <span id="s1-armed-display" style="color:var(--accent-yellow);">Scanning...</span></span>
+            <span id="s1-armed-count" style="background:var(--card-bg); padding:2px 6px; border-radius:4px; font-size:0.75rem;">Active: 0</span>
+        </div>
 
         <!-- Top 20 Radar Table -->
-        <div class="sub-section-title"><span>Top 20 Funding Radar (Click Arm/Disarm)</span></div>
+        <div class="sub-section-title"><span>Top 20 Funding Radar (Click Arm / Disarm)</span></div>
         <div style="max-height: 200px; overflow-y: auto;">
             <table class="radar-table">
                 <thead>
@@ -93,7 +97,7 @@
             </table>
         </div>
 
-        <!-- Execution Ledger (Photo 1 Style) -->
+        <!-- Execution Ledger (Photo 3 Card Style) -->
         <div class="sub-section-title"><span>Strategy 1: Last 20 Trades Precision Ledger</span></div>
         <div id="s1-ledger-container">
             <div class="empty-state">Waiting for Strategy 1 precision execution...</div>
@@ -106,19 +110,20 @@
         <div class="strategy-header">
             <div class="strategy-title">
                 <span>STRATEGY 2: AUTO TOP-3 QUANT ARBITRAGE (T+220ms Market Entry | -0.25% Threshold)</span>
-                <span id="s2-status-pill" style="font-size: 0.75rem; color: var(--accent-yellow);">Status: Scanning Top 20</span>
             </div>
             <div class="strategy-features">
                 Features: $0.5 Margin ($10 Notional @ 20x) | T+220ms Precise Market Buy | -200% Funding Rate SL Shield | +0.10% Take Profit Limit | 10-Minute Hard Exit Timeout.
             </div>
         </div>
 
-        <!-- Armed Coins Bar -->
-        <div class="sub-section-title"><span>Strategy 2 Active Target Pool</span></div>
-        <div id="s2-armed-bar" style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">Scanning top negative funding coins...</div>
+        <!-- Armed Coins Box on Top -->
+        <div class="armed-box">
+            <span>🚀 <strong>Strategy 2 Armed Pool:</strong> <span id="s2-armed-display" style="color:var(--accent-yellow);">Scanning Top 20...</span></span>
+            <span id="s2-armed-count" style="background:var(--card-bg); padding:2px 6px; border-radius:4px; font-size:0.75rem;">Active: 0</span>
+        </div>
 
         <!-- Top 20 Radar Table -->
-        <div class="sub-section-title"><span>Top 20 Negative Funding Radar</span></div>
+        <div class="sub-section-title"><span>Top 20 Negative Funding Radar (Click Arm / Disarm)</span></div>
         <div style="max-height: 200px; overflow-y: auto;">
             <table class="radar-table">
                 <thead>
@@ -171,61 +176,91 @@
                 let res = await fetch('/api/status');
                 let data = await res.json();
 
-                // Strategy 1 Target Pill
+                // Strategy 1 Armed Header
                 if(data.target_symbol && data.target_symbol !== "Scanning...") {
-                    document.getElementById('s1-target-pill').innerText = `Target: ${data.target_symbol} (${data.funding_rate})`;
-                    document.getElementById('s1-armed-bar').innerHTML = `Locked Target: <strong style="color:var(--accent-yellow);">${data.target_symbol}</strong> | Rate: <strong style="color:var(--green);">${data.funding_rate}</strong>`;
+                    document.getElementById('s1-armed-display').innerHTML = `${data.target_symbol} (${data.funding_rate})`;
+                    document.getElementById('s1-armed-count').innerText = `Active: 1`;
+                } else {
+                    document.getElementById('s1-armed-display').innerText = `Scanning for best negative funding rate...`;
+                    document.getElementById('s1-armed-count').innerText = `Active: 0`;
                 }
 
-                // Strategy 1 Radar
+                // Strategy 1 Radar & Armed List
                 let s1RadarHtml = "";
+                let s1ArmedList = [];
                 if(data.strategy1_top20 && data.strategy1_top20.length > 0) {
                     data.strategy1_top20.forEach(c => {
+                        if(c.is_armed) s1ArmedList.push(c.symbol);
                         let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(1, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(1, '${c.symbol}', 'arm')">Arm</button>`;
                         s1RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
                     });
                 } else { s1RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
                 document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
+                if(s1ArmedList.length > 0 && (!data.target_symbol || data.target_symbol === "Scanning...")) {
+                    document.getElementById('s1-armed-display').innerText = s1ArmedList.join(", ");
+                    document.getElementById('s1-armed-count').innerText = `Active: ${s1ArmedList.length}`;
+                }
 
-                // Strategy 1 Ledger (Photo 1 Style Cards)
+                // Strategy 1 Precision Ledger (Photo 3 Card Style)
                 let s1LedgerContainer = document.getElementById('s1-ledger-container');
                 if(data.trades && data.trades.length > 0) {
                     let html = "";
                     data.trades.forEach((t, i) => {
-                        let dcaHtml = "";
+                        let shallowHtml = "";
                         if(t.dca_hits && t.dca_hits.length > 0) {
                             t.dca_hits.forEach(d => {
-                                dcaHtml += `<div class="dca-box"><strong>${d.level}</strong><br>Price: ${d.price}<br>Qty: ${d.qty}<br><span style="color:var(--green);">${d.time}</span></div>`;
+                                shallowHtml += `
+                                    <div class="shallow-box cancelled">
+                                        <strong>${d.level}</strong><br>
+                                        Price: ${d.price}<br>
+                                        Qty: ${d.qty}<br>
+                                        <span style="color:var(--red);">⚡ Cancel Fired</span><br>
+                                        <span style="color:var(--green);">${d.time}</span>
+                                    </div>
+                                `;
                             });
-                        } else { dcaHtml = `<div class="empty-state" style="padding:4px;">No limit fills recorded in this cycle.</div>`; }
+                        } else {
+                            shallowHtml = `<div class="empty-state" style="grid-column: span 3; padding:4px;">No shallow fills recorded in this cycle.</div>`;
+                        }
 
                         html += `
                             <div class="ledger-card">
                                 <div class="ledger-header">
                                     <span>#${i+1} ${t.symbol} | ${t.funding_rate}</span>
-                                    <span>${t.status}</span>
+                                    <span style="color:var(--green);">${t.status}</span>
                                 </div>
-                                <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:4px;">
-                                    <strong>Timeline:</strong> Sent: ${t.entry_sent} | Fill: ${t.entry_fill_time}<br>
-                                    <strong>Execution Summary:</strong> ${t.details}
+                                <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px; line-height:1.4;">
+                                    <strong>STRATEGY MODE:</strong> ${t.tier}<br>
+                                    <strong>ENTRY TIMELINE:</strong> Sent: ${t.entry_sent} | Ack: ${t.entry_ack} | First Fill: ${t.entry_fill_time}<br>
+                                    <strong>EXECUTION SUMMARY:</strong> Avg Entry: ${t.entry_fill_price} | Exit: ${t.exit_price} | PnL: ${t.pnl}
                                 </div>
-                                <div class="sub-section-title" style="margin:4px 0;"><span>Limit Order Fills & DCA Levels</span></div>
-                                <div class="dca-grid">${dcaHtml}</div>
+                                <div class="sub-section-title" style="margin:4px 0;"><span>LIMIT ORDER FILLS & SHALLOW CANCELS (30/50/70% FR)</span></div>
+                                <div class="shallow-grid">${shallowHtml}</div>
                             </div>
                         `;
                     });
                     s1LedgerContainer.innerHTML = html;
                 }
 
-                // Strategy 2 Radar
+                // Strategy 2 Radar & Armed Header
                 let s2RadarHtml = "";
+                let s2ArmedList = [];
                 if(data.strategy2 && data.strategy2.top20 && data.strategy2.top20.length > 0) {
                     data.strategy2.top20.forEach(c => {
+                        if(c.is_armed) s2ArmedList.push(c.symbol);
                         let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(2, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(2, '${c.symbol}', 'arm')">Arm</button>`;
                         s2RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
                     });
                 } else { s2RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
                 document.getElementById('s2-radar-body').innerHTML = s2RadarHtml;
+
+                if(s2ArmedList.length > 0) {
+                    document.getElementById('s2-armed-display').innerText = s2ArmedList.join(", ");
+                    document.getElementById('s2-armed-count').innerText = `Active: ${s2ArmedList.length}`;
+                } else {
+                    document.getElementById('s2-armed-display').innerText = `No coins armed.`;
+                    document.getElementById('s2-armed-count').innerText = `Active: 0`;
+                }
 
                 // Strategy 2 Ledger
                 let s2Body = document.getElementById('s2-ledger-body');
