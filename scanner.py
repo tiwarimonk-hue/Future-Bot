@@ -129,8 +129,10 @@ def get_synced_time_ms() -> float:
 
 
 def precision_wait_until(target_time_ms: float) -> None:
+    """Execution ke liye pure local hardware clock (NTP synced) ka use karein, REST jitter ignore karein"""
     while True:
-        now = get_synced_time_ms()
+        # BUG FIX: Yahan get_synced_time_ms() ki jagah pure hardware time use kar rahe hain
+        now = time.time() * 1000  
         diff = target_time_ms - now
         if diff <= 0:
             break
