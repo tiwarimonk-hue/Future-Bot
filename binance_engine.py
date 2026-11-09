@@ -14,7 +14,8 @@ MIN_FUNDING_RATE_THRESHOLD = -0.004   # -0.4% Auto Top 3 Threshold
 INITIAL_ENTRY_MARGIN_USD = 0.5        # $0.5 Margin
 MAX_TARGET_COINS = 3
 MAX_ALLOWED_LEVERAGE = 20
-LIMIT_SLIPPAGE_PCT = 0.001            # 0.10% slippage above live price for instant Buy Limit fill
+TP_PROFIT_PCT = 0.001                 # +0.10% above entry price
+HARD_EXIT_SECONDS = 600               # 10 Minutes hard exit
 
 binance_offset_ms = 0.0
 active_executors = set()
@@ -70,8 +71,6 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
     all_negative = []
 
     with data_lock:
-        dual_status = dashboard_data.get('dual', {}).get('status', '')
-        dual_coin_armed = dashboard_data.get('dual', {}).get('coin', '--') if "ARMED" in dual_status.upper() else "--"
         m_armed = list(dashboard_data['binance'].get('manual_armed', []))
         m_disarmed = list(dashboard_data['binance'].get('manual_disarmed', []))
 
@@ -93,7 +92,7 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
             continue
 
         time_diff = next_time_ms - now_ms
-        if time_diff <= 1000:
+        if time_diff <= 1500:
             continue
 
         cycle_str = funding_intervals_map.get(sym)
@@ -118,12 +117,11 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
-    # Auto Top 3 (<= -0.4%, active up to T-1.0s)
+    # Auto Top 3 (<= -0.4%)
     auto_eligible = [
         c for c in all_negative
         if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD
-        and c['symbol'] != dual_coin_armed
-        and (c['next_funding_time'] - now_ms) > 1000
+        and (c['next_funding_time'] - now_ms) > 1500
     ]
     auto_top3_syms = []
     if auto_eligible:
@@ -132,7 +130,7 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
         imminent.sort(key=lambda x: x['funding_rate'])
         auto_top3_syms = [c['symbol'] for c in imminent[:MAX_TARGET_COINS]]
 
-    valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0 and s != dual_coin_armed]
+    valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
     valid_m_disarmed = [s for s in m_disarmed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
 
     effective_armed = []
@@ -153,7 +151,6 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock):
 
     effective_armed.sort(key=lambda x: (x['next_funding_time'], x['funding_rate']))
 
-    # TOP 20 NEGATIVE WATCHLIST
     top20_list = []
     for c in all_negative[:20]:
         sym = c['symbol']
@@ -237,8 +234,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
     exec_key = (symbol, settle_epoch)
 
     try:
-        # Prepare parameters at T - 1000ms (500ms before T - 500ms entry)
-        precision_wait_until(settle_epoch - 1000)
+        precision_wait_until(settle_epoch - 1500)
 
         with data_lock:
             if symbol in dashboard_data['binance'].get('manual_disarmed', []):
@@ -270,13 +266,10 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         leverage = coin_plan['leverage']
         rate_str = f"{rate*100:+.4f}%"
 
-        # TIMING MATRIX (BINANCE SHORT SCALP):
-        # Market Sell Entry: T - 500ms | Buy Limit Trigger: T + 150ms | Cancel & Hard Exit: T + 950ms
-        t_entry = settle_epoch - 500
-        t_buy_trigger = settle_epoch + 150
-        t_hard_exit = settle_epoch + 950
+        t_entry = settle_epoch - 1000
+        t_hard_exit = settle_epoch + (HARD_EXIT_SECONDS * 1000)
 
-        # 1. MARKET SELL ENTRY AT T - 500ms
+        # 1. MARKET BUY ENTRY AT T - 1s
         precision_wait_until(t_entry)
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
         entry_success = False
@@ -285,7 +278,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         filled_qty_float = float(qty)
 
         try:
-            entry_resp = client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=qty)
+            entry_resp = client.new_order(symbol=symbol, side="BUY", type="MARKET", quantity=qty)
             entry_success = True
             if float(entry_resp.get("avgPrice", 0)) > 0:
                 actual_entry_price = float(entry_resp["avgPrice"])
@@ -295,23 +288,21 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
             entry_err = str(e)
 
         if not entry_success:
-            add_ui_log(f"❌ [Binance] [{symbol}] Market Sell Entry Failed: {entry_err}")
+            add_ui_log(f"❌ [Binance] [{symbol}] Market Entry Failed: {entry_err}")
             add_ledger_entry({
-                "exchange": "Binance", "coin": f"{symbol} [SHORT {arm_mode}]", "rate": rate_str,
+                "exchange": "Binance", "coin": f"{symbol} [{arm_mode}]", "rate": rate_str,
                 "entry_time": entry_time_str, "exit_time": "--",
-                "detail": f"Margin: $0.5 | Qty: {qty} ({leverage}x) | Short Entry Failed: {entry_err}",
+                "detail": f"Margin: $0.5 | Qty: {qty} ({leverage}x) | Entry Failed: {entry_err}",
                 "badge_text": "ENTRY FAILED", "badge_class": "status-warn"
             })
             return
 
-        # Verify actual short position entry price & size if needed
         if actual_entry_price == live_price:
             try:
                 positions = client.get_position_risk(symbol=symbol)
                 for p in positions:
-                    pos_amt = float(p.get("positionAmt", 0))
-                    if pos_amt < 0:
-                        filled_qty_float = abs(pos_amt)
+                    if float(p.get("positionAmt", 0)) > 0:
+                        filled_qty_float = float(p["positionAmt"])
                         if float(p.get("entryPrice", 0)) > 0:
                             actual_entry_price = float(p["entryPrice"])
                         break
@@ -320,142 +311,121 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
         filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
         entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
-        add_ui_log(f"🚀 [Binance] [{symbol}] MKT SELL (SHORT) FILLED @ {entry_price_str} | Waiting for T+150ms...")
 
-        # 2. WAIT FOR T + 150ms, FETCH LIVE PRICE & SEND +0.10% BUY LIMIT
-        precision_wait_until(t_buy_trigger)
-        try:
-            cur_p = float(client.ticker_price(symbol=symbol)["price"])
-        except Exception:
-            cur_p = actual_entry_price
-
-        raw_drop_pct = ((actual_entry_price - cur_p) / actual_entry_price * 100.0) if actual_entry_price > 0 else 0.0
-        cur_p_str = f"{cur_p:.{price_decimals}f}"
-
-        # 0.10% above live market price at T+150ms so Buy Limit fills immediately
-        raw_buy_limit = cur_p * (1.0 + LIMIT_SLIPPAGE_PCT)
-        buy_limit_price = round(math.ceil(raw_buy_limit / tick_size) * tick_size, price_decimals)
-        limit_price_str = f"{buy_limit_price:.{price_decimals}f}"
-
-        limit_fire_ms = round(get_synced_time_ms() - settle_epoch, 1)
-        limit_fire_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-        t_limit_sent_local = time.time() * 1000
-        limit_order_id = None
-        limit_filled = False
-        fill_duration_ms = None
-        exit_time_str = "--"
+        # 2. PLACE STOP LOSS AT 200% OF FUNDING RATE BELOW ENTRY
+        sl_discount = 2.0 * abs(rate)
+        raw_sl_price = actual_entry_price * (1.0 - sl_discount)
+        sl_price = max(tick_size, round(math.floor(raw_sl_price / tick_size) * tick_size, price_decimals))
+        sl_price_str = f"{sl_price:.{price_decimals}f}"
 
         try:
-            lim_resp = client.new_order(
-                symbol=symbol, side="BUY", type="LIMIT",
-                quantity=filled_qty_str, price=limit_price_str,
+            client.new_order(
+                symbol=symbol, side="SELL", type="STOP_MARKET",
+                stopPrice=sl_price_str, closePosition=True, workingType="CONTRACT_PRICE"
+            )
+        except Exception as e:
+            add_ui_log(f"⚠️ [Binance] [{symbol}] SL Set Warning: {e}")
+
+        # 3. PLACE +0.10% TAKE PROFIT SELL LIMIT ABOVE ENTRY
+        raw_tp_price = actual_entry_price * (1.0 + TP_PROFIT_PCT)
+        tp_price = round(math.ceil(raw_tp_price / tick_size) * tick_size, price_decimals)
+        if tp_price <= actual_entry_price:
+            tp_price = round(actual_entry_price + tick_size, price_decimals)
+        tp_price_str = f"{tp_price:.{price_decimals}f}"
+
+        tp_order_id = None
+        t_tp_sent_ms = time.time() * 1000
+        try:
+            tp_resp = client.new_order(
+                symbol=symbol, side="SELL", type="LIMIT",
+                quantity=filled_qty_str, price=tp_price_str,
                 timeInForce="GTC", reduceOnly=True
             )
-            limit_order_id = lim_resp.get("orderId")
-            add_ui_log(f"🎯 [Binance] [{symbol}] @ T+150ms Live: {cur_p_str} (Drop {raw_drop_pct:.2f}%) -> Fired +0.10% Buy Lim @ {limit_price_str} (+{limit_fire_ms}ms)")
-
-            if lim_resp.get("status") == "FILLED":
-                fill_duration_ms = round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
-                limit_filled = True
-                exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                add_ui_log(f"⚡ [Binance] [{symbol}] BUY LIMIT FILLED IMMEDIATELY IN {fill_duration_ms}ms!")
+            tp_order_id = tp_resp.get("orderId")
         except Exception as e:
-            add_ui_log(f"⚠️ [Binance] [{symbol}] Buy Limit Exception: {e}")
+            add_ui_log(f"⚠️ [Binance] [{symbol}] +0.10% TP Limit Exception: {e}")
 
-        # 3. MONITOR BUY LIMIT FILL UNTIL T + 950ms
-        if limit_order_id and not limit_filled:
-            while get_synced_time_ms() < t_hard_exit:
-                try:
-                    q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
-                    if q_resp.get("status") == "FILLED":
-                        c_t = int(q_resp.get("time", 0))
-                        u_t = int(q_resp.get("updateTime", 0))
-                        ex_diff = u_t - c_t
-                        fill_duration_ms = ex_diff if ex_diff > 0 else round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
-                        limit_filled = True
-                        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                        add_ui_log(f"⚡ [Binance] [{symbol}] BUY LIMIT FILLED IN {fill_duration_ms}ms @ {limit_price_str}!")
-                        break
-                except Exception:
-                    pass
-                time.sleep(0.025)
+        add_ui_log(f"🚀 [Binance] [{symbol}] MKT BUY @ {entry_price_str} | SL (-200% Fund): {sl_price_str} | TP Lim (+0.10%): {tp_price_str} | 10m Window")
 
-        # 4. CANCEL & HARD EXIT AT T + 950ms IF BUY LIMIT NOT FILLED
-        if not limit_filled:
-            precision_wait_until(t_hard_exit)
-            try:
-                client.cancel_open_orders(symbol=symbol)
-            except Exception:
-                pass
+        # 4. MONITOR TP LIMIT / SL FOR UP TO 10 MINUTES
+        exit_outcome = "HARD EXIT (10m)"
+        exit_time_str = "--"
+        badge_class = "status-warn"
+        position_closed = False
 
-            # Race-condition check: verify if Buy Limit filled right before cancel
-            if limit_order_id:
-                try:
-                    q_resp = client.query_order(symbol=symbol, orderId=limit_order_id)
-                    if q_resp.get("status") == "FILLED":
-                        c_t = int(q_resp.get("time", 0))
-                        u_t = int(q_resp.get("updateTime", 0))
-                        ex_diff = u_t - c_t
-                        fill_duration_ms = ex_diff if ex_diff > 0 else round(max(1.0, (time.time() * 1000) - t_limit_sent_local), 1)
-                        limit_filled = True
-                        exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-                        add_ui_log(f"⚡ [Binance] [{symbol}] BUY LIMIT FILLED JUST BEFORE CANCEL IN {fill_duration_ms}ms!")
-                except Exception:
-                    pass
-
-        if not limit_filled:
-            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+        while get_synced_time_ms() < t_hard_exit:
             try:
                 positions = client.get_position_risk(symbol=symbol)
-                short_size = 0.0
+                pos_size = 0.0
                 for p in positions:
-                    pos_amt = float(p.get("positionAmt", 0))
-                    if pos_amt < 0:
-                        short_size = abs(pos_amt)
+                    if float(p.get("positionAmt", 0)) > 0:
+                        pos_size = float(p.get("positionAmt"))
                         break
-                if short_size > 0:
-                    rem_q = f"{short_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(short_size))
-                    client.new_order(symbol=symbol, side="BUY", type="MARKET", quantity=rem_q, reduceOnly=True)
-                    add_ui_log(f"🛑 [Binance] [{symbol}] BUY LIMIT UNFILLED -> HARD EXIT AT T+950ms: {rem_q}")
-            except Exception:
-                pass
 
-        # 5. EMERGENCY SWEEPS AT T + 5s & T + 15s (Short Residual Check)
-        for stage_ms in [settle_epoch + 5000, settle_epoch + 15000]:
-            precision_wait_until(stage_ms)
-            try:
-                positions = client.get_position_risk(symbol=symbol)
-                short_size = 0.0
-                for p in positions:
-                    pos_amt = float(p.get("positionAmt", 0))
-                    if pos_amt < 0:
-                        short_size = abs(pos_amt)
-                        break
-                if short_size > 0:
-                    rem_q = f"{short_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(short_size))
-                    client.new_order(symbol=symbol, side="BUY", type="MARKET", quantity=rem_q, reduceOnly=True)
-                    add_ui_log(f"🛡 [Binance] [{symbol}] EMERGENCY SHORT EXIT: {rem_q}")
-                else:
+                if pos_size <= 0:
+                    position_closed = True
+                    exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                    tp_filled = False
+                    if tp_order_id:
+                        q_resp = client.query_order(symbol=symbol, orderId=tp_order_id)
+                        if q_resp.get("status") == "FILLED":
+                            tp_filled = True
+                            c_t = int(q_resp.get("time", 0))
+                            u_t = int(q_resp.get("updateTime", 0))
+                            sec_taken = round(max(0.05, (u_t - c_t) / 1000.0), 2) if u_t > c_t else round((time.time() * 1000 - t_tp_sent_ms) / 1000.0, 2)
+                            exit_outcome = f"TP +0.10% FILLED ({sec_taken}s)"
+                            badge_class = "status-success"
+                            add_ui_log(f"🎯 [Binance] [{symbol}] +0.10% SELL LIMIT HIT @ {tp_price_str} in {sec_taken}s!")
+                    if not tp_filled:
+                        exit_outcome = "SL HIT (-200% Fund)"
+                        badge_class = "status-warn"
+                        add_ui_log(f"🛑 [Binance] [{symbol}] STOP LOSS HIT @ {sl_price_str}")
                     break
             except Exception:
                 pass
+
+            sleep_sec = 0.25 if abs(get_synced_time_ms() - settle_epoch) < 10000 else 1.0
+            time.sleep(sleep_sec)
+
+        # 5. IF 10 MINUTES EXPIRE & POSITION STILL OPEN -> CANCEL & HARD EXIT
+        try:
+            client.cancel_open_orders(symbol=symbol)
+        except Exception:
+            pass
+
+        if not position_closed:
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            try:
+                positions = client.get_position_risk(symbol=symbol)
+                pos_size = 0.0
+                for p in positions:
+                    if float(p.get("positionAmt", 0)) > 0:
+                        pos_size = float(p.get("positionAmt"))
+                        break
+                if pos_size > 0:
+                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
+                    client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
+                    exit_outcome = "HARD EXIT (10m Timeout)"
+                    add_ui_log(f"⏱ [Binance] [{symbol}] 10m Timeout -> Hard Market Exit Executed: {rem_q}")
+                else:
+                    exit_outcome = "CLOSED"
+                    badge_class = "status-success"
+            except Exception:
+                exit_outcome = "EXIT FAILED"
 
         with data_lock:
             if symbol in dashboard_data['binance'].get('manual_armed', []):
                 dashboard_data['binance']['manual_armed'].remove(symbol)
 
-        exit_status_tag = f"Fill: {fill_duration_ms}ms" if limit_filled else "Unfilled -> Hard Exit @ T+950ms"
-        badge_txt = f"FILLED ({fill_duration_ms}ms)" if limit_filled else "HARD EXIT (T+950ms)"
-
         add_ledger_entry({
             "exchange": "Binance",
-            "coin": f"{symbol} [SHORT {arm_mode}]",
+            "coin": f"{symbol} [{arm_mode}]",
             "rate": rate_str,
-            "entry_time": f"{entry_time_str} (Short @ {entry_price_str})",
+            "entry_time": f"{entry_time_str} (@ {entry_price_str})",
             "exit_time": exit_time_str,
-            "detail": f"T+150ms Live: {cur_p_str} (Drop: {raw_drop_pct:.2f}%) | +0.10% Buy Lim @ {limit_price_str} (+{limit_fire_ms}ms @ {limit_fire_time_str}) | {exit_status_tag} | Qty: {filled_qty_str} ({leverage}x)",
-            "badge_text": badge_txt,
-            "badge_class": "status-success" if limit_filled else "status-warn"
+            "detail": f"SL (-200% Fund): {sl_price_str} | TP (+0.10%): {tp_price_str} | Outcome: {exit_outcome} | Qty: {filled_qty_str} ({leverage}x)",
+            "badge_text": exit_outcome,
+            "badge_class": badge_class
         })
 
     finally:
@@ -464,7 +434,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
 def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T-500ms Mkt Sell | T+150ms +0.10% Buy Lim | T+950ms Hard Exit)")
+    add_ui_log("🚀 Binance Engine Active ($0.5 Margin | T-1s Mkt | -200% Fund SL | +0.10% TP | 10m Hard Exit)")
     refresh_funding_intervals(client)
     last_clock_sync = 0.0
     last_interval_sync = time.time()
@@ -487,8 +457,7 @@ def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
                 settle_epoch = c['next_funding_time']
                 time_left = settle_epoch - now_ms
 
-                # Launch dedicated executor 10s before settlement for both AUTO and MANUAL coins
-                if 1000 < time_left <= 10000:
+                if 1500 < time_left <= 10000:
                     exec_key = (sym, settle_epoch)
                     with executors_lock:
                         if exec_key not in active_executors:
@@ -498,7 +467,7 @@ def start_binance_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
                                 args=(client, c, dashboard_data, data_lock, add_ui_log, add_ledger_entry),
                                 daemon=True
                             ).start()
-                            add_ui_log(f"⚡ [Binance] Launching Short Execution Thread for {sym} ({c['arm_mode']})...")
+                            add_ui_log(f"⚡ [Binance] Launching Execution Thread for {sym} ({c['arm_mode']})...")
 
             time.sleep(1.0)
         except Exception as e:
