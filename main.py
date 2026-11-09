@@ -1,307 +1,290 @@
-from __future__ import annotations
-import gc
-import os
-import hmac
-import hashlib
-import time
-import json
-import threading
-from pathlib import Path
-from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime, timezone, timedelta
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-import requests
-from dotenv import load_dotenv
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Master Quant Cockpit - Dual Strategy</title>
+    <style>
+        :root {
+            --bg-color: #06090f;
+            --card-bg: #111827;
+            --card-border: #1f2937;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --accent-cyan: #00f0ff;
+            --accent-indigo: #6366f1;
+            --green: #10b981;
+            --red: #f43f5e;
+            --blue: #38bdf8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 12px; font-size: 0.85rem; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px; }
+        h1 { font-size: 1.2rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 6px; text-shadow: 0 0 10px rgba(0,240,255,0.3); }
+        .status-badge { background: rgba(16, 185, 129, 0.15); color: var(--green); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; border: 1px solid var(--green); }
 
-ENV_PATH = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=ENV_PATH)
+        .strategy-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 14px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .strategy-header { border-bottom: 2px solid var(--accent-cyan); padding-bottom: 8px; margin-bottom: 12px; }
+        .strategy-title { font-size: 1rem; color: var(--accent-cyan); font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .strategy-features { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; line-height: 1.3; }
 
-API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
-API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
+        .sub-section-title { font-size: 0.82rem; color: var(--blue); margin: 12px 0 6px 0; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* Armed Mini-Boxes Container */
+        .armed-chips-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+        .armed-chip { background: rgba(0, 240, 255, 0.08); border: 1px solid var(--accent-cyan); border-radius: 6px; padding: 6px 10px; font-size: 0.78rem; display: flex; flex-direction: column; min-width: 100px; }
+        .armed-chip .coin { font-weight: bold; color: var(--accent-cyan); }
+        .armed-chip .rate { font-size: 0.72rem; color: var(--red); }
+        
+        .radar-table, .ledger-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 10px; }
+        .radar-table th, .radar-table td, .ledger-table th, .ledger-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--card-border); }
+        .radar-table th, .ledger-table th { background-color: rgba(255,255,255,0.02); color: var(--text-muted); font-weight: 600; }
+        .radar-table tr:hover, .ledger-table tr:hover { background-color: rgba(255,255,255,0.01); }
 
-CONFIG = {
-    "BINANCE_REST_URL": "https://fapi.binance.com",
-    "BINANCE_WS_URL": "wss://fstream.binance.com",
-    "BINANCE_WS_API_URL": "wss://ws-fapi.binance.com/ws-fapi/v1",
-    "API_KEY": API_KEY,
-    "API_SECRET": API_SECRET,
-    "TRADE_MARGIN_USD": 1.50,
-    "LIMIT_ORDER_MARGIN_USD": 1.50,
-    "DCA_SPLIT_MARGIN_USD": 0.75,
-    "MAX_LEVERAGE_CAP": 20.0,
-    "BINANCE_MIN_NOTIONAL": 5.0,
-    "MIN_FUNDING_RATE": -0.0035,
-    "MAX_DANGER_FUNDING_RATE": -0.0250,
-    "FR_THRESHOLD_RATIO": 0.0090,
-    "SHALLOW_LIMIT_RATIOS": (0.30, 0.50, 0.70),
-    "GRID_RATIO_DCA_HIGH": 1.30,
-    "SL_BELOW_LIMIT_RATIO_COND_1": 0.0050,
-    "MIN_GRID_GAP_DCA_1_LOW": 0.0050,
-    "GRID_RATIO_DCA_LOW": 1.30,
-    "L2_BELOW_L1_GAP": 0.0050,
-    "SL_BELOW_LIMIT_RATIO_COND_2": 0.0050,
-    "RESCAN_BEFORE_SETTLE_MS": 20000,
-    "GC_PURGE_BEFORE_SETTLE_MS": 10000,
-    "WS_WARMUP_BEFORE_SETTLE_MS": 8000,
-    "TCP_WARMUP_BEFORE_SETTLE_MS": 4000,
-    "RECHECK_BEFORE_SETTLE_MS": 2500,
-    "ENTRY_BEFORE_SETTLE_MS": 100,
-    "SHALLOW_CANCEL_FLOOR_MS": 228.0,
-    "SHALLOW_CANCEL_AFTER_SETTLE_MS": 230.0,
-    "CANCEL_ORDERS_AFTER_SETTLE_MS": 6000,
-    "EXIT_AFTER_SETTLE_MS": 7000,
-    "EMERGENCY_SWEEP_AFTER_SETTLE_MS": 9000,
-    "DASHBOARD_PORT": int(os.getenv("PORT", 10000))
-}
+        .btn-action { background: var(--green); color: #000; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
+        .btn-action:hover { opacity: 0.8; }
+        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
+        .btn-disarm:hover { opacity: 0.8; }
 
-IST = timezone(timedelta(hours=5, minutes=30))
-data_lock = threading.Lock()
-clock_offset_ms = 0.0
+        /* Ledger Card Styling */
+        .ledger-card { background: rgba(0,0,0,0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
+        .ledger-header { display: flex; justify-content: space-between; color: var(--accent-cyan); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
+        .shallow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
+        .shallow-box { background: rgba(56, 189, 248, 0.08); border: 1px solid var(--blue); border-radius: 5px; padding: 6px; font-size: 0.72rem; }
+        .shallow-box.cancelled { border-color: var(--red); background: rgba(244, 63, 94, 0.08); }
+        
+        .empty-state { text-align: center; color: var(--text-muted); padding: 15px; font-style: italic; }
+    </style>
+</head>
+<body>
 
-s1_trade_history: list[dict] = []
-s2_trade_history: list[dict] = []
+    <header>
+        <h1>⚡ Master Quant Cockpit</h1>
+        <div id="system-status" class="status-badge">DUAL ENGINE ACTIVE</div>
+    </header>
 
-dashboard_data = {
-    "target_symbol": "Scanning...",
-    "funding_rate": "0.00%",
-    "status": "Running Dual Engines...",
-    "trades": s1_trade_history,
-    "strategy2_trades": s2_trade_history,
-    "strategy1_top20": [],
-    "strategy1_manual_armed": [],
-    "strategy1_manual_disarmed": [],
-    "strategy2": {
-        "status": "Initializing...",
-        "top20": [],
-        "manual_armed": [],
-        "manual_disarmed": []
-    }
-}
+    <!-- ================= STRATEGY 1 ================= -->
+    <div class="strategy-container">
+        <div class="strategy-header">
+            <div class="strategy-title">
+                <span>STRATEGY 1: TOKYO EXTREME SNIPER (T-100ms Limit Burst)</span>
+            </div>
+            <div class="strategy-features">
+                Features: Tokyo Fast-Lane WebSocket | Single-Shot Limit Burst | 3 Shallow Limits (30/50/70%) | DCA Grid Layers | Dynamic SL & Fast Shallow Cancel Burst.
+            </div>
+        </div>
 
+        <!-- Armed Mini-Boxes Box on Top -->
+        <div class="sub-section-title"><span>🛡️ Armed Sniper Target Pool</span></div>
+        <div id="s1-armed-chips" class="armed-chips-container">
+            <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
+        </div>
 
-def add_ui_log(message: str) -> None:
-    timestamp = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] {message}", flush=True)
+        <!-- Top 20 Radar Table -->
+        <div class="sub-section-title"><span>Top 20 Funding Radar (Click Arm / Disarm)</span></div>
+        <div style="max-height: 200px; overflow-y: auto;">
+            <table class="radar-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Funding Rate</th>
+                        <th>Next Settlement</th>
+                        <th>Mode</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="s1-radar-body">
+                    <tr><td colspan="5" class="empty-state">Loading Strategy 1 Radar...</td></tr>
+                </tbody>
+            </table>
+        </div>
 
-
-def record_completed_trade_s1(trade_record: dict) -> None:
-    with data_lock:
-        s1_trade_history.insert(0, trade_record)
-        if len(s1_trade_history) > 20: s1_trade_history.pop()
-        dashboard_data["trades"] = list(s1_trade_history)
-
-
-def record_completed_trade_s2(trade_record: dict) -> None:
-    with data_lock:
-        s2_trade_history.insert(0, trade_record)
-        if len(s2_trade_history) > 20: s2_trade_history.pop()
-        dashboard_data["strategy2_trades"] = list(s2_trade_history)
-
-
-def get_synced_time_ms() -> float:
-    return (time.time() * 1000) + clock_offset_ms
-
-
-def precision_wait_until(target_time_ms: float) -> None:
-    while True:
-        now = get_synced_time_ms()
-        diff = target_time_ms - now
-        if diff <= 0: break
-        elif diff > 10: time.sleep(0.002)
-        elif diff > 2: time.sleep(0.0005)
+        <!-- Precision Ledger -->
+        <div class="sub-section-title"><span>Strategy 1: Last 20 Trades Precision Ledger</span></div>
+        <div id="s1-ledger-container">
+            <div class="empty-state">Waiting for Strategy 1 precision execution...</div>
+        </div>
+    </div>
 
 
-def format_step(value: float, step: float) -> str:
-    d_step = Decimal(str(step))
-    d_val = Decimal(str(value))
-    precision = d_step.normalize().as_tuple().exponent
-    quantized = (d_val / d_step).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * d_step
-    return f"{quantized:.{-precision}f}" if precision < 0 else str(int(quantized))
+    <!-- ================= STRATEGY 2 ================= -->
+    <div class="strategy-container">
+        <div class="strategy-header">
+            <div class="strategy-title">
+                <span>STRATEGY 2: AUTO TOP-3 QUANT ARBITRAGE (T+220ms Market Entry | -0.25% Threshold)</span>
+            </div>
+            <div class="strategy-features">
+                Features: $0.5 Margin ($10 Notional @ 20x) | T+220ms Precise Market Buy | -200% Funding Rate SL Shield | +0.10% Take Profit Limit | 10-Minute Hard Exit Timeout.
+            </div>
+        </div>
 
+        <!-- Armed Mini-Boxes Box on Top -->
+        <div class="sub-section-title"><span>🚀 Strategy 2 Active Target Pool</span></div>
+        <div id="s2-armed-chips" class="armed-chips-container">
+            <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
+        </div>
 
-def format_tick(value: float, tick: float) -> str:
-    d_tick = Decimal(str(tick))
-    d_val = Decimal(str(value))
-    precision = d_tick.normalize().as_tuple().exponent
-    quantized = (d_val / d_tick).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * d_tick
-    return f"{quantized:.{-precision}f}" if precision < 0 else str(int(quantized))
+        <!-- Top 20 Radar Table -->
+        <div class="sub-section-title"><span>Top 20 Negative Funding Radar (Click Arm / Disarm)</span></div>
+        <div style="max-height: 200px; overflow-y: auto;">
+            <table class="radar-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Funding Rate</th>
+                        <th>Next Settlement</th>
+                        <th>Mode</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="s2-radar-body">
+                    <tr><td colspan="5" class="empty-state">Loading Strategy 2 Radar...</td></tr>
+                </tbody>
+            </table>
+        </div>
 
+        <!-- Execution Ledger -->
+        <div class="sub-section-title"><span>Strategy 2: Execution Ledger (T+220ms Market Entry)</span></div>
+        <div style="overflow-x: auto;">
+            <table class="ledger-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Coin & Funding</th>
+                        <th>Entry Time & Price</th>
+                        <th>Exit Time & Price</th>
+                        <th>Details / Outcome</th>
+                    </tr>
+                </thead>
+                <tbody id="s2-ledger-body">
+                    <tr><td colspan="5" class="empty-state">Waiting for Strategy 2 trades to execute...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
 
-def sign_params(params: dict, secret: str = API_SECRET) -> str:
-    query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
-    sig = hmac.new(secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{query_string}&signature={sig}"
+    <script>
+        async function toggleArm(strategy, symbol, action) {
+            await fetch('/api/arm-control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ strategy, symbol, action })
+            });
+            fetchDashboardData();
+        }
 
+        async function fetchDashboardData() {
+            try {
+                let res = await fetch('/api/status');
+                let data = await res.json();
 
-def get_strategy1_active_coins() -> set[str]:
-    with data_lock:
-        s1_coin = dashboard_data.get("target_symbol", "")
-        if s1_coin and not s1_coin.startswith("Scanning") and s1_coin != "--":
-            return {s1_coin}
-    return set()
-
-
-class DashboardHTTPHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args): return
-
-    def do_GET(self) -> None:
-        if self.path == "/api/status":
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            with data_lock:
-                payload = json.dumps(dashboard_data).encode("utf-8")
-            self.wfile.write(payload)
-            return
-
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-        html_file = Path(__file__).resolve().parent / "dashboard.html"
-        if html_file.exists():
-            with open(html_file, "r", encoding="utf-8") as f:
-                self.wfile.write(f.read().encode("utf-8"))
-        else:
-            self.wfile.write(b"<h1>dashboard.html not found!</h1>")
-
-    def do_POST(self) -> None:
-        content_len = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_len).decode("utf-8")) if content_len > 0 else {}
-
-        if self.path == "/api/arm-control":
-            strat = body.get("strategy")
-            sym = body.get("symbol")
-            action = body.get("action")
-            with data_lock:
-                if strat == 1:
-                    armed = dashboard_data["strategy1_manual_armed"]
-                    disarmed = dashboard_data["strategy1_manual_disarmed"]
-                    if action == "arm":
-                        if sym in disarmed: disarmed.remove(sym)
-                        if sym not in armed: armed.append(sym)
-                    else:
-                        if sym in armed: armed.remove(sym)
-                        if sym not in disarmed: disarmed.append(sym)
-                elif strat == 2:
-                    s2 = dashboard_data["strategy2"]
-                    armed = s2["manual_armed"]
-                    disarmed = s2["manual_disarmed"]
-                    if action == "arm":
-                        if sym in disarmed: disarmed.remove(sym)
-                        if sym not in armed: armed.append(sym)
-                    else:
-                        if sym in armed: armed.remove(sym)
-                        if sym not in disarmed: disarmed.append(sym)
-
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
-            return
-
-
-def run_web_server() -> None:
-    server = ThreadingHTTPServer(("0.0.0.0", CONFIG["DASHBOARD_PORT"]), DashboardHTTPHandler)
-    server.serve_forever()
-
-
-if __name__ == "__main__":
-    from strategy1 import BinanceFastLaneWS, run_strategy1_cycle
-    from strategy2 import start_strategy2_loop
-    from binance.um_futures import UMFutures
-
-    add_ui_log("🚀 Starting Binance Master Quant Cockpit (Dual Strategy)...")
-    threading.Thread(target=run_web_server, daemon=True).start()
-
-    ws_pipeline_s1 = BinanceFastLaneWS(
-        api_key=API_KEY, api_secret=API_SECRET,
-        rest_url=CONFIG["BINANCE_REST_URL"], ws_url=CONFIG["BINANCE_WS_URL"], ws_api_url=CONFIG["BINANCE_WS_API_URL"],
-        log_fn=add_ui_log, status_fn=lambda s: None
-    )
-    ws_pipeline_s1.connect()
-
-    threading.Thread(
-        target=start_strategy2_loop,
-        args=(dashboard_data, data_lock, add_ui_log, record_completed_trade_s2, get_strategy1_active_coins),
-        daemon=True
-    ).start()
-
-    client_rest = UMFutures(key=API_KEY, secret=API_SECRET)
-    state_callbacks_s1 = {
-        "add_ui_log": add_ui_log,
-        "get_synced_time_ms": get_synced_time_ms,
-        "precision_wait_until": precision_wait_until,
-        "format_step": format_step,
-        "format_tick": format_tick,
-        "sign_params": sign_params
-    }
-
-    while True:
-        try:
-            res = requests.get(f"{CONFIG['BINANCE_REST_URL']}/fapi/v1/premiumIndex", timeout=5).json()
-            if isinstance(res, list):
-                all_neg = []
-                for c in res:
-                    if not c.get("symbol", "").endswith("USDT"): continue
-                    try:
-                        rate = float(c.get("lastFundingRate", 0))
-                        next_t = int(c.get("nextFundingTime", 0))
-                        if rate < 0:
-                            settle_dt = datetime.fromtimestamp(next_t / 1000, tz=IST)
-                            all_neg.append({
-                                "symbol": c["symbol"],
-                                "rate": rate,
-                                "rate_str": f"{rate*100:+.4f}%",
-                                "next_funding_time": next_t,
-                                "settle_str": settle_dt.strftime('%H:%M:%S IST'),
-                                "last_price": float(c.get("markPrice", 0))
-                            })
-                    except: continue
-
-                all_neg.sort(key=lambda x: x["rate"])
+                // Strategy 1 Radar & Armed Chips
+                let s1RadarHtml = "";
+                let s1ArmedChipsHtml = "";
+                if(data.strategy1_top20 && data.strategy1_top20.length > 0) {
+                    data.strategy1_top20.forEach(c => {
+                        if(c.is_armed) {
+                            s1ArmedChipsHtml += `
+                                <div class="armed-chip">
+                                    <span class="coin">${c.symbol}</span>
+                                    <span class="rate">${c.rate_str}</span>
+                                </div>
+                            `;
+                        }
+                        let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(1, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(1, '${c.symbol}', 'arm')">Arm</button>`;
+                        s1RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
+                    });
+                } else { s1RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
                 
-                with data_lock:
-                    manual_armed = dashboard_data["strategy1_manual_armed"]
-                    manual_disarmed = dashboard_data["strategy1_manual_disarmed"]
-                    top20_formatted = []
-                    for item in all_neg[:20]:
-                        sym = item["symbol"]
-                        is_armed = sym in manual_armed or (sym not in manual_disarmed and item["rate"] <= CONFIG["MIN_FUNDING_RATE"])
-                        top20_formatted.append({
-                            "symbol": sym,
-                            "rate_str": item["rate_str"],
-                            "settle_str": item["settle_str"],
-                            "arm_mode": "MANUAL" if sym in manual_armed else "AUTO",
-                            "is_armed": is_armed
-                        })
-                    dashboard_data["strategy1_top20"] = top20_formatted
+                document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
+                document.getElementById('s1-armed-chips').innerHTML = s1ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
 
-                neg_coins = [c for c in all_neg if (c["symbol"] in manual_armed or (c["rate"] <= CONFIG["MIN_FUNDING_RATE"] and c["symbol"] not in manual_disarmed))]
-                if neg_coins:
-                    target = neg_coins[0]
-                    sym = target["symbol"]
-                    rate = target["rate"]
-                    price = target["last_price"]
-                    settle_ms = target["next_funding_time"]
+                // Strategy 1 Precision Ledger
+                let s1LedgerContainer = document.getElementById('s1-ledger-container');
+                if(data.trades && data.trades.length > 0) {
+                    let html = "";
+                    data.trades.forEach((t, i) => {
+                        let shallowHtml = "";
+                        if(t.dca_hits && t.dca_hits.length > 0) {
+                            t.dca_hits.forEach(d => {
+                                shallowHtml += `
+                                    <div class="shallow-box cancelled">
+                                        <strong>${d.level}</strong><br>
+                                        Price: ${d.price}<br>
+                                        Qty: ${d.qty}<br>
+                                        <span style="color:var(--red);">⚡ Cancel Fired</span><br>
+                                        <span style="color:var(--green);">${d.time}</span>
+                                    </div>
+                                `;
+                            });
+                        } else {
+                            shallowHtml = `<div class="empty-state" style="grid-column: span 3; padding:4px;">No shallow fills recorded in this cycle.</div>`;
+                        }
 
-                    with data_lock:
-                        dashboard_data["target_symbol"] = sym
-                        dashboard_data["funding_rate"] = target["rate_str"]
+                        html += `
+                            <div class="ledger-card">
+                                <div class="ledger-header">
+                                    <span>#${i+1} ${t.symbol} | ${t.funding_rate}</span>
+                                    <span style="color:var(--green);">${t.status}</span>
+                                </div>
+                                <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px; line-height:1.4;">
+                                    <strong>STRATEGY MODE:</strong> ${t.tier}<br>
+                                    <strong>ENTRY TIMELINE:</strong> Sent: ${t.entry_sent} | Ack: ${t.entry_ack} | First Fill: ${t.entry_fill_time}<br>
+                                    <strong>EXECUTION SUMMARY:</strong> Avg Entry: ${t.entry_fill_price} | Exit: ${t.exit_price} | PnL: ${t.pnl}
+                                </div>
+                                <div class="sub-section-title" style="margin:4px 0;"><span>LIMIT ORDER FILLS & SHALLOW CANCELS (30/50/70% FR)</span></div>
+                                <div class="shallow-grid">${shallowHtml}</div>
+                            </div>
+                        `;
+                    });
+                    s1LedgerContainer.innerHTML = html;
+                }
 
-                    ws_pipeline_s1.subscribe_ticker(sym)
-                    
-                    result_s1 = run_strategy1_cycle(
-                        ws_pipeline_s1, client_rest, sym, rate, price, settle_ms, CONFIG, state_callbacks_s1
-                    )
-                    if result_s1:
-                        record_completed_trade_s1(result_s1)
-                else:
-                    with data_lock:
-                        dashboard_data["target_symbol"] = "Scanning..."
-                        dashboard_data["funding_rate"] = "0.00%"
-            time.sleep(5.0)
-        except Exception as e:
-            add_ui_log(f"⚠️ Main Loop Error: {e}")
-            time.sleep(3.0)
+                // Strategy 2 Radar & Armed Chips
+                let s2RadarHtml = "";
+                let s2ArmedChipsHtml = "";
+                if(data.strategy2 && data.strategy2.top20 && data.strategy2.top20.length > 0) {
+                    data.strategy2.top20.forEach(c => {
+                        if(c.is_armed) {
+                            s2ArmedChipsHtml += `
+                                <div class="armed-chip">
+                                    <span class="coin">${c.symbol}</span>
+                                    <span class="rate">${c.rate_str}</span>
+                                </div>
+                            `;
+                        }
+                        let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(2, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-action" onclick="toggleArm(2, '${c.symbol}', 'arm')">Arm</button>`;
+                        s2RadarHtml += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
+                    });
+                } else { s2RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                
+                document.getElementById('s2-radar-body').innerHTML = s2RadarHtml;
+                document.getElementById('s2-armed-chips').innerHTML = s2ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
+
+                // Strategy 2 Ledger
+                let s2Body = document.getElementById('s2-ledger-body');
+                if(data.strategy2_trades && data.strategy2_trades.length > 0) {
+                    let html = "";
+                    data.strategy2_trades.forEach((t, i) => {
+                        html += `
+                            <tr>
+                                <td>${i+1}</td>
+                                <td><strong>${t.coin}</strong><br><span style="color:var(--accent-cyan);">${t.rate}</span></td>
+                                <td>${t.entry_time}<br>Price: ${t.entry_price || '--'}</td>
+                                <td>${t.exit_time}<br>Price: ${t.exit_price || '--'}</td>
+                                <td>${t.detail}<br><span class="${t.badge_class}">${t.badge_text}</span></td>
+                            </tr>
+                        `;
+                    });
+                    s2Body.innerHTML = html;
+                }
+
+            } catch (err) { console.error("Dashboard sync error:", err); }
+        }
+
+        setInterval(fetchDashboardData, 1000);
+        fetchDashboardData();
+    </script>
+</body>
+</html>
