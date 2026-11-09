@@ -718,8 +718,9 @@ def run_dump_dip_engine() -> None:
             exit_send_time = ""
             exit_price_detected = 0.0
 
-            while get_synced_time_ms() < t_cancel_orders:
-                now_loop_ms = get_synced_time_ms()
+            # BUG FIX: Yahan ab VPS ka original time (time.time() * 1000) check ho raha hai, REST delay ke bina
+            while (time.time() * 1000) < t_cancel_orders:
+                now_loop_ms = time.time() * 1000
 
                 # T+230ms (Strict Floor >= 228ms): Simultaneous WS cancel burst for 3 Shallow orders ONLY
                 if not shallow_cancel_fired and now_loop_ms >= t_cancel_shallow:
