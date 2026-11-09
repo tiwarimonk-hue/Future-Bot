@@ -13,12 +13,14 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 from dotenv import load_dotenv
 
+# Load Environment Variables
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
 API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
 API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
 
+# Master Configuration Settings
 CONFIG = {
     "BINANCE_REST_URL": "https://fapi.binance.com",
     "BINANCE_WS_URL": "wss://fstream.binance.com",
@@ -58,13 +60,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 data_lock = threading.Lock()
 clock_offset_ms = 0.0
 
+# Separate Trade Ledgers
 s1_trade_history: list[dict] = []
 s2_trade_history: list[dict] = []
 
 dashboard_data = {
     "target_symbol": "Scanning...",
     "funding_rate": "0.00%",
-    "status": "Running...",
+    "status": "Running Dual Engines...",
     "trades": s1_trade_history,
     "strategy2_trades": s2_trade_history,
     "strategy1_top20": [],
@@ -133,6 +136,7 @@ def sign_params(params: dict, secret: str = API_SECRET) -> str:
     return f"{query_string}&signature={sig}"
 
 
+# Priority Manager: Strategy 1 active coins ko return karega taaki Strategy 2 unhe avoid kare
 def get_strategy1_active_coins() -> set[str]:
     with data_lock:
         s1_coin = dashboard_data.get("target_symbol", "")
@@ -211,9 +215,10 @@ if __name__ == "__main__":
     from strategy2 import start_strategy2_loop
     from binance.um_futures import UMFutures
 
-    add_ui_log("🚀 Starting Binance Dual-Strategy Engine...")
+    add_ui_log("🚀 Starting Binance Master Quant Cockpit (Dual Strategy)...")
     threading.Thread(target=run_web_server, daemon=True).start()
 
+    # 1. Start Strategy 1 Tokyo WebSocket Pipeline
     ws_pipeline_s1 = BinanceFastLaneWS(
         api_key=API_KEY, api_secret=API_SECRET,
         rest_url=CONFIG["BINANCE_REST_URL"], ws_url=CONFIG["BINANCE_WS_URL"], ws_api_url=CONFIG["BINANCE_WS_API_URL"],
@@ -221,12 +226,14 @@ if __name__ == "__main__":
     )
     ws_pipeline_s1.connect()
 
+    # 2. Start Strategy 2 Background Loop (with Priority exclusion)
     threading.Thread(
         target=start_strategy2_loop,
         args=(dashboard_data, data_lock, add_ui_log, record_completed_trade_s2, get_strategy1_active_coins),
         daemon=True
     ).start()
 
+    # 3. Strategy 1 Master Execution Loop (Priority Strategy)
     client_rest = UMFutures(key=API_KEY, secret=API_SECRET)
     state_callbacks_s1 = {
         "add_ui_log": add_ui_log,
@@ -241,7 +248,6 @@ if __name__ == "__main__":
         try:
             res = requests.get(f"{CONFIG['BINANCE_REST_URL']}/fapi/v1/premiumIndex", timeout=5).json()
             if isinstance(res, list):
-                now_ms = int(time.time() * 1000)
                 all_neg = []
                 for c in res:
                     if not c.get("symbol", "").endswith("USDT"): continue
@@ -278,7 +284,8 @@ if __name__ == "__main__":
                         })
                     dashboard_data["strategy1_top20"] = top20_formatted
 
-                neg_coins = [c for c in all_neg if c["rate"] <= CONFIG["MIN_FUNDING_RATE"]]
+                # Filter out coins already claimed or manually disarmed in Strategy 1
+                neg_coins = [c for c in all_neg if c["rate"] <= CONFIG["MIN_FUNDING_RATE"] and c["symbol"] not in manual_disarmed]
                 if neg_coins:
                     target = neg_coins[0]
                     sym = target["symbol"]
@@ -291,6 +298,8 @@ if __name__ == "__main__":
                         dashboard_data["funding_rate"] = target["rate_str"]
 
                     ws_pipeline_s1.subscribe_ticker(sym)
+                    
+                    # Execute Strategy 1 Cycle
                     result_s1 = run_strategy1_cycle(
                         ws_pipeline_s1, client_rest, sym, rate, price, settle_ms, CONFIG, state_callbacks_s1
                     )
