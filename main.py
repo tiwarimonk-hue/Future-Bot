@@ -33,9 +33,11 @@ dashboard_data = {
         "manual_disarmed": []
     },
     "whale": {
-        "status": "Scanning Market Whales...",
-        "buy_signals": [],
-        "sell_signals": [],
+        "status": "Scanning Market Whales (5s Live Loop)...",
+        "bybit_buy": [],
+        "bybit_sell": [],
+        "binance_buy": [],
+        "binance_sell": [],
         "armed_orders": {}   # key: "EXCHANGE:SYMBOL:SIDE" -> status dict
     },
     "logs": [],
@@ -95,7 +97,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 return
 
-            # 2. Manual Coin ARM / DISARM Toggle (Bybit & Binance Top 20)
+            # 2. Manual Coin ARM / DISARM Toggle (Bybit & Binance Top 20 Funding)
             if path == '/api/toggle_coin':
                 ex = params.get('exchange', [''])[0].lower()
                 sym = params.get('symbol', [''])[0].upper()
@@ -213,7 +215,7 @@ def run_web_server():
             time.sleep(1)
 
 if __name__ == '__main__':
-    add_ui_log("⚡ Master Controller Starting (Solo Funding + Whale Money Flow Engine)...")
+    add_ui_log("⚡ Master Controller Starting (Solo Funding + Separate Bybit/Binance Top 10 Whale Scanners)...")
 
     # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
@@ -242,7 +244,7 @@ if __name__ == '__main__':
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
-    # 4. Whale Money Flow Scanner Thread (Replaces Dual Engine)
+    # 4. Whale Money Flow Scanner Thread
     try:
         import whale_engine
         threading.Thread(
@@ -250,7 +252,7 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Whale Money Flow Scanner Launched ($1 Margin | 6x Lev | ±10% SL/TP)")
+        add_ui_log("✔ Whale Scanner Launched (5s Live Update | 2m Lock Window | Separate Top 10 Lists)")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Whale Engine: {e}")
 
