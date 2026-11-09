@@ -521,15 +521,18 @@ def run_dump_dip_engine() -> None:
             dashboard_data["status"] = f"LOCKED: {target_symbol} | {strategy_label}"
 
         # Timeline markers
-        t_gc_purge = settle_epoch - config.GC_PURGE_BEFORE_SETTLE_MS               # T-10s
-        t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS             # T-8s TLS Handshake
-        t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS           # T-4s Ping Buffer Warmup
-        t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS                 # T-2.5s (2500ms)
-        t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS               # T-100ms Single-Shot Limit Burst
-        t_cancel_shallow = settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS    # T+230ms Shallow Cancel Burst
-        t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS      # T+6s
-        t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS              # T+7s
-        t_emergency_sweep = settle_epoch + config.EMERGENCY_SWEEP_AFTER_SETTLE_MS  # T+9s
+        t_gc_purge = settle_epoch - config.GC_PURGE_BEFORE_SETTLE_MS             # T-10s
+        t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS           # T-8s TLS Handshake
+        t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS         # T-4s Ping Buffer Warmup & RTT measurement
+        t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS               # T-2.5s (2500ms)
+        t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS             # T-100ms Single-Shot Limit Burst
+
+        # Default placeholder before T-4s ping measurement
+        t_cancel_shallow = settle_epoch + config.SHALLOW_CANCEL_FLOOR_MS
+
+        t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS    # T+6s
+        t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS            # T+7s
+        t_emergency_sweep = settle_epoch + config.EMERGENCY_SWEEP_AFTER_SETTLE_MS # T+9s
 
         entry_dispatch_time = ""
         t2_snapshot_price = last_price
@@ -580,10 +583,10 @@ def run_dump_dip_engine() -> None:
             else:
                 add_ui_log("⚠️ [PRE-WARM T-8s WARNING] Order WebSocket re-arming in progress...")
 
-            # Phase 2C (T-4s): Order WebSocket Ping Buffer Warm-Up
+            # Phase 2C (T-4s): Order WebSocket Ping Buffer Warm-Up & Dynamic Latency Measurement
             precision_wait_until(t_tcp_warmup)
             if ws_pipeline.ping_order_ws():
-                add_ui_log("🔥 [PRE-WARM at T-4s] Order WebSocket ping frame sent. TCP buffer fully awake.")
+                add_ui_log("🔥 [PRE-WARM at T-4s] Order WebSocket ping frame sent. Measuring live RTT...")
             else:
                 add_ui_log("⚠️ [PRE-WARM at T-4s WARNING] Ping warm-up frame skipped (socket not ready).")
 
@@ -613,6 +616,22 @@ def run_dump_dip_engine() -> None:
             except Exception as t_err:
                 add_ui_log(f"⚠️ [T-2.5s RECHECK WARNING] REST glitch ({t_err}). Using verified snapshot.")
 
+            # Compute Dynamic 1-way Network Lead Time with STRICT 228.0ms HARD FLOOR GUARD
+            dynamic_lead = ws_pipeline.get_measured_lead_latency_ms()
+            target_strike_ms = settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS
+            computed_trigger = target_strike_ms - dynamic_lead
+            floor_trigger = settle_epoch + config.SHALLOW_CANCEL_FLOOR_MS
+
+            # Kisi bhi haal me 228ms se pehle nahi fire hoga (Strict Hard Floor)
+            t_cancel_shallow = max(floor_trigger, computed_trigger)
+
+            add_ui_log(
+                f"⚡ [DYNAMIC CANCEL TIMELINE] Live 1-way lead: {dynamic_lead:.2f}ms | "
+                f"Computed: T+{computed_trigger - settle_epoch:.2f}ms | "
+                f"Strict Hard Floor: T+{config.SHALLOW_CANCEL_FLOOR_MS:.1f}ms | "
+                f"Effective Dispatch: T+{t_cancel_shallow - settle_epoch:.2f}ms"
+            )
+
             # Phase 4 (T-100ms): SINGLE-SHOT ORDERED LIMIT BURST (NO RETRIES)
             precision_wait_until(t_limit_burst)
             cycle_order_start_ms = int(get_synced_time_ms()) - 1000
@@ -632,26 +651,34 @@ def run_dump_dip_engine() -> None:
 
             # Build Batch of Limit Orders (3 Shallow Limits @ 30%, 50%, 70% + 1 or 2 DCA Limits)
             limit_orders_batch: list[tuple[str, str, str, float, str]] = []
+            planned_shallow_map: dict[str, dict] = {}
 
             shallow_specs = [
-                (cid_shlw1, config.SHALLOW_LIMIT_RATIOS[0], "SHALLOW LIMIT #1 (30% FR)"),
-                (cid_shlw2, config.SHALLOW_LIMIT_RATIOS[1], "SHALLOW LIMIT #2 (50% FR)"),
-                (cid_shlw3, config.SHALLOW_LIMIT_RATIOS[2], "SHALLOW LIMIT #3 (70% FR)"),
+                (cid_shlw1, config.SHALLOW_LIMIT_RATIOS[0], "Shallow Limit #1 (30% FR)", 1),
+                (cid_shlw2, config.SHALLOW_LIMIT_RATIOS[1], "Shallow Limit #2 (50% FR)", 2),
+                (cid_shlw3, config.SHALLOW_LIMIT_RATIOS[2], "Shallow Limit #3 (70% FR)", 3),
             ]
 
-            for cid_s, s_ratio, s_label in shallow_specs:
+            for cid_s, s_ratio, s_label, s_idx in shallow_specs:
                 drop_dec = abs_rate_dec * Decimal(str(s_ratio))
                 p_dec = dec_anchor * (Decimal("1") - drop_dec)
                 p_str = format_tick(float(p_dec), tick_size)
                 q_str = format_limit_qty(shallow_notional_usd, p_str, min_qty, qty_step)
                 limit_orders_batch.append((cid_s, q_str, p_str, float(drop_dec), s_label))
+                planned_shallow_map[cid_s] = {
+                    "cid": cid_s,
+                    "label": s_label,
+                    "price": p_str,
+                    "qty": q_str,
+                    "sort_idx": s_idx
+                }
 
             if is_cond_1:
                 # Condition 1: 1 DCA Limit Order at 130% of |FR| ($1.50 USDT Margin), SL 0.50% below DCA Limit #1
                 dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(gap_dca_1)))
                 dca1_price_str = format_tick(float(dca1_p_dec), tick_size)
                 dca1_qty = format_limit_qty(dca_cond1_notional_usd, dca1_price_str, min_qty, qty_step)
-                limit_orders_batch.append((cid_dca1, dca1_qty, dca1_price_str, gap_dca_1, "DCA LIMIT #1 (130% FR)"))
+                limit_orders_batch.append((cid_dca1, dca1_qty, dca1_price_str, gap_dca_1, "DCA Limit #1 (130% FR)"))
 
                 sl_dec = Decimal(dca1_price_str) * (Decimal("1") - Decimal(str(sl_ratio)))
                 sl_target_price = float(sl_dec)
@@ -661,13 +688,13 @@ def run_dump_dip_engine() -> None:
                 dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(gap_dca_1)))
                 dca1_price_str = format_tick(float(dca1_p_dec), tick_size)
                 dca1_qty = format_limit_qty(dca_cond2_notional_usd, dca1_price_str, min_qty, qty_step)
-                limit_orders_batch.append((cid_dca1, dca1_qty, dca1_price_str, gap_dca_1, f"DCA LIMIT #1 (${config.DCA_SPLIT_MARGIN_USD})"))
+                limit_orders_batch.append((cid_dca1, dca1_qty, dca1_price_str, gap_dca_1, f"DCA Limit #1 (${config.DCA_SPLIT_MARGIN_USD})"))
 
                 dca2_p_dec = Decimal(dca1_price_str) * (Decimal("1") - Decimal(str(config.L2_BELOW_L1_GAP)))
                 dca2_price_str = format_tick(float(dca2_p_dec), tick_size)
                 gap_dca_2_val = float((dec_anchor - Decimal(dca2_price_str)) / dec_anchor)
                 dca2_qty = format_limit_qty(dca_cond2_notional_usd, dca2_price_str, min_qty, qty_step)
-                limit_orders_batch.append((cid_dca2, dca2_qty, dca2_price_str, gap_dca_2_val, f"DCA LIMIT #2 (${config.DCA_SPLIT_MARGIN_USD})"))
+                limit_orders_batch.append((cid_dca2, dca2_qty, dca2_price_str, gap_dca_2_val, f"DCA Limit #2 (${config.DCA_SPLIT_MARGIN_USD})"))
 
                 sl_dec = Decimal(dca2_price_str) * (Decimal("1") - Decimal(str(sl_ratio)))
                 sl_target_price = float(sl_dec)
@@ -694,7 +721,7 @@ def run_dump_dip_engine() -> None:
             while get_synced_time_ms() < t_cancel_orders:
                 now_loop_ms = get_synced_time_ms()
 
-                # T+230ms: Simultaneous WS cancel burst for 3 Shallow orders ONLY (DCA & SL untouched)
+                # T+230ms (Strict Floor >= 228ms): Simultaneous WS cancel burst for 3 Shallow orders ONLY
                 if not shallow_cancel_fired and now_loop_ms >= t_cancel_shallow:
                     shallow_cancel_fired = True
                     threading.Thread(
@@ -779,6 +806,35 @@ def run_dump_dip_engine() -> None:
             exit_fill_time = rec_exit_t or ws_pipeline.get_last_fill_time(target_symbol) or datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
             dca_hits_list = rec_dca_hits or ws_pipeline.get_dca_hits(target_symbol)
 
+            # Ensure all 3 Shallow Order boxes ALWAYS appear in Row 1 (Filled vs Canceled Telemetry)
+            filled_shallow_indices = {h.get("sort_idx") for h in dca_hits_list if h.get("group") == "shallow"}
+            for cid_s, p_info in planned_shallow_map.items():
+                s_idx = p_info["sort_idx"]
+                if s_idx not in filled_shallow_indices:
+                    telem = ws_pipeline.get_shallow_cancel_telemetry(cid_s)
+                    f_ms = telem.get("fired_local_ms", 0)
+                    b_ms = telem.get("binance_engine_ms", 0)
+                    lat = max(0, b_ms - f_ms) if (f_ms > 0 and b_ms > 0) else 0
+                    f_str = datetime.fromtimestamp(f_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if f_ms > 0 else "--"
+                    b_str = datetime.fromtimestamp(b_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if b_ms > 0 else "--"
+
+                    dca_hits_list.append({
+                        "level": p_info["label"],
+                        "group": "shallow",
+                        "sort_idx": s_idx,
+                        "status": "CANCELED",
+                        "target_price": p_info["price"],
+                        "target_qty": p_info["qty"],
+                        "price": p_info["price"],
+                        "qty": p_info["qty"],
+                        "cancel_fired": f_str,
+                        "binance_canceled": b_str,
+                        "cancel_latency_ms": lat
+                    })
+
+            # Re-sort dca_hits_list so Shallow #1 -> #2 -> #3 -> DCA #1 -> DCA #2 are in strict order
+            dca_hits_list.sort(key=lambda x: (x.get("sort_idx", 99), x.get("first_ms", 0)))
+
             if final_avg_entry > 0:
                 add_ui_log(
                     f"✅ [RECONCILED STATS] Avg Entry: {final_avg_entry} | Exit: {final_exit_price} | "
@@ -786,15 +842,6 @@ def run_dump_dip_engine() -> None:
                     f"Net PnL: {rec_pnl.get('pnl_str')} | First Fill: {entry_fill_time_str}"
                 )
                 add_ui_log(f"   💵 [PNL BREAKDOWN] {rec_pnl.get('pnl_breakdown')}")
-                for idx_h, hit in enumerate(dca_hits_list, start=1):
-                    f_t = hit.get("first_time") or hit.get("time", "--")
-                    l_t = hit.get("last_time") or hit.get("time", "--")
-                    sp_ms = hit.get("span_ms", 0)
-                    f_cnt = hit.get("fills_count", 1)
-                    add_ui_log(
-                        f"   ⏱️ Box #{idx_h}: {hit['level']} @ {hit['price']} USDT | Qty: {hit['qty']} | "
-                        f"First: {f_t} | Last: {l_t} ({sp_ms}ms, {f_cnt} fills)"
-                    )
 
             record_completed_trade({
                 "symbol": target_symbol,
