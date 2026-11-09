@@ -1,4 +1,4 @@
 requests==2.31.0
 websocket-client==1.7.0
 python-dotenv==1.0.0
-binance-futures-connector==4.1.0
+binance-connector==3.7.0
