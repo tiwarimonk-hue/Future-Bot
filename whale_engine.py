@@ -22,18 +22,18 @@ WHALE_TP_PCT = 0.05             # 5% Take Profit
 
 INCUBATION_MIN_SEC = 60.0       # Silent background tracking for 60s before showing
 INCUBATION_MAX_SEC = 120.0      # Drop from incubation if it doesn't qualify within 2m
-MIN_WIN_CHANCE_PCT = 55         # Strictly hide anything < 55% win chance
+MIN_WIN_CHANCE_PCT = 55         # Gate threshold to enter the Top 10 list
 MIN_CONSISTENCY_RATIO = 0.65    # At least 65% of 1s ticks must move in trend direction
 MIN_PRE_MOVE_PCT = 0.35         # Must have moved >= 0.35% during 60s tracking
 MAX_PRE_MOVE_PCT = 3.50         # Over-extended guard before 5% TP
 
-LOCK_WINDOW_SEC = 120.0         # Visible dashboard window (2 minutes)
+LOCK_WINDOW_SEC = 120.0         # Guaranteed 2-minute lock once shown on dashboard
 SCAN_INTERVAL_SEC = 1.0         # 1 Second live fetch & update cycle
 TOP_N_LIMIT = 10                # Strictly Top 10 per list
 
 market_memory = {}      # "EX:SYM" -> baseline volume & price tracking
 incubation_pool = {}    # "EX:SYM:SIDE" -> silent 60s background tracker
-locked_signals = {}     # "EX:SYM:SIDE" -> promoted high-confidence signals shown on UI
+locked_signals = {}     # "EX:SYM:SIDE" -> promoted signals locked for full 2 minutes
 expired_history = {}    # "EX:SYM:SIDE" -> peak stats for re-surge detection
 binance_24h_cache = {}  # sym -> {"vol24": float, "pct24": float}
 last_bn_24h_fetch = 0.0
@@ -235,7 +235,7 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
             last_bb_err_log = now_ts
             add_ui_log(f"⚠️ [Whale] Bybit Scan Warning: {e}")
 
-    # 2. Fetch Binance 24h Volume every 3s (Rate-limit safe) + 1s Live Ticker Prices (Weight = 2!)
+    # 2. Fetch Binance 24h Volume every 3s (Rate-limit safe) + 1s Live Ticker Prices
     has_fresh_bn_vol = False
     if now_ts - last_bn_24h_fetch >= 3.0 or not binance_24h_cache:
         try:
@@ -281,7 +281,7 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
             last_bn_err_log = now_ts
             add_ui_log(f"⚠️ [Whale] Binance 1s Price Warning: {e}")
 
-    # Immediately update all active virtual test trades & PnL cards every 1 second!
+    # Immediately update all active virtual test trades & PnL cards every 1 second
     update_live_test_trades_1s(live_prices_map, dashboard_data, data_lock, add_ui_log, add_ledger_entry)
 
     with data_lock:
@@ -421,6 +421,7 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
                 chance = calculate_smoothed_chance(
                     inc["side"], inc["mult_window"], inc["inflow_window"], inc["tick_window"], fav_move
                 )
+                # Gate: Only promote into Top 10 list if chance >= 55%
                 if chance >= MIN_WIN_CHANCE_PCT:
                     prev_exp = expired_history.get(s_key)
                     is_resurge = False
@@ -462,7 +463,7 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
     for k in inc_to_remove:
         incubation_pool.pop(k, None)
 
-    # 6. Update Promoted Locked Signals EVERY 1 SECOND & Strictly Enforce >= 55% Rule
+    # 6. Update Promoted Locked Signals EVERY 1 SECOND — Guaranteed 2-Minute (120s) Stay!
     locked_to_remove = []
     for s_key, sig in list(locked_signals.items()):
         m_key = f"{sig['exchange']}:{sig['symbol']}"
@@ -473,6 +474,7 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
 
         age_sec = now_ts - sig["locked_ts"]
 
+        # Only remove AFTER full 2 minutes (120s) have elapsed
         if age_sec >= LOCK_WINDOW_SEC and not is_actively_arming and not has_live_test:
             expired_history[s_key] = {
                 "peak_chance": sig["peak_chance"],
@@ -508,11 +510,7 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
                 sig["side"], sig["mult_window"], sig["inflow_window"], sig["tick_window"], fav_move
             )
 
-            # Strictly hide immediately if win chance drops below 55% (unless actively arming or live testing)
-            if updated_chance < MIN_WIN_CHANCE_PCT and not is_actively_arming and not has_live_test:
-                locked_to_remove.append(s_key)
-                continue
-
+            # Update live chance every 1s WITHOUT deleting the coin before 120s!
             sig["chance_delta"] = updated_chance - sig["chance_pct"]
             sig["chance_pct"] = updated_chance
             if updated_chance > sig["peak_chance"]:
@@ -534,11 +532,6 @@ def scan_all_whales(bybit_client, binance_client, dashboard_data, data_lock, add
     for s_key, sig in locked_signals.items():
         arm_info = armed_map.get(s_key)
         is_actively_arming = arm_info is not None and arm_info.get("state") == "WAITING_CONFIRM"
-        has_live_test = s_key in active_test_keys
-
-        if sig["chance_pct"] < MIN_WIN_CHANCE_PCT and not is_actively_arming and not has_live_test:
-            continue
-
         rem_sec = max(0, int(LOCK_WINDOW_SEC - (now_ts - sig["locked_ts"])))
 
         m_delta = sig["money_delta_usd"]
@@ -633,7 +626,7 @@ def start_virtual_test_trade(test_id, exchange, symbol, side, entry_price, sl_pr
         if len(t_list) > 20:
             t_list.pop()
 
-    add_ui_log(f"🧪 [TEST {exchange}] Started 1s Live Virtual Trade: {symbol} ({side}) @ {entry_price} | SL(5%): {sl_price} | TP(5%): {tp_price}")
+    add_ui_log(f"🧪⚡ [TEST {exchange}] Instant Virtual Entry: {symbol} ({side}) @ {entry_price} | SL(5%): {sl_price} | TP(5%): {tp_price}")
 
 def monitor_real_whale_position(exchange, symbol, side, actual_entry, qty_float, sl_str, tp_str, entry_time_str, bybit_client, binance_client, dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     deadline = time.time() + (4 * 3600)
@@ -715,64 +708,43 @@ def monitor_real_whale_position(exchange, symbol, side, actual_entry, qty_float,
             pass
 
 def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashboard_data, data_lock, add_ui_log, add_ledger_entry):
+    """Zero-delay instant execution: coin is already verified over 60s, so execute immediately on click."""
     key = f"{exchange}:{symbol}:{side}"
     bybit_client = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
     binance_client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
 
     def get_live_tick():
-        if exchange == "BYBIT":
-            tk = bybit_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
-            return float(tk["lastPrice"])
-        else:
-            return float(binance_client.ticker_price(symbol=symbol)["price"])
+        for attempt in range(2):
+            try:
+                if exchange == "BYBIT":
+                    tk = bybit_client.get_tickers(category="linear", symbol=symbol)["result"]["list"][0]
+                    return float(tk["lastPrice"])
+                else:
+                    return float(binance_client.ticker_price(symbol=symbol)["price"])
+            except Exception:
+                if attempt == 0:
+                    time.sleep(0.08)
+        return anchor_price
 
     try:
-        if anchor_price <= 0:
-            anchor_price = get_live_tick()
-
-        confirmed = False
-        confirm_price = anchor_price
-        deadline = time.time() + 15.0
-        ticks_checked = 0
-
-        while time.time() < deadline:
-            with data_lock:
-                if key not in dashboard_data['whale'].get('armed_orders', {}):
-                    return
-
-            time.sleep(0.35)
-            try:
-                cur_p = get_live_tick()
-                ticks_checked += 1
-                if side == "BUY" and (cur_p > anchor_price or (ticks_checked >= 3 and cur_p >= anchor_price)):
-                    confirmed = True
-                    confirm_price = cur_p
-                    break
-                elif side == "SELL" and (cur_p < anchor_price or (ticks_checked >= 3 and cur_p <= anchor_price)):
-                    confirmed = True
-                    confirm_price = cur_p
-                    break
-            except Exception:
-                pass
-
-        if not confirmed:
-            with data_lock:
-                dashboard_data['whale'].get('armed_orders', {}).pop(key, None)
-            add_ui_log(f"⚠️ [Whale] [{exchange} {symbol}] Confirmation Tick Timed Out. Disarmed.")
-            return
+        # 1. Fetch instant live market tick (~100ms, no 15s wait loop)
+        exec_price = get_live_tick()
+        if exec_price <= 0:
+            raise RuntimeError("Unable to fetch live market price")
 
         entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
-        add_ui_log(f"✅✓ [Whale {mode}] [{exchange} {symbol} {side}] CONFIRMATION TICK PASSED ({anchor_price} -> {confirm_price})!")
 
+        # ==========================================================
+        # BRANCH A: INSTANT VIRTUAL TEST EXECUTION
+        # ==========================================================
         if mode == "TEST":
             if side == "BUY":
-                sl_p = round(confirm_price * (1.0 - WHALE_SL_PCT), 6)
-                tp_p = round(confirm_price * (1.0 + WHALE_TP_PCT), 6)
+                sl_p = round(exec_price * (1.0 - WHALE_SL_PCT), 6)
+                tp_p = round(exec_price * (1.0 + WHALE_TP_PCT), 6)
             else:
-                sl_p = round(confirm_price * (1.0 + WHALE_SL_PCT), 6)
-                tp_p = round(confirm_price * (1.0 - WHALE_TP_PCT), 6)
+                sl_p = round(exec_price * (1.0 + WHALE_SL_PCT), 6)
+                tp_p = round(exec_price * (1.0 - WHALE_TP_PCT), 6)
 
-            # Mark coin as tested and immediately clear armed_orders so REAL & TEST buttons stay visible!
             if key in locked_signals:
                 locked_signals[key]["tested"] = True
             with data_lock:
@@ -780,12 +752,14 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
 
             test_id = f"TEST-{exchange}-{int(time.time() * 1000)}"
             start_virtual_test_trade(
-                test_id, exchange, symbol, side, confirm_price, sl_p, tp_p, entry_time_str,
+                test_id, exchange, symbol, side, exec_price, sl_p, tp_p, entry_time_str,
                 dashboard_data, data_lock, add_ui_log
             )
             return
 
-        # REAL TRADING EXECUTION
+        # ==========================================================
+        # BRANCH B: INSTANT REAL TRADING EXECUTION (±5% SL/TP)
+        # ==========================================================
         target_notional = WHALE_MARGIN_USD * WHALE_LEVERAGE
 
         if exchange == "BYBIT":
@@ -805,11 +779,11 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
             q_dec = len(f"{qty_step:.8f}".rstrip("0").split(".")[1]) if "." in f"{qty_step:.8f}".rstrip("0") else 0
             p_dec = len(f"{tick_size:.8f}".rstrip("0").split(".")[1]) if "." in f"{tick_size:.8f}".rstrip("0") else 2
 
-            calc_qty = math.floor((target_notional / confirm_price) / qty_step) * qty_step
+            calc_qty = math.floor((target_notional / exec_price) / qty_step) * qty_step
             if calc_qty < min_qty:
                 calc_qty = min_qty
-            if (calc_qty * confirm_price) < min_notional:
-                calc_qty = math.ceil((min_notional / confirm_price) / qty_step) * qty_step
+            if (calc_qty * exec_price) < min_notional:
+                calc_qty = math.ceil((min_notional / exec_price) / qty_step) * qty_step
             qty_str = f"{calc_qty:.{q_dec}f}" if q_dec > 0 else str(int(calc_qty))
 
             order_side = "Buy" if side == "BUY" else "Sell"
@@ -820,7 +794,7 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
                 raise RuntimeError(resp.get("retMsg", "Bybit Order Rejected"))
 
             time.sleep(0.1)
-            actual_entry = confirm_price
+            actual_entry = exec_price
             qty_float = float(qty_str)
             pos_list = bybit_client.get_positions(category="linear", symbol=symbol)["result"]["list"]
             if pos_list and float(pos_list[0].get("size", 0)) > 0:
@@ -865,11 +839,11 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
             q_dec = len(f"{qty_step:.8f}".rstrip("0").split(".")[1]) if "." in f"{qty_step:.8f}".rstrip("0") else 0
             p_dec = len(f"{tick_size:.8f}".rstrip("0").split(".")[1]) if "." in f"{tick_size:.8f}".rstrip("0") else 2
 
-            calc_qty = math.floor((target_notional / confirm_price) / qty_step) * qty_step
+            calc_qty = math.floor((target_notional / exec_price) / qty_step) * qty_step
             if calc_qty < min_qty:
                 calc_qty = min_qty
-            if (calc_qty * confirm_price) < min_notional:
-                calc_qty = math.ceil((min_notional / confirm_price) / qty_step) * qty_step
+            if (calc_qty * exec_price) < min_notional:
+                calc_qty = math.ceil((min_notional / exec_price) / qty_step) * qty_step
             qty_str = f"{calc_qty:.{q_dec}f}" if q_dec > 0 else str(int(calc_qty))
             qty_float = float(qty_str)
 
@@ -877,8 +851,8 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
             close_side = "SELL" if side == "BUY" else "BUY"
 
             resp = binance_client.new_order(symbol=symbol, side=order_side, type="MARKET", quantity=qty_str)
-            actual_entry = float(resp.get("avgPrice", 0)) or confirm_price
-            if actual_entry == confirm_price:
+            actual_entry = float(resp.get("avgPrice", 0)) or exec_price
+            if actual_entry == exec_price:
                 for p in binance_client.get_position_risk(symbol=symbol):
                     if abs(float(p.get("positionAmt", 0))) > 0 and float(p.get("entryPrice", 0)) > 0:
                         actual_entry = float(p["entryPrice"])
@@ -899,7 +873,6 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
             binance_client.new_order(symbol=symbol, side=close_side, type="STOP_MARKET", stopPrice=sl_str, closePosition=True, workingType="CONTRACT_PRICE")
             binance_client.new_order(symbol=symbol, side=close_side, type="LIMIT", quantity=qty_str, price=tp_str, timeInForce="GTC", reduceOnly=True)
 
-        # Mark real_traded and release button lock so user can still interact if desired
         if key in locked_signals:
             locked_signals[key]["real_traded"] = True
         with data_lock:
@@ -911,7 +884,7 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
             daemon=True
         ).start()
 
-        add_ui_log(f"🚀✓ [Whale REAL {exchange}] {symbol} ({side}) EXECUTED @ {actual_entry} | SL(5%): {sl_str} | TP(5%): {tp_str}")
+        add_ui_log(f"🚀⚡ [Whale REAL {exchange}] {symbol} ({side}) INSTANT ENTRY @ {actual_entry} | SL(5%): {sl_str} | TP(5%): {tp_str}")
         add_ledger_entry({
             "exchange": f"Whale-{exchange}",
             "coin": f"{symbol} [{side} - REAL]",
@@ -931,7 +904,7 @@ def execute_whale_armed_trade(exchange, symbol, side, anchor_price, mode, dashbo
 def start_whale_scanner_loop(dashboard_data, data_lock, add_ui_log, add_ledger_entry):
     bybit_client = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
     binance_client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🐋 Whale Scanner Active (1s Live Fetch & PnL | 60s Pre-Track | >=55% Filter)")
+    add_ui_log("🐋 Whale Scanner Active (60s Pre-Track | 2m Guaranteed Lock | Instant REAL & TEST Entry)")
 
     while True:
         loop_start = time.time()
