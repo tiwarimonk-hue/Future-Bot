@@ -33,13 +33,25 @@ dashboard_data = {
         "manual_disarmed": []
     },
     "whale": {
-        "status": "Scanning Market Whales (5s Live Loop)...",
+        "status": "Incubating Whales (60s Filter | >=55% Only)...",
+        "incubating_count": 0,
         "bybit_buy": [],
         "bybit_sell": [],
         "binance_buy": [],
         "binance_sell": [],
-        "armed_orders": {},   # key: "EXCHANGE:SYMBOL:SIDE" -> status dict
-        "test_trades": []     # Live & completed virtual paper trades
+        "armed_orders": {},
+        "bybit_test_trades": [],
+        "binance_test_trades": [],
+        "pnl": {
+            "bybit_test": 0.0,
+            "binance_test": 0.0,
+            "bybit_real": 0.0,
+            "binance_real": 0.0,
+            "bybit_wins": 0,
+            "bybit_losses": 0,
+            "binance_wins": 0,
+            "binance_losses": 0
+        }
     },
     "logs": [],
     "ledger": []
@@ -57,7 +69,7 @@ def add_ui_log(message):
 def add_ledger_entry(trade_info):
     with data_lock:
         dashboard_data['ledger'].insert(0, trade_info)
-        if len(dashboard_data['ledger']) > 60:
+        if len(dashboard_data['ledger']) > 80:
             dashboard_data['ledger'].pop()
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -183,14 +195,15 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True, "action": "ARMED", "mode": mode, "key": key})
                     return
 
-            # 4. Manual Close for Live Virtual Test Trade
+            # 4. Manual Close for Live Virtual Test Trade (Bybit or Binance)
             if path == '/api/close_test_whale':
                 test_id = params.get('id', [''])[0]
                 if test_id:
                     with data_lock:
-                        for t in dashboard_data['whale'].get('test_trades', []):
-                            if t.get('id') == test_id and t.get('status') == 'LIVE':
-                                t['force_close'] = True
+                        for list_key in ('bybit_test_trades', 'binance_test_trades'):
+                            for t in dashboard_data['whale'].get(list_key, []):
+                                if t.get('id') == test_id and t.get('status') == 'LIVE':
+                                    t['force_close'] = True
                     self._send_json({"ok": True, "id": test_id})
                     return
 
@@ -229,7 +242,7 @@ def run_web_server():
             time.sleep(1)
 
 if __name__ == '__main__':
-    add_ui_log("⚡ Master Controller Starting (Binance T+150ms | Whale Real & Virtual Test Mode)...")
+    add_ui_log("⚡ Master Controller Starting (60s Whale Pre-Tracker + Separate Bybit/Binance PnL)...")
 
     # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
@@ -254,7 +267,7 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Binance Funding Engine Launched (Entry @ T+150ms)")
+        add_ui_log("✔ Binance Funding Engine Launched")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
@@ -266,7 +279,7 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Whale Scanner Launched ($1 Margin | 6x Lev | ±5% SL/TP | Real & Virtual Test)")
+        add_ui_log("✔ Whale Engine Launched (60s Pre-Track | >=55% Filter | Separate Bybit & Binance PnL)")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Whale Engine: {e}")
 
