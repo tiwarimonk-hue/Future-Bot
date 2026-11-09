@@ -10,9 +10,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '')
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
 
-MIN_FUNDING_RATE_THRESHOLD = -0.0025   # -0.25% Threshold (Updated)
+# Funding Rate Range: -0.34% to -0.05%
+MIN_FUNDING_RATE_THRESHOLD = -0.0034   # -0.34% (Lower Bound)
+MAX_FUNDING_RATE_THRESHOLD = -0.0005   # -0.05% (Upper Bound)
 INITIAL_ENTRY_MARGIN_USD = 0.5        # $0.5 Margin
-MAX_TARGET_COINS = 3
+MAX_TARGET_COINS = 5                  # Max 5 Coins
 MAX_ALLOWED_LEVERAGE = 20
 TP_PROFIT_PCT = 0.001                 # +0.10% TP Profit
 HARD_EXIT_SECONDS = 600               # 10 Minutes Hard Exit
@@ -67,6 +69,13 @@ def precision_wait_until(target_time_ms):
             time.sleep(0.0005)
 
 
+def get_interval_priority(cycle_str):
+    if "1H" in cycle_str: return 1
+    if "4H" in cycle_str: return 4
+    if "8H" in cycle_str: return 8
+    return 99
+
+
 def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_active_coins: set[str]):
     try:
         premiums = client.mark_price()
@@ -77,7 +86,7 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_acti
     all_negative = []
 
     with data_lock:
-        s2_data = dashboard_data.get('strategy2', {})
+        s2_data = dashboard_data.setdefault('strategy2', {})
         m_armed = list(s2_data.get('manual_armed', []))
         m_disarmed = list(s2_data.get('manual_disarmed', []))
 
@@ -87,7 +96,6 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_acti
         if not sym.endswith("USDT"):
             continue
 
-        # PRIORITY FILTER: Ignore coins currently assigned to Strategy 1
         if sym in strategy1_active_coins:
             continue
 
@@ -128,24 +136,22 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_acti
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
+    # Auto eligible within -0.34% to -0.05% range, sorted by 1H / 4H / 8H priority
     auto_eligible = [
         c for c in all_negative
-        if c['funding_rate'] <= MIN_FUNDING_RATE_THRESHOLD
+        if MIN_FUNDING_RATE_THRESHOLD <= c['funding_rate'] <= MAX_FUNDING_RATE_THRESHOLD
         and (c['next_funding_time'] - now_ms) > 1500
     ]
-    auto_top3_syms = []
-    if auto_eligible:
-        earliest_time = min(c['next_funding_time'] for c in auto_eligible)
-        imminent = [c for c in auto_eligible if abs(c['next_funding_time'] - earliest_time) <= 600000]
-        imminent.sort(key=lambda x: x['funding_rate'])
-        auto_top3_syms = [c['symbol'] for c in imminent[:MAX_TARGET_COINS]]
+    auto_eligible.sort(key=lambda x: (get_interval_priority(x['cycle']), x['funding_rate']))
+
+    auto_top_syms = [c['symbol'] for c in auto_eligible[:MAX_TARGET_COINS]]
 
     valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
     valid_m_disarmed = [s for s in m_disarmed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
 
     effective_armed = []
     seen = set()
-    for sym in auto_top3_syms:
+    for sym in auto_top_syms:
         if sym not in valid_m_disarmed and sym not in seen:
             c = dict(ticker_map[sym])
             c['arm_mode'] = "AUTO"
@@ -159,34 +165,33 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_acti
             effective_armed.append(c)
             seen.add(sym)
 
-    effective_armed.sort(key=lambda x: (x['next_funding_time'], x['funding_rate']))
+    effective_armed.sort(key=lambda x: (get_interval_priority(x['cycle']), x['next_funding_time']))
 
     top20_list = []
     for c in all_negative[:20]:
         sym = c['symbol']
-        mode = "MANUAL" if sym in valid_m_armed else ("AUTO" if sym in seen else "DISARMED")
+        is_armed = sym in valid_m_armed or (sym not in valid_m_disarmed and sym in auto_top_syms)
+        mode = "MANUAL" if sym in valid_m_armed else ("AUTO" if sym in auto_top_syms else "DISARMED")
         top20_list.append({
             "symbol": sym, "rate": c['funding_rate'], "rate_str": c['rate_str'],
             "next_funding_time": c['next_funding_time'], "settle_str": c['settle_str'],
-            "cycle": c['cycle'], "arm_mode": mode, "is_armed": sym in seen
+            "cycle": c['cycle'], "arm_mode": mode, "is_armed": is_armed
         })
 
     with data_lock:
-        if 'strategy2' not in dashboard_data:
-            dashboard_data['strategy2'] = {}
-        dashboard_data['strategy2']['manual_armed'] = valid_m_armed
-        dashboard_data['strategy2']['manual_disarmed'] = valid_m_disarmed
-        dashboard_data['strategy2']['top20'] = top20_list
+        s2_data['manual_armed'] = valid_m_armed
+        s2_data['manual_disarmed'] = valid_m_disarmed
+        s2_data['top20'] = top20_list
         if effective_armed:
-            dashboard_data['strategy2']['status'] = f"ARMED ({len(effective_armed)} Coins)"
-            dashboard_data['strategy2']['symbols'] = ", ".join([f"{c['symbol']} ({c['arm_mode']})" for c in effective_armed])
-            dashboard_data['strategy2']['rates'] = ", ".join([c['rate_str'] for c in effective_armed])
-            dashboard_data['strategy2']['settlement'] = effective_armed[0]['settle_str']
+            s2_data['status'] = f"ARMED ({len(effective_armed)} Coins)"
+            s2_data['symbols'] = ", ".join([f"{c['symbol']} ({c['arm_mode']})" for c in effective_armed])
+            s2_data['rates'] = ", ".join([c['rate_str'] for c in effective_armed])
+            s2_data['settlement'] = effective_armed[0]['settle_str']
         else:
-            dashboard_data['strategy2']['status'] = "SCANNING (Top 20 Live)"
-            dashboard_data['strategy2']['symbols'] = "Scanning..."
-            dashboard_data['strategy2']['rates'] = "--"
-            dashboard_data['strategy2']['settlement'] = "--"
+            s2_data['status'] = "SCANNING (-0.34% to -0.05%)"
+            s2_data['symbols'] = "Scanning..."
+            s2_data['rates'] = "--"
+            s2_data['settlement'] = "--"
 
     return effective_armed
 
@@ -265,7 +270,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         leverage = coin_plan['leverage']
         rate_str = f"{rate*100:+.4f}%"
 
-        # ENTRY AT T + 220ms | HARD EXIT AT ENTRY + 10 MINUTES
         t_entry = settle_epoch + 220
         t_hard_exit = t_entry + (HARD_EXIT_SECONDS * 1000)
 
@@ -299,7 +303,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
         entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
 
-        # Stop Loss (-200% Funding Rate)
         sl_discount = 2.0 * abs(rate)
         raw_sl_price = actual_entry_price * (1.0 - sl_discount)
         sl_price = max(tick_size, round(math.floor(raw_sl_price / tick_size) * tick_size, price_decimals))
@@ -310,7 +313,6 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
         except Exception:
             pass
 
-        # Take Profit (+0.10%)
         raw_tp_price = actual_entry_price * (1.0 + TP_PROFIT_PCT)
         tp_price = round(math.ceil(raw_tp_price / tick_size) * tick_size, price_decimals)
         if tp_price <= actual_entry_price: tp_price = round(actual_entry_price + tick_size, price_decimals)
@@ -379,8 +381,9 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
                 exit_outcome = "EXIT FAILED"
 
         with data_lock:
-            if symbol in dashboard_data.get('strategy2', {}).get('manual_armed', []):
-                dashboard_data['strategy2']['manual_armed'].remove(symbol)
+            s2_data = dashboard_data.get('strategy2', {})
+            if symbol in s2_data.get('manual_armed', []):
+                s2_data['manual_armed'].remove(symbol)
 
         add_s2_ledger_entry({
             "coin": f"{symbol} [{arm_mode}]",
@@ -401,7 +404,7 @@ def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_
 
 def start_strategy2_loop(dashboard_data, data_lock, add_ui_log, add_s2_ledger_entry, get_s1_active_coins_fn):
     client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
-    add_ui_log("🚀 Strategy 2 Active ($0.5 Margin | T+220ms Mkt Buy | -0.25% Threshold | -200% SL | +0.10% TP)")
+    add_ui_log("🚀 Strategy 2 Active ($0.5 Margin | T+220ms Mkt Buy | Range: -0.34% to -0.05% | 1H/4H/8H Priority)")
     refresh_funding_intervals(client)
     last_clock_sync = 0.0
     last_interval_sync = time.time()
