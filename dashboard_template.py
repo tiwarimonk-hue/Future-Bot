@@ -5,7 +5,7 @@ import config
 def get_dashboard_html() -> str:
     """
     Binance Tokyo Funding Sniper ka complete responsive dark-mode HTML,
-    CSS aur JavaScript template return karta hai.
+    CSS aur JavaScript template return karta hai (Strategy 1 + Strategy 2 Dual Ledger).
     """
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -266,7 +266,7 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 <div class="header">
     <div>
         <h1>Binance Tokyo Funding Sniper</h1>
-        <div class="sub-text" style="color: #848e9c;">Radar Top 10 &bull; 24h Volume &bull; Automatic/Manual Modes &bull; T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
+        <div class="sub-text" style="color: #848e9c;">Radar Top 10 &bull; 24h Volume &bull; Dual Engine Active (Strat 1: T-{config.ENTRY_BEFORE_SETTLE_MS}ms &bull; Strat 2: T+210ms)</div>
     </div>
     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
         <button id="btn-trade-toggle" class="btn-toggle btn-on" onclick="toggleTrading()">TRADING: ON</button>
@@ -352,10 +352,10 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     </div>
 </div>
 
-<!-- 3. TRADE HISTORY TABLE WITH FUNDING FEE & NET PNL COLUMNS -->
+<!-- 3. STRATEGY 1 TRADE HISTORY TABLE WITH FUNDING FEE & NET PNL COLUMNS -->
 <div class="table-card">
     <div class="table-header">
-        <span>Last 20 Trades Precision Ledger</span>
+        <span>Strategy 1: Last 20 Trades Precision Ledger (T-{config.ENTRY_BEFORE_SETTLE_MS}ms Limit Burst)</span>
         <span style="font-size: 12px; color: #848e9c;">Auto-Refreshes every 1s</span>
     </div>
     <div class="table-wrapper">
@@ -375,7 +375,36 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
                 </tr>
             </thead>
             <tbody id="trades-body">
-                <tr><td colspan="10" style="text-align: center; padding: 24px; color: #848e9c;">Waiting for trades to execute...</td></tr>
+                <tr><td colspan="10" style="text-align: center; padding: 24px; color: #848e9c;">Waiting for Strategy 1 trades to execute...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 4. SECOND STRATEGY (STRATEGY 2: T+210ms MARKET ENTRY) TRADE HISTORY TABLE -->
+<div class="table-card" style="border: 1px solid rgba(59, 130, 246, 0.45);">
+    <div class="table-header">
+        <span style="color: #60a5fa;">Second Strategy: Last 20 Trades Precision Ledger (T+210ms Market Entry)</span>
+        <span style="font-size: 12px; color: #848e9c;">Auto-Refreshes every 1s</span>
+    </div>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Coin &amp; Funding</th>
+                    <th>Strategy Mode</th>
+                    <th>Entry Timeline (T+210ms)</th>
+                    <th>Avg Entry Price</th>
+                    <th>Exit Timeline</th>
+                    <th>Exit Price</th>
+                    <th style="min-width: 120px;">Funding Fee</th>
+                    <th style="min-width: 105px;">Net PnL</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="trades-body-strat2">
+                <tr><td colspan="10" style="text-align: center; padding: 24px; color: #848e9c;">Waiting for Second Strategy (T+210ms) trades to execute...</td></tr>
             </tbody>
         </table>
     </div>
@@ -708,10 +737,10 @@ async function updateUI() {{
             }}
         }}
 
-        // Render Trades History with Funding Fee & Net PnL Columns
+        // Render Strategy 1 Trades History with Funding Fee & Net PnL Columns
         const tbody = document.getElementById('trades-body');
         if (!data.trades || data.trades.length === 0) {{
-            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for trades to execute...</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for Strategy 1 trades to execute...</td></tr>';
         }} else {{
             tbody.innerHTML = data.trades.map((t, idx) => {{
                 let statusClass = "tag-success";
@@ -791,6 +820,76 @@ async function updateUI() {{
                                 <div class="sub-item" style="flex-direction: column; align-items: flex-start; width: 100%;">
                                     <span class="sub-label">Limit Order Fills (${{hitsList.length}} Levels Hit — Row 1: Blue Shallow | Row 2: Yellow DCA):</span>
                                     ${{dcaHtml}}
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }}).join('');
+        }}
+
+        // Render Second Strategy (Strategy 2: T+210ms Market Entry) Trades History
+        const tbody2 = document.getElementById('trades-body-strat2');
+        if (!data.trades_strat2 || data.trades_strat2.length === 0) {{
+            tbody2.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for Second Strategy (T+210ms) trades to execute...</td></tr>';
+        }} else {{
+            tbody2.innerHTML = data.trades_strat2.map((t, idx) => {{
+                let statusClass = "tag-success";
+                if (t.status.includes("REJECTED") || t.status.includes("FAILED")) statusClass = "tag-cancel";
+                else if (t.status.includes("SL HIT") || t.status.includes("HARD EXIT") || t.status.includes("STOP LOSS")) statusClass = "tag-warn";
+
+                let pnlClass = t.pnl_class || "pnl-neutral";
+                let pnlValStr = t.pnl || "$0.0000";
+
+                let fundingClass = t.funding_fee_class || "pnl-neutral";
+                let fundingValStr = t.funding_fee_received || "$0.0000";
+                let fundingTimeStr = (t.funding_fee_time && t.funding_fee_time !== "--:--:--") ? `@ ${{t.funding_fee_time}}` : "--:--:--";
+
+                return `
+                    <tr class="main-row" style="background: rgba(59, 130, 246, 0.04);">
+                        <td style="color:#848e9c;">${{idx + 1}}</td>
+                        <td>
+                            <strong>${{t.symbol}}</strong>
+                            <div class="sub-text" style="color:#0ecb81; font-weight:600;">Rate: ${{t.funding_rate}}</div>
+                        </td>
+                        <td><span class="badge" style="font-size:10px; padding:3px 8px; background: rgba(59, 130, 246, 0.2); color: #60a5fa;">${{t.tier || 'SECOND STRATEGY (T+210ms)'}}</span></td>
+                        <td>
+                            <div class="mono">Sent: ${{t.entry_sent || '--'}}</div>
+                            <div class="mono sub-text">&#8594; ACK: ${{t.entry_ack || '--'}} (${{t.entry_rtt || 'T+210ms'}})</div>
+                            <div class="mono sub-text" style="color:#0ecb81; font-weight:600;">&#8594; Fill: ${{t.entry_fill_time || '--'}}</div>
+                        </td>
+                        <td>
+                            <div class="mono" style="color:#0ecb81; font-weight:bold;">${{t.entry_fill_price || '--'}}</div>
+                            <div class="sub-text">Market Execution</div>
+                        </td>
+                        <td>
+                            <div class="mono">Fired: ${{t.exit_sent || '--'}}</div>
+                            <div class="mono sub-text" style="color:#eaecef;">&#8594; Closed: ${{t.exit_fill_time || '--'}}</div>
+                        </td>
+                        <td>
+                            <div class="mono"><strong style="color:#f0b90b; font-size:14px;">${{t.exit_price || '--'}}</strong></div>
+                            <div class="sub-text">${{t.exit_type || '--'}}</div>
+                        </td>
+                        <td>
+                            <div class="mono ${{fundingClass}}">${{fundingValStr}}</div>
+                            <div class="sub-text" style="color:#848e9c; font-size:10px;">${{fundingTimeStr}}</div>
+                        </td>
+                        <td>
+                            <div class="mono ${{pnlClass}}">${{pnlValStr}}</div>
+                            <div class="sub-text">Net Realized</div>
+                        </td>
+                        <td><span class="${{statusClass}}">${{t.status}}</span></td>
+                    </tr>
+                    <tr class="sub-row">
+                        <td colspan="10" style="padding:0;">
+                            <div class="sub-box" style="border-left: 3px solid #60a5fa; background: rgba(59, 130, 246, 0.04);">
+                                <div class="sub-item">
+                                    <span class="sub-label">Execution Summary:</span>
+                                    <strong class="mono" style="color:#eaecef;">${{t.details || '--'}}</strong>
+                                </div>
+                                <div class="sub-item">
+                                    <span class="sub-label">PnL Breakdown (incl. Funding):</span>
+                                    <strong class="mono" style="color:#f0b90b;">${{t.pnl_breakdown || '--'}}</strong>
                                 </div>
                             </div>
                         </td>
