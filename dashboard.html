@@ -12,7 +12,6 @@
             --text-main: #f3f4f6;
             --text-muted: #9ca3af;
             --accent-cyan: #00f0ff;
-            --accent-indigo: #6366f1;
             --green: #10b981;
             --red: #f43f5e;
             --blue: #38bdf8;
@@ -47,7 +46,6 @@
         .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: 0.2s; }
         .btn-disarm:hover { opacity: 0.8; }
 
-        /* Ledger Card Styling */
         .ledger-card { background: rgba(0,0,0,0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
         .ledger-header { display: flex; justify-content: space-between; color: var(--accent-cyan); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
         .shallow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
@@ -75,13 +73,11 @@
             </div>
         </div>
 
-        <!-- Armed Mini-Boxes Box on Top -->
         <div class="sub-section-title"><span>🛡️ Armed Sniper Target Pool</span></div>
         <div id="s1-armed-chips" class="armed-chips-container">
             <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
-        <!-- Top 20 Radar Table -->
         <div class="sub-section-title"><span>Top 20 Funding Radar (Click Arm / Disarm)</span></div>
         <div style="max-height: 200px; overflow-y: auto;">
             <table class="radar-table">
@@ -100,7 +96,6 @@
             </table>
         </div>
 
-        <!-- Precision Ledger -->
         <div class="sub-section-title"><span>Strategy 1: Last 20 Trades Precision Ledger</span></div>
         <div id="s1-ledger-container">
             <div class="empty-state">Waiting for Strategy 1 precision execution...</div>
@@ -112,20 +107,18 @@
     <div class="strategy-container">
         <div class="strategy-header">
             <div class="strategy-title">
-                <span>STRATEGY 2: AUTO TOP-3 QUANT ARBITRAGE (T+220ms Market Entry | -0.25% Threshold)</span>
+                <span>STRATEGY 2: AUTO TOP-3 QUANT ARBITRAGE (T+220ms Market Entry | Range: -0.34% to -0.05%)</span>
             </div>
             <div class="strategy-features">
-                Features: $0.5 Margin ($10 Notional @ 20x) | T+220ms Precise Market Buy | -200% Funding Rate SL Shield | +0.10% Take Profit Limit | 10-Minute Hard Exit Timeout.
+                Features: $0.5 Margin ($10 Notional @ 20x) | T+220ms Precise Market Buy | 1H/4H/8H Priority Order | Max 5 Armed Coins | +0.10% Take Profit Limit.
             </div>
         </div>
 
-        <!-- Armed Mini-Boxes Box on Top -->
         <div class="sub-section-title"><span>🚀 Strategy 2 Active Target Pool</span></div>
         <div id="s2-armed-chips" class="armed-chips-container">
             <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
-        <!-- Top 20 Radar Table -->
         <div class="sub-section-title"><span>Top 20 Negative Funding Radar (Click Arm / Disarm)</span></div>
         <div style="max-height: 200px; overflow-y: auto;">
             <table class="radar-table">
@@ -144,7 +137,6 @@
             </table>
         </div>
 
-        <!-- Execution Ledger -->
         <div class="sub-section-title"><span>Strategy 2: Execution Ledger (T+220ms Market Entry)</span></div>
         <div style="overflow-x: auto;">
             <table class="ledger-table">
@@ -166,12 +158,14 @@
 
     <script>
         async function toggleArm(strategy, symbol, action) {
-            await fetch('/api/arm-control', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ strategy, symbol, action })
-            });
-            fetchDashboardData();
+            try {
+                await fetch('/api/arm-control', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ strategy, symbol, action })
+                });
+                fetchDashboardData();
+            } catch(e) { console.error("Arm toggle error:", e); }
         }
 
         async function fetchDashboardData() {
@@ -179,7 +173,7 @@
                 let res = await fetch('/api/status');
                 let data = await res.json();
 
-                // Strategy 1 Radar & Armed Chips
+                // Strategy 1 Radar & Armed Chips Sync
                 let s1RadarHtml = "";
                 let s1ArmedChipsHtml = "";
                 if(data.strategy1_top20 && data.strategy1_top20.length > 0) {
@@ -200,7 +194,7 @@
                 document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
                 document.getElementById('s1-armed-chips').innerHTML = s1ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
 
-                // Strategy 1 Precision Ledger
+                // Strategy 1 Ledger
                 let s1LedgerContainer = document.getElementById('s1-ledger-container');
                 if(data.trades && data.trades.length > 0) {
                     let html = "";
@@ -241,7 +235,7 @@
                     s1LedgerContainer.innerHTML = html;
                 }
 
-                // Strategy 2 Radar & Armed Chips
+                // Strategy 2 Radar & Armed Chips Sync
                 let s2RadarHtml = "";
                 let s2ArmedChipsHtml = "";
                 if(data.strategy2 && data.strategy2.top20 && data.strategy2.top20.length > 0) {
