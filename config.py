@@ -62,8 +62,13 @@ RECHECK_BEFORE_SETTLE_MS = 2500        # T-2.5s (2500ms): Live rate recheck & Ba
 # Single-Shot Limit Execution Timeline Offset
 ENTRY_BEFORE_SETTLE_MS = 100           # T-100ms: Single-shot burst of all 4 or 5 Limit Orders (No retries)
 
-# Post-Settlement Timeline Offsets
-SHALLOW_CANCEL_AFTER_SETTLE_MS = 230   # T+230ms: Simultaneous WS cancel burst for 3 Shallow orders ONLY
+# Post-Settlement Timeline Offsets & Strict Hard Floor Settings
+SHALLOW_CANCEL_FLOOR_MS = 228.0        # STRICT HARD FLOOR: Kisi bhi haal me T+228.0ms se pehle nahi fire hoga
+SHALLOW_CANCEL_AFTER_SETTLE_MS = 230.0 # Target cancellation strike time on Binance matching engine
+SHALLOW_CANCEL_LEAD_MIN_MS = 0.8       # Minimum clamped 1-way network lead
+SHALLOW_CANCEL_LEAD_MAX_MS = 2.0       # Maximum clamped 1-way network lead
+SHALLOW_CANCEL_LEAD_DEFAULT_MS = 1.2   # Safe fallback lead if ping not yet measured
+
 CANCEL_ORDERS_AFTER_SETTLE_MS = 6000   # T+6s: Cancel remaining unfilled limit orders (DCA)
 EXIT_AFTER_SETTLE_MS = 7000            # T+7s: Scheduled 100% Market Exit
 EMERGENCY_SWEEP_AFTER_SETTLE_MS = 9000 # T+9s: Hard Emergency Sweep & Safety Net
