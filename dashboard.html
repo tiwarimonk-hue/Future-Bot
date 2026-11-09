@@ -13,7 +13,7 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, sans-serif; }
 body { background-color: var(--bg-main); color: var(--text-main); padding: 14px; display: flex; justify-content: center; min-height: 100vh; }
-.terminal-wrapper { width: 100%; max-width: 1500px; display: flex; flex-direction: column; gap: 14px; }
+.terminal-wrapper { width: 100%; max-width: 1540px; display: flex; flex-direction: column; gap: 14px; }
 
 .top-strip { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; }
@@ -24,7 +24,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
 .strategy-title-strip { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); }
 .two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media(max-width: 1024px) { .two-col-grid { grid-template-columns: 1fr; } }
+@media(max-width: 1080px) { .two-col-grid { grid-template-columns: 1fr; } }
 
 .exchange-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .exchange-panel.bybit-theme { border-top: 3px solid var(--bybit-gold); }
@@ -41,8 +41,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 .coin-box.armed-highlight { border-color: rgba(14, 203, 129, 0.45); background: rgba(14, 203, 129, 0.05); }
 .coin-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 700; }
 .cycle-tag { font-size: 9px; font-family: 'JetBrains Mono', monospace; padding: 2px 5px; border-radius: 3px; background: rgba(56, 189, 248, 0.15); color: var(--dual-blue); }
-.ex-tag-bb { background: rgba(247, 166, 0, 0.18); color: var(--bybit-gold); }
-.ex-tag-bn { background: rgba(240, 185, 11, 0.18); color: var(--binance-yellow); }
+.resurge-tag { font-size: 8px; font-weight: 800; padding: 1px 4px; border-radius: 3px; background: rgba(247, 166, 0, 0.22); color: var(--bybit-gold); border: 1px solid rgba(247, 166, 0, 0.4); }
 .coin-rate { font-size: 15px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--neon-green); }
 .armed-chip { position: absolute; bottom: 6px; right: 6px; font-size: 8px; font-weight: 800; background: var(--neon-green); color: #000; padding: 1px 5px; border-radius: 3px; }
 .armed-chip.manual-chip { background: var(--dual-blue); color: #000; }
@@ -62,7 +61,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 .watchlist-table tr.row-armed { background: rgba(14, 203, 129, 0.06); }
 
 .arm-btn {
-  cursor: pointer; border-radius: 4px; padding: 4px 9px; font-size: 10px; font-weight: 800;
+  cursor: pointer; border-radius: 4px; padding: 4px 8px; font-size: 10px; font-weight: 800;
   font-family: 'JetBrains Mono', monospace; border: 1px solid transparent; transition: all 0.15s;
 }
 .arm-btn-auto { background: rgba(14, 203, 129, 0.2); color: var(--neon-green); border-color: rgba(14, 203, 129, 0.45); }
@@ -75,11 +74,13 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 .arm-btn-confirmed { background: rgba(14, 203, 129, 0.28); color: #fff; border-color: var(--neon-green); box-shadow: 0 0 8px rgba(14, 203, 129, 0.35); }
 
 /* WHALE PANEL STYLING */
-.whale-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); border-top: 3px solid var(--dual-blue); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
-.whale-col-buy { background: var(--bg-panel); border: 1px solid rgba(14, 203, 129, 0.3); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.whale-col-sell { background: var(--bg-panel); border: 1px solid rgba(246, 70, 93, 0.3); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.chance-pill-buy { background: rgba(14, 203, 129, 0.18); color: var(--neon-green); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; }
-.chance-pill-sell { background: rgba(246, 70, 93, 0.18); color: var(--neon-red); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; }
+.whale-panel { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); border-top: 3px solid var(--dual-blue); padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.whale-ex-box { background: rgba(24, 29, 36, 0.65); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.whale-ex-header { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 800; }
+.whale-col-buy { background: var(--bg-panel); border: 1px solid rgba(14, 203, 129, 0.28); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.whale-col-sell { background: var(--bg-panel); border: 1px solid rgba(246, 70, 93, 0.28); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.chance-pill-buy { background: rgba(14, 203, 129, 0.18); color: var(--neon-green); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; display: inline-block; }
+.chance-pill-sell { background: rgba(246, 70, 93, 0.18); color: var(--neon-red); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; display: inline-block; }
 
 .ledger-block { display: flex; flex-direction: column; gap: 6px; }
 .ledger-header-text { font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; }
@@ -207,60 +208,118 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
 
   </div>
 
-  <!-- STRATEGY 2: WHALE MONEY FLOW SCANNER (BUY & SELL COLUMNS) -->
-  <div class="strategy-title-strip">🐋 Strategy 2: Live Whale Money Flow Scanner ($1.0 Margin | 6x Lev | ±10% SL &amp; TP | 1-Tick Confirmation ✓)</div>
+  <!-- STRATEGY 2: SEPARATE BYBIT & BINANCE WHALE TOP 10 SCANNERS -->
+  <div class="strategy-title-strip">🐋 Strategy 2: Whale Money Flow Scanner (5s Live Fetch | 2m Lock Window | Top 10 Only | $1 Margin 6x ±10%)</div>
   <div class="whale-panel">
     <div class="panel-header">
       <div class="panel-name">
-        <span style="color:var(--dual-blue);">🐋</span> Full-Market Whale Capital Inflow / Outflow Detector
+        <span style="color:var(--dual-blue);">🐋</span> Separate Bybit &amp; Binance Whale Top 10 Lists
       </div>
-      <div class="badge badge-armed" id="whale-status-badge">LIVE SCANNING</div>
+      <div class="badge badge-armed" id="whale-status-badge">5S LIVE SCANNING</div>
     </div>
 
-    <div class="two-col-grid">
-      <!-- LEFT COLUMN: WHALE BUY (LONG) -->
-      <div class="whale-col-buy">
-        <div class="watchlist-title">
-          <span style="color:var(--neon-green);">🟢 WHALE BUY (LONG SIGNALS)</span>
-          <span style="font-size:9px; color:var(--text-dim);">SL -10% | TP +10%</span>
+    <!-- SECTION A: BYBIT TOP 10 WHALE LISTS -->
+    <div class="whale-ex-box" style="border-left: 3px solid var(--bybit-gold);">
+      <div class="whale-ex-header">
+        <span><span style="color:var(--bybit-gold);">●</span> BYBIT WHALE SIGNALS (TOP 10 ONLY)</span>
+        <span style="font-size:10px; color:var(--text-dim);">Updates every 5s | Auto-removes after 2m if untracked</span>
+      </div>
+      <div class="two-col-grid">
+        <div class="whale-col-buy">
+          <div class="watchlist-title">
+            <span style="color:var(--neon-green);">🟢 BYBIT WHALE BUY (TOP 10)</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL -10% | TP +10%</span>
+          </div>
+          <div class="watchlist-table-wrap">
+            <table class="watchlist-table">
+              <thead>
+                <tr>
+                  <th># / Coin</th>
+                  <th>Paisa Badha / Ghata (5s)</th>
+                  <th>Bhagne Ka Chance</th>
+                  <th style="text-align:right;">Manual Arm</th>
+                </tr>
+              </thead>
+              <tbody id="bybit-whale-buy-body">
+                <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:10px;">Scanning Bybit Buy whales...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div class="watchlist-table-wrap">
-          <table class="watchlist-table">
-            <thead>
-              <tr>
-                <th>Coin</th>
-                <th>Kab Kitna Paisa Pada</th>
-                <th>Bhagne Ka Chance</th>
-                <th style="text-align:right;">Manual Arm</th>
-              </tr>
-            </thead>
-            <tbody id="whale-buy-body">
-              <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:12px;">Scanning market for Whale Buy spikes...</td></tr>
-            </tbody>
-          </table>
+
+        <div class="whale-col-sell">
+          <div class="watchlist-title">
+            <span style="color:var(--neon-red);">🔴 BYBIT WHALE SELL (TOP 10)</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL +10% | TP -10%</span>
+          </div>
+          <div class="watchlist-table-wrap">
+            <table class="watchlist-table">
+              <thead>
+                <tr>
+                  <th># / Coin</th>
+                  <th>Paisa Badha / Ghata (5s)</th>
+                  <th>Girne Ka Chance</th>
+                  <th style="text-align:right;">Manual Arm</th>
+                </tr>
+              </thead>
+              <tbody id="bybit-whale-sell-body">
+                <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:10px;">Scanning Bybit Sell whales...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
+    </div>
 
-      <!-- RIGHT COLUMN: WHALE SELL (SHORT) -->
-      <div class="whale-col-sell">
-        <div class="watchlist-title">
-          <span style="color:var(--neon-red);">🔴 WHALE SELL (SHORT SIGNALS)</span>
-          <span style="font-size:9px; color:var(--text-dim);">SL +10% | TP -10%</span>
+    <!-- SECTION B: BINANCE TOP 10 WHALE LISTS -->
+    <div class="whale-ex-box" style="border-left: 3px solid var(--binance-yellow);">
+      <div class="whale-ex-header">
+        <span><span style="color:var(--binance-yellow);">●</span> BINANCE WHALE SIGNALS (TOP 10 ONLY)</span>
+        <span style="font-size:10px; color:var(--text-dim);">Updates every 5s | Auto-removes after 2m if untracked</span>
+      </div>
+      <div class="two-col-grid">
+        <div class="whale-col-buy">
+          <div class="watchlist-title">
+            <span style="color:var(--neon-green);">🟢 BINANCE WHALE BUY (TOP 10)</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL -10% | TP +10%</span>
+          </div>
+          <div class="watchlist-table-wrap">
+            <table class="watchlist-table">
+              <thead>
+                <tr>
+                  <th># / Coin</th>
+                  <th>Paisa Badha / Ghata (5s)</th>
+                  <th>Bhagne Ka Chance</th>
+                  <th style="text-align:right;">Manual Arm</th>
+                </tr>
+              </thead>
+              <tbody id="binance-whale-buy-body">
+                <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:10px;">Scanning Binance Buy whales...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div class="watchlist-table-wrap">
-          <table class="watchlist-table">
-            <thead>
-              <tr>
-                <th>Coin</th>
-                <th>Kab Kitna Paisa Nikla</th>
-                <th>Girne Ka Chance</th>
-                <th style="text-align:right;">Manual Arm</th>
-              </tr>
-            </thead>
-            <tbody id="whale-sell-body">
-              <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:12px;">Scanning market for Whale Sell dumps...</td></tr>
-            </tbody>
-          </table>
+
+        <div class="whale-col-sell">
+          <div class="watchlist-title">
+            <span style="color:var(--neon-red);">🔴 BINANCE WHALE SELL (TOP 10)</span>
+            <span style="font-size:9px; color:var(--text-dim);">SL +10% | TP -10%</span>
+          </div>
+          <div class="watchlist-table-wrap">
+            <table class="watchlist-table">
+              <thead>
+                <tr>
+                  <th># / Coin</th>
+                  <th>Paisa Badha / Ghata (5s)</th>
+                  <th>Girne Ka Chance</th>
+                  <th style="text-align:right;">Manual Arm</th>
+                </tr>
+              </thead>
+              <tbody id="binance-whale-sell-body">
+                <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:10px;">Scanning Binance Sell whales...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -268,7 +327,7 @@ body { background-color: var(--bg-main); color: var(--text-main); padding: 14px;
     <div class="ledger-block">
       <div class="ledger-header-text">📋 Whale Execution Ledger ($1.0 Margin | 6x | Confirmation Tick ✓)</div>
       <div class="ledger-scroll" id="whale-ledger-box">
-        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Click ARM on any Whale Buy/Sell signal above to trade with 1-tick confirmation...</div>
+        <div style="color:var(--text-dim); font-size:11px; text-align:center; padding:12px;">Click ARM on any Bybit or Binance Whale signal above to trade with 1-tick confirmation...</div>
       </div>
     </div>
   </div>
@@ -371,11 +430,13 @@ async function fetchTelemetry(force = false) {
       renderTop20Table('binance', 'binance-top20-body', data.binance.top20 || []);
     }
 
-    // 3. Whale Money Flow Scanner
+    // 3. Separate Bybit & Binance Whale Top 10 Lists
     if (data.whale) {
-      document.getElementById('whale-status-badge').innerText = data.whale.status || 'LIVE SCANNING';
-      renderWhaleTable('whale-buy-body', data.whale.buy_signals || [], 'BUY');
-      renderWhaleTable('whale-sell-body', data.whale.sell_signals || [], 'SELL');
+      document.getElementById('whale-status-badge').innerText = data.whale.status || '5S LIVE SCANNING';
+      renderWhaleTable('bybit-whale-buy-body', data.whale.bybit_buy || [], 'BUY');
+      renderWhaleTable('bybit-whale-sell-body', data.whale.bybit_sell || [], 'SELL');
+      renderWhaleTable('binance-whale-buy-body', data.whale.binance_buy || [], 'BUY');
+      renderWhaleTable('binance-whale-sell-body', data.whale.binance_sell || [], 'SELL');
     }
 
     // 4. Ledgers
@@ -451,20 +512,27 @@ function renderTop20Table(exchange, tbodyId, top20List) {
 function renderWhaleTable(tbodyId, signals, side) {
   const tbody = document.getElementById(tbodyId);
   if (!signals || signals.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:12px;">Scanning market for ${side} whale flow...</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:10px;">Scanning for Top 10 ${side} whale spikes...</td></tr>`;
     return;
   }
-  tbody.innerHTML = signals.map(s => {
-    const exTagClass = s.exchange === 'BYBIT' ? 'ex-tag-bb' : 'ex-tag-bn';
+  tbody.innerHTML = signals.map((s, idx) => {
     const chanceClass = side === 'BUY' ? 'chance-pill-buy' : 'chance-pill-sell';
     const chanceLabel = side === 'BUY' ? `${s.chance_pct}% PUMP` : `${s.chance_pct}% DUMP`;
+    const cDelta = s.chance_delta || 0;
+    const cDeltaHtml = cDelta > 0
+      ? `<span style="color:var(--neon-green); font-size:9px;">▲+${cDelta}%</span>`
+      : (cDelta < 0 ? `<span style="color:var(--neon-red); font-size:9px;">▼${cDelta}%</span>` : '');
+
+    const deltaColor = s.money_delta_up ? 'var(--neon-green)' : 'var(--neon-red)';
+    const moveSign = s.price_move_pct >= 0 ? '+' : '';
+    const resurgeHtml = s.is_resurge ? `<span class="resurge-tag">🔥 RE-SURGE</span>` : '';
 
     let btnClass = side === 'BUY' ? 'arm-btn-off' : 'arm-btn-sell-off';
     let btnText = `ARM ${side}`;
 
     if (s.arm_state === 'WAITING_CONFIRM') {
       btnClass = 'arm-btn-wait';
-      btnText = '⏳ TICK CONFIRM...';
+      btnText = '⏳ CONFIRM...';
     } else if (s.arm_state === 'CONFIRMED' || s.arm_state === 'EXECUTED' || s.confirmed) {
       btnClass = 'arm-btn-confirmed';
       btnText = '✓ CONFIRMED';
@@ -473,14 +541,23 @@ function renderWhaleTable(tbodyId, signals, side) {
     return `
       <tr class="${s.arm_state !== 'IDLE' ? 'row-armed' : ''}">
         <td>
-          <div style="font-weight:800; color:var(--text-main);">${s.symbol} <span class="cycle-tag ${exTagClass}">${s.exchange}</span></div>
-          <div style="font-size:9px; color:var(--text-dim);">@ ${s.price}</div>
+          <div style="font-weight:800; color:var(--text-main);">
+            <span style="color:var(--text-dim);">#${idx + 1}</span> ${s.symbol} ${resurgeHtml}
+          </div>
+          <div style="font-size:9px; color:var(--text-dim);">@ ${s.price} (${moveSign}${s.price_move_pct}%)</div>
         </td>
         <td>
-          <div style="font-weight:800; color:${side === 'BUY' ? 'var(--neon-green)' : 'var(--neon-red)'};">+${s.inflow_str} (${s.spike_mult}x)</div>
-          <div style="font-size:9px; color:var(--text-dim);">${s.detected_time}</div>
+          <div style="font-weight:800; color:var(--text-main);">
+            5s: ${s.current_inflow_str} <span style="color:${deltaColor};">(${s.money_delta_str})</span>
+          </div>
+          <div style="font-size:9px; color:var(--text-dim);">
+            Lock: ${s.locked_time} | <span style="color:var(--dual-blue);">${s.remaining_sec}s left</span>
+          </div>
         </td>
-        <td><span class="${chanceClass}">${chanceLabel}</span></td>
+        <td>
+          <span class="${chanceClass}">${chanceLabel}</span> ${cDeltaHtml}
+          <div style="font-size:9px; color:var(--text-dim); margin-top:2px;">Vol: ${s.spike_mult}x</div>
+        </td>
         <td style="text-align:right;">
           <button class="arm-btn ${btnClass}" onclick="armWhaleSignal('${s.exchange}', '${s.symbol}', '${side}', ${s.price}, this)">${btnText}</button>
         </td>
