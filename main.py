@@ -32,15 +32,11 @@ dashboard_data = {
         "manual_armed": [],
         "manual_disarmed": []
     },
-    "dual": {
-        "status": "Initializing Engine...",
-        "coin": "--",
-        "bybit_rate": "--",
-        "binance_rate": "--",
-        "spread": "--",
-        "settlement": "--",
-        "legs": "Synced",
-        "trade_enabled": True
+    "whale": {
+        "status": "Scanning Market Whales...",
+        "buy_signals": [],
+        "sell_signals": [],
+        "armed_orders": {}   # key: "EXCHANGE:SYMBOL:SIDE" -> status dict
     },
     "logs": [],
     "ledger": []
@@ -58,7 +54,7 @@ def add_ui_log(message):
 def add_ledger_entry(trade_info):
     with data_lock:
         dashboard_data['ledger'].insert(0, trade_info)
-        if len(dashboard_data['ledger']) > 50:
+        if len(dashboard_data['ledger']) > 60:
             dashboard_data['ledger'].pop()
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -99,18 +95,7 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 return
 
-            # 2. Dual Engine Toggle
-            if path == '/api/toggle_dual':
-                with data_lock:
-                    curr_val = dashboard_data['dual'].get('trade_enabled', True)
-                    dashboard_data['dual']['trade_enabled'] = not curr_val
-                    new_val = dashboard_data['dual']['trade_enabled']
-                status_str = "ENABLED" if new_val else "DISABLED"
-                add_ui_log(f"🔘 [User Action] Dual Engine Auto-Trading manually set to: {status_str}")
-                self._send_json({"trade_enabled": new_val})
-                return
-
-            # 3. Manual Coin ARM / DISARM Toggle (Bybit & Binance Top 20)
+            # 2. Manual Coin ARM / DISARM Toggle (Bybit & Binance Top 20)
             if path == '/api/toggle_coin':
                 ex = params.get('exchange', [''])[0].lower()
                 sym = params.get('symbol', [''])[0].upper()
@@ -155,6 +140,44 @@ class MasterDashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True, "exchange": ex, "symbol": sym, "action": action_taken})
                     return
 
+            # 3. Manual Whale Signal ARM / DISARM Trigger
+            if path == '/api/arm_whale':
+                ex = params.get('exchange', [''])[0].upper()
+                sym = params.get('symbol', [''])[0].upper()
+                side = params.get('side', [''])[0].upper()  # BUY or SELL
+                price = float(params.get('price', ['0'])[0] or 0)
+
+                if ex in ('BYBIT', 'BINANCE') and sym and side in ('BUY', 'SELL'):
+                    key = f"{ex}:{sym}:{side}"
+                    with data_lock:
+                        armed_map = dashboard_data['whale'].setdefault('armed_orders', {})
+                        if key in armed_map and armed_map[key].get('state') in ('WAITING_CONFIRM', 'CONFIRMED', 'EXECUTED'):
+                            del armed_map[key]
+                            add_ui_log(f"🛑 [Whale] User DISARMED {ex} {sym} ({side})")
+                            self._send_json({"ok": True, "action": "DISARMED", "key": key})
+                            return
+
+                        armed_map[key] = {
+                            "exchange": ex,
+                            "symbol": sym,
+                            "side": side,
+                            "anchor_price": price,
+                            "state": "WAITING_CONFIRM",
+                            "confirmed": False,
+                            "armed_at": datetime.now(IST).strftime('%H:%M:%S')
+                        }
+
+                    import whale_engine
+                    threading.Thread(
+                        target=whale_engine.execute_whale_armed_trade,
+                        args=(ex, sym, side, price, dashboard_data, data_lock, add_ui_log, add_ledger_entry),
+                        daemon=True
+                    ).start()
+
+                    add_ui_log(f"🐋 [Whale] User ARMED {ex} {sym} ({side}) @ {price} — Waiting for Confirmation Tick...")
+                    self._send_json({"ok": True, "action": "ARMED", "key": key})
+                    return
+
             # 4. HTML Delivery
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
@@ -190,7 +213,7 @@ def run_web_server():
             time.sleep(1)
 
 if __name__ == '__main__':
-    add_ui_log("⚡ Master Controller Starting ($0.5 Margin | +5% Buffered Sell Limit | Top 20 Manual Control)...")
+    add_ui_log("⚡ Master Controller Starting (Solo Funding + Whale Money Flow Engine)...")
 
     # 1. Web Server Thread
     threading.Thread(target=run_web_server, daemon=True).start()
@@ -203,7 +226,7 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Bybit Engine Thread Launched")
+        add_ui_log("✔ Bybit Funding Engine Launched")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Bybit Engine: {e}")
 
@@ -215,21 +238,21 @@ if __name__ == '__main__':
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Binance Engine Thread Launched")
+        add_ui_log("✔ Binance Funding Engine Launched")
     except Exception as e:
         add_ui_log(f"❌ Failed to launch Binance Engine: {e}")
 
-    # 4. Dual Engine Thread
+    # 4. Whale Money Flow Scanner Thread (Replaces Dual Engine)
     try:
-        import dual_engine
+        import whale_engine
         threading.Thread(
-            target=dual_engine.start_dual_loop,
+            target=whale_engine.start_whale_scanner_loop,
             args=(dashboard_data, data_lock, add_ui_log, add_ledger_entry),
             daemon=True
         ).start()
-        add_ui_log("✔ Dual Arbitrage Engine Thread Launched")
+        add_ui_log("✔ Whale Money Flow Scanner Launched ($1 Margin | 6x Lev | ±10% SL/TP)")
     except Exception as e:
-        add_ui_log(f"❌ Failed to launch Dual Engine: {e}")
+        add_ui_log(f"❌ Failed to launch Whale Engine: {e}")
 
     try:
         threading.Event().wait()
