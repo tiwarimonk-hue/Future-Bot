@@ -61,6 +61,10 @@ clock_offset_ms = 0.0
 s1_trade_history: list[dict] = []
 s2_trade_history: list[dict] = []
 
+s1_active_executors = set()
+s1_executors_lock = threading.Lock()
+MAX_S1_AUTO_COINS = 2
+
 dashboard_data = {
     "target_symbol": "Scanning...",
     "funding_rate": "0.00%",
@@ -134,11 +138,8 @@ def sign_params(params: dict, secret: str = API_SECRET) -> str:
 
 
 def get_strategy1_active_coins() -> set[str]:
-    with data_lock:
-        s1_coin = dashboard_data.get("target_symbol", "")
-        if s1_coin and not s1_coin.startswith("Scanning") and s1_coin != "--":
-            return {s1_coin}
-    return set()
+    with s1_executors_lock:
+        return {sym for sym, settle in s1_active_executors}
 
 
 class DashboardHTTPHandler(BaseHTTPRequestHandler):
@@ -193,7 +194,7 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                             if sym in disarmed: disarmed.remove(sym)
                             if sym not in armed: armed.append(sym)
                         else:
-                            if sym in armed: armed.remove(armed)
+                            if sym in armed: armed.remove(sym)
                             if sym not in disarmed: disarmed.append(sym)
 
                 self.send_response(200)
@@ -214,12 +215,33 @@ def run_web_server() -> None:
     server.serve_forever()
 
 
+def run_strategy1_worker(ws_pipeline, client_rest, target, config, state_callbacks):
+    sym = target["symbol"]
+    rate = target["rate"]
+    price = target["last_price"]
+    settle_ms = target["next_funding_time"]
+    exec_key = (sym, settle_ms)
+
+    try:
+        ws_pipeline.subscribe_ticker(sym)
+        result_s1 = run_strategy1_cycle(
+            ws_pipeline, client_rest, sym, rate, price, settle_ms, config, state_callbacks
+        )
+        if result_s1:
+            record_completed_trade_s1(result_s1)
+    except Exception as e:
+        add_ui_log(f"🚨 [Strategy 1 Worker Error] [{sym}]: {e}")
+    finally:
+        with s1_executors_lock:
+            s1_active_executors.discard(exec_key)
+
+
 if __name__ == "__main__":
     from strategy1 import BinanceFastLaneWS, run_strategy1_cycle
     from strategy2 import start_strategy2_loop
     from binance.um_futures import UMFutures
 
-    add_ui_log("🚀 Starting Binance Master Quant Cockpit (Dual Strategy)...")
+    add_ui_log("🚀 Starting Binance Master Quant Cockpit (Dual Strategy - Max 2 S1 Auto Coins)...")
     threading.Thread(target=run_web_server, daemon=True).start()
 
     ws_pipeline_s1 = BinanceFastLaneWS(
@@ -249,13 +271,14 @@ if __name__ == "__main__":
         try:
             res = requests.get(f"{CONFIG['BINANCE_REST_URL']}/fapi/v1/premiumIndex", timeout=5).json()
             if isinstance(res, list):
+                now_ms = int(get_synced_time_ms())
                 all_neg = []
                 for c in res:
                     if not c.get("symbol", "").endswith("USDT"): continue
                     try:
                         rate = float(c.get("lastFundingRate", 0))
                         next_t = int(c.get("nextFundingTime", 0))
-                        if rate < 0:
+                        if rate < 0 and (next_t - now_ms) > 1500:
                             settle_dt = datetime.fromtimestamp(next_t / 1000, tz=IST)
                             all_neg.append({
                                 "symbol": c["symbol"],
@@ -273,54 +296,77 @@ if __name__ == "__main__":
                     manual_armed = list(dashboard_data["strategy1_manual_armed"])
                     manual_disarmed = list(dashboard_data["strategy1_manual_disarmed"])
                     
-                    top20_formatted = []
-                    for item in all_neg[:20]:
-                        sym = item["symbol"]
-                        is_armed = sym in manual_armed or (sym not in manual_disarmed and item["rate"] <= CONFIG["MIN_FUNDING_RATE"])
-                        mode = "MANUAL" if sym in manual_armed else ("DISARMED" if sym in manual_disarmed else "AUTO")
-                        top20_formatted.append({
-                            "symbol": sym,
-                            "rate_str": item["rate_str"],
-                            "settle_str": item["settle_str"],
-                            "arm_mode": mode,
-                            "is_armed": is_armed
-                        })
+                valid_m_armed = [s for s in manual_armed if any(c["symbol"] == s for c in all_neg)]
+                valid_m_disarmed = [s for s in manual_disarmed if any(c["symbol"] == s for c in all_neg)]
+
+                # Auto eligible for S1 (rate <= MIN_FUNDING_RATE)
+                auto_s1_eligible = [c for c in all_neg if c["rate"] <= CONFIG["MIN_FUNDING_RATE"] and c["symbol"] not in valid_m_disarmed]
+                auto_top_s1_syms = [c["symbol"] for c in auto_s1_eligible[:MAX_S1_AUTO_COINS]]
+
+                effective_armed_s1 = []
+                seen_s1 = set()
+
+                # Add auto top 2 first
+                for c in auto_s1_eligible[:MAX_S1_AUTO_COINS]:
+                    if c["symbol"] not in valid_m_disarmed and c["symbol"] not in seen_s1:
+                        target_obj = dict(c)
+                        target_obj["arm_mode"] = "AUTO"
+                        effective_armed_s1.append(target_obj)
+                        seen_s1.add(c["symbol"])
+
+                # Add manual armed coins
+                for sym in valid_m_armed:
+                    if sym not in seen_s1:
+                        match = next((c for c in all_neg if c["symbol"] == sym), None)
+                        if match:
+                            target_obj = dict(match)
+                            target_obj["arm_mode"] = "MANUAL"
+                            effective_armed_s1.append(target_obj)
+                            seen_s1.add(sym)
+
+                # Format Top 20 radar list
+                top20_formatted = []
+                for item in all_neg[:20]:
+                    sym = item["symbol"]
+                    is_armed = sym in valid_m_armed or (sym not in valid_m_disarmed and sym in auto_top_s1_syms)
+                    mode = "MANUAL" if sym in valid_m_armed else ("AUTO" if sym in auto_top_s1_syms else "DISARMED")
+                    top20_formatted.append({
+                        "symbol": sym,
+                        "rate_str": item["rate_str"],
+                        "settle_str": item["settle_str"],
+                        "arm_mode": mode,
+                        "is_armed": is_armed
+                    })
+
+                with data_lock:
                     dashboard_data["strategy1_top20"] = top20_formatted
-
-                # High-Priority Selection for Strategy 1
-                eligible_targets = []
-                for sym in manual_armed:
-                    match = next((c for c in all_neg if c["symbol"] == sym), None)
-                    if match: eligible_targets.append(match)
-
-                for c in all_neg:
-                    if c["symbol"] not in manual_disarmed and c["rate"] <= CONFIG["MIN_FUNDING_RATE"]:
-                        if not any(e["symbol"] == c["symbol"] for e in eligible_targets):
-                            eligible_targets.append(c)
-
-                if eligible_targets:
-                    target = eligible_targets[0]
-                    sym = target["symbol"]
-                    rate = target["rate"]
-                    price = target["last_price"]
-                    settle_ms = target["next_funding_time"]
-
-                    with data_lock:
-                        dashboard_data["target_symbol"] = sym
-                        dashboard_data["funding_rate"] = target["rate_str"]
-
-                    ws_pipeline_s1.subscribe_ticker(sym)
-                    
-                    result_s1 = run_strategy1_cycle(
-                        ws_pipeline_s1, client_rest, sym, rate, price, settle_ms, CONFIG, state_callbacks_s1
-                    )
-                    if result_s1:
-                        record_completed_trade_s1(result_s1)
-                else:
-                    with data_lock:
+                    dashboard_data["strategy1_manual_armed"] = valid_m_armed
+                    dashboard_data["strategy1_manual_disarmed"] = valid_m_disarmed
+                    if effective_armed_s1:
+                        dashboard_data["target_symbol"] = ", ".join([f"{c['symbol']} ({c['arm_mode']})" for c in effective_armed_s1])
+                        dashboard_data["funding_rate"] = effective_armed_s1[0]["rate_str"]
+                    else:
                         dashboard_data["target_symbol"] = "Scanning..."
-                        dashboard_data["funding_rate"] = "0.00%"
-            time.sleep(3.0)
+                        dashboard_data["funding_rate"] = "0.00.%"
+
+                # Spawn execution threads for armed S1 targets when close to settlement (e.g. within 25 seconds)
+                for target in effective_armed_s1:
+                    sym = target["symbol"]
+                    settle_epoch = target["next_funding_time"]
+                    time_left = settle_epoch - now_ms
+
+                    if 1500 < time_left <= 25000:
+                        exec_key = (sym, settle_epoch)
+                        with s1_executors_lock:
+                            if exec_key not in s1_active_executors:
+                                s1_active_executors.add(exec_key)
+                                threading.Thread(
+                                    target=run_strategy1_worker,
+                                    args=(ws_pipeline_s1, client_rest, target, CONFIG, state_callbacks_s1),
+                                    daemon=True
+                                ).start()
+
+            time.sleep(2.0)
         except Exception as e:
             add_ui_log(f"⚠️ Main Loop Error: {e}")
             time.sleep(3.0)
