@@ -17,60 +17,72 @@
             --blue: #3861fb;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background-color: var(--bg-color); color: var(--text-main); padding: 20px; }
-        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; border-bottom: 1px solid var(--card-border); padding-bottom: 15px; }
-        h1 { font-size: 1.5rem; color: var(--accent-yellow); display: flex; align-items: center; gap: 10px; }
-        .status-badge { background: rgba(14, 203, 129, 0.15); color: var(--green); padding: 5px 12px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; border: 1px solid var(--green); }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 15px; }
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid var(--card-border); padding-bottom: 12px; }
+        h1 { font-size: 1.3rem; color: var(--accent-yellow); display: flex; align-items: center; gap: 8px; }
+        .status-badge { background: rgba(14, 203, 129, 0.15); color: var(--green); padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; border: 1px solid var(--green); }
         
-        .section-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 20px; margin-bottom: 25px; }
-        .section-title { font-size: 1.2rem; color: var(--accent-yellow); margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 8px; }
+        .section-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 15px; margin-bottom: 20px; }
+        .section-title { font-size: 1.1rem; color: var(--accent-yellow); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 6px; }
         
-        .ledger-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
-        .ledger-table th, .ledger-table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--card-border); }
+        .ledger-table { width: 100%; border-collapse: collapse; margin-top: 5px; font-size: 0.85rem; }
+        .ledger-table th, .ledger-table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--card-border); }
         .ledger-table th { background-color: rgba(255,255,255,0.02); color: var(--text-muted); font-weight: 600; }
         .ledger-table tr:hover { background-color: rgba(255,255,255,0.01); }
 
-        .tag-success { background: rgba(14, 203, 129, 0.2); color: var(--green); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-        .tag-warn { background: rgba(246, 70, 93, 0.2); color: var(--red); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-        .tag-neutral { background: rgba(132, 142, 156, 0.2); color: var(--text-muted); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
-
-        .dca-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
-        .dca-card { background: rgba(0,0,0,0.2); border: 1px solid var(--card-border); border-radius: 6px; padding: 10px; font-size: 0.85rem; }
-        .dca-card h4 { color: var(--accent-yellow); margin-bottom: 5px; font-size: 0.9rem; }
+        .tag-success { background: rgba(14, 203, 129, 0.2); color: var(--green); padding: 3px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+        .tag-warn { background: rgba(246, 70, 93, 0.2); color: var(--red); padding: 3px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
         
-        .empty-state { text-align: center; color: var(--text-muted); padding: 30px; font-style: italic; }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        @media(max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+        .btn-arm { background: var(--green); color: #000; border: none; padding: 3px 8px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
+        .btn-disarm { background: var(--red); color: #fff; border: none; padding: 3px 8px; border-radius: 3px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
+        
+        .empty-state { text-align: center; color: var(--text-muted); padding: 20px; font-style: italic; font-size: 0.85rem; }
     </style>
 </head>
 <body>
 
     <header>
-        <h1>⚡ Binance Dual-Strategy Dashboard</h1>
-        <div id="engine-status" class="status-badge">SYSTEM ACTIVE (LIVE)</div>
+        <h1>⚡ Binance Dual-Strategy</h1>
+        <div id="engine-status" class="status-badge">ACTIVE</div>
     </header>
 
     <!-- STRATEGY 1 SECTION -->
     <div class="section-container">
         <div class="section-title">
-            <span>Strategy 1: Funding Rate Sniper (T-100ms Limit Burst)</span>
-            <span id="s1-active-coin" style="font-size: 0.9rem; color: var(--text-muted);">Target: Scanning...</span>
+            <span>Strategy 1: Top 20 Negative & Sniper</span>
+            <span id="s1-status" style="font-size: 0.8rem; color: var(--text-muted);">Live Scanning</span>
         </div>
+        <div style="overflow-x: auto; max-height: 250px; overflow-y: auto;">
+            <table class="ledger-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Funding Rate</th>
+                        <th>Next Settle</th>
+                        <th>Mode</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="s1-top20-body">
+                    <tr><td colspan="5" class="empty-state">Loading Top 20 Negative Coins...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <h3 style="font-size: 1rem; color: var(--accent-yellow); margin: 15px 0 8px 0;">Strategy 1 Trade Ledger</h3>
         <div style="overflow-x: auto;">
             <table class="ledger-table">
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Coin & Funding</th>
-                        <th>Tier / Mode</th>
-                        <th>Entry Timeline</th>
+                        <th>Coin</th>
+                        <th>Timeline</th>
                         <th>Fill Price</th>
-                        <th>Exit Details / PnL</th>
+                        <th>Details</th>
                         <th>Status</th>
                     </tr>
                 </thead>
                 <tbody id="s1-ledger-body">
-                    <tr><td colspan="7" class="empty-state">Waiting for Strategy 1 trades to execute...</td></tr>
+                    <tr><td colspan="6" class="empty-state">Waiting for Strategy 1 trades...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -79,59 +91,86 @@
     <!-- STRATEGY 2 SECTION -->
     <div class="section-container">
         <div class="section-title">
-            <span>Second Strategy: Auto Top-3 (T+220ms Market Entry | -0.25% Threshold)</span>
-            <span id="s2-status-pill" style="font-size: 0.9rem; color: var(--accent-yellow);">Status: Scanning Top 20</span>
+            <span>Strategy 2: Top 20 Negative & T+220ms</span>
+            <span id="s2-status-pill" style="font-size: 0.8rem; color: var(--accent-yellow);">Scanning Top 20</span>
         </div>
+        <div style="overflow-x: auto; max-height: 250px; overflow-y: auto;">
+            <table class="ledger-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Funding Rate</th>
+                        <th>Next Settle</th>
+                        <th>Mode</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="s2-top20-body">
+                    <tr><td colspan="5" class="empty-state">Loading Top 20 Negative Coins...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <h3 style="font-size: 1rem; color: var(--accent-yellow); margin: 15px 0 8px 0;">Strategy 2 Trade Ledger</h3>
         <div style="overflow-x: auto;">
             <table class="ledger-table">
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Coin & Funding</th>
-                        <th>Entry Timeline</th>
+                        <th>Coin</th>
+                        <th>Entry Time</th>
                         <th>Entry Price</th>
-                        <th>Exit Timeline</th>
-                        <th>Exit Price / Details</th>
+                        <th>Exit Details</th>
                         <th>Outcome</th>
                     </tr>
                 </thead>
                 <tbody id="s2-ledger-body">
-                    <tr><td colspan="7" class="empty-state">Waiting for Strategy 2 trades to execute...</td></tr>
+                    <tr><td colspan="6" class="empty-state">Waiting for Strategy 2 trades...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
 
     <script>
+        async function toggleArm(strategy, symbol, action) {
+            await fetch('/api/arm-control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ strategy, symbol, action })
+            });
+            fetchDashboardData();
+        }
+
         async function fetchDashboardData() {
             try {
                 let response = await fetch('/api/status');
                 let data = await response.json();
 
-                // Update Strategy 1 Target info
-                if(data.target_symbol && data.target_symbol !== "Scanning...") {
-                    document.getElementById('s1-active-coin').innerText = `Target: ${data.target_symbol} (${data.funding_rate})`;
-                }
+                // Render Strategy 1 Top 20
+                let s1Top20Html = "";
+                if(data.strategy1_top20 && data.strategy1_top20.length > 0) {
+                    data.strategy1_top20.forEach(c => {
+                        let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(1, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-arm" onclick="toggleArm(1, '${c.symbol}', 'arm')">Arm</button>`;
+                        s1Top20Html += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
+                    });
+                } else { s1Top20Html = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                document.getElementById('s1-top20-body').innerHTML = s1Top20Html;
+
+                // Render Strategy 2 Top 20
+                let s2Top20Html = "";
+                if(data.strategy2 && data.strategy2.top20 && data.strategy2.top20.length > 0) {
+                    data.strategy2.top20.forEach(c => {
+                        let btn = c.is_armed ? `<button class="btn-disarm" onclick="toggleArm(2, '${c.symbol}', 'disarm')">Disarm</button>` : `<button class="btn-arm" onclick="toggleArm(2, '${c.symbol}', 'arm')">Arm</button>`;
+                        s2Top20Html += `<tr><td><strong>${c.symbol}</strong></td><td style="color:var(--red);">${c.rate_str}</td><td>${c.settle_str}</td><td>${c.arm_mode}</td><td>${btn}</td></tr>`;
+                    });
+                } else { s2Top20Html = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                document.getElementById('s2-top20-body').innerHTML = s2Top20Html;
 
                 // Render Strategy 1 Ledger
                 let s1Body = document.getElementById('s1-ledger-body');
                 if(data.trades && data.trades.length > 0) {
                     let html = "";
-                    data.trades.forEach((t, index) => {
-                        html += `
-                            <tr>
-                                <td>${index + 1}</td>
-                                <td><strong>${t.symbol}</strong><br><span style="color:var(--accent-yellow);">${t.funding_rate}</span></td>
-                                <td>${t.tier}</td>
-                                <td>Sent: ${t.entry_sent}<br>Ack: ${t.entry_ack}</td>
-                                <td>${t.entry_fill_price}</td>
-                                <td>
-                                    ${t.pnl_breakdown}<br>
-                                    <span style="font-size:0.8rem; color:var(--text-muted);">${t.details}</span>
-                                </td>
-                                <td><span class="${t.pnl_class === 'pnl-positive' ? 'tag-success' : 'tag-warn'}">${t.status}</span></td>
-                            </tr>
-                        `;
+                    data.trades.forEach((t, i) => {
+                        html += `<tr><td>${i+1}</td><td><strong>${t.symbol}</strong><br><span style="color:var(--accent-yellow);">${t.funding_rate}</span></td><td>Sent: ${t.entry_sent}</td><td>${t.entry_fill_price}</td><td>${t.details}</td><td><span class="tag-success">${t.status}</span></td></tr>`;
                     });
                     s1Body.innerHTML = html;
                 }
@@ -140,32 +179,15 @@
                 let s2Body = document.getElementById('s2-ledger-body');
                 if(data.strategy2_trades && data.strategy2_trades.length > 0) {
                     let html = "";
-                    data.strategy2_trades.forEach((t, index) => {
-                        html += `
-                            <tr>
-                                <td>${index + 1}</td>
-                                <td><strong>${t.coin}</strong><br><span style="color:var(--accent-yellow);">${t.rate}</span></td>
-                                <td>${t.entry_time}</td>
-                                <td>${t.entry_price || '--'}</td>
-                                <td>${t.exit_time}</td>
-                                <td>${t.exit_price || '--'}<br><span style="font-size:0.8rem; color:var(--text-muted);">${t.detail}</span></td>
-                                <td><span class="${t.badge_class}">${t.badge_text}</span></td>
-                            </tr>
-                        `;
+                    data.strategy2_trades.forEach((t, i) => {
+                        html += `<tr><td>${i+1}</td><td><strong>${t.coin}</strong><br><span style="color:var(--accent-yellow);">${t.rate}</span></td><td>${t.entry_time}</td><td>${t.entry_price || '--'}</td><td>${t.detail}</td><td><span class="${t.badge_class}">${t.badge_text}</span></td></tr>`;
                     });
                     s2Body.innerHTML = html;
                 }
 
-                if(data.strategy2 && data.strategy2.status) {
-                    document.getElementById('s2-status-pill').innerText = `Status: ${data.strategy2.status}`;
-                }
-
-            } catch (err) {
-                console.error("Dashboard Sync Error:", err);
-            }
+            } catch (err) { console.error(err); }
         }
 
-        // Poll every 1 second
         setInterval(fetchDashboardData, 1000);
         fetchDashboardData();
     </script>
