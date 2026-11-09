@@ -400,6 +400,31 @@ function formatDurationJs(sec) {{
 }}
 
 function renderLimitBoxHtml(d, boxColorClass) {{
+    // Canceled Shallow Limit Order Box (T+230ms Telemetry)
+    if (d.status === "CANCELED") {{
+        const cancelFired = d.cancel_fired || '--';
+        const binanceCanceled = d.binance_canceled || '--';
+        const latencyMs = (d.cancel_latency_ms !== undefined && d.cancel_latency_ms !== null) ? d.cancel_latency_ms : 0;
+        return `
+            <div class="limit-box ${{boxColorClass}}" style="opacity: 0.90; border-style: dashed;">
+                <div class="limit-box-header">
+                    <span>${{d.level}}</span>
+                    <span style="font-size: 10px; color: #f87171; font-weight: 800; background: rgba(239, 68, 68, 0.15); padding: 2px 6px; border-radius: 4px;">CANCELED</span>
+                </div>
+                <div class="limit-box-metrics">
+                    <span>Target Price: <strong style="color: #ffffff;">${{d.target_price || d.price || '--'}}</strong></span>
+                    <span>Target Qty: <strong style="color: #94a3b8;">${{d.target_qty || d.qty || '--'}}</strong></span>
+                </div>
+                <div class="limit-box-timings">
+                    <div>🚀 Cancel Fired (Local VPS): <strong style="color: #ffffff;">${{cancelFired}}</strong></div>
+                    <div>🎯 Binance Canceled (Engine): <strong style="color: #60a5fa;">${{binanceCanceled}}</strong></div>
+                    <div style="margin-top: 2px; color: #94a3b8;">⚡ Cancel Latency: <strong style="color: #f0b90b;">${{latencyMs}} ms</strong></div>
+                </div>
+            </div>
+        `;
+    }}
+
+    // Normal Filled Limit Order Box
     const firstTime = d.first_time || d.time || '--';
     const lastTime = d.last_time || d.time || '--';
     const spanMs = (d.span_ms !== undefined && d.span_ms !== null) ? d.span_ms : 0;
