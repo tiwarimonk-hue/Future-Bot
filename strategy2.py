@@ -136,13 +136,13 @@ def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_acti
 
     all_negative.sort(key=lambda x: x['funding_rate'])
 
-    # Strict Priority: 1H interval first, then 4H, then 8H, regardless of funding rate magnitude
+    # Strict Priority: 1H interval first, then earliest funding time
     auto_eligible = [
         c for c in all_negative
         if MIN_FUNDING_RATE_THRESHOLD <= c['funding_rate'] <= MAX_FUNDING_RATE_THRESHOLD
         and (c['next_funding_time'] - now_ms) > 1500
     ]
-    auto_eligible.sort(key=lambda x: (get_interval_priority(x['cycle']), x['funding_rate']))
+    auto_eligible.sort(key=lambda x: (get_interval_priority(x['cycle']), x['next_funding_time']))
 
     auto_top_syms = [c['symbol'] for c in auto_eligible[:MAX_TARGET_COINS]]
 
