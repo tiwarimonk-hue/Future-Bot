@@ -37,7 +37,6 @@ last_24h_volume_time: float = 0.0
 
 
 def format_duration(seconds: int) -> str:
-    """Helper function to format duration in seconds into h/m/s string."""
     mins, secs = divmod(seconds, 60)
     hours, mins = divmod(mins, 60)
     if hours:
@@ -340,8 +339,9 @@ def find_top_negative_funding_candidates(
                 chosen_map[c["symbol"]] = c
                 auto_armed_symbols.append(c["symbol"])
 
-        # 2. Add User Manual Selections ON TOP OF Auto Selections
+        # 2. Strict User Manual Selections (Only add what is explicitly in preferred_symbols)
         preferred_symbols = preferred_symbols or []
+        valid_manual_list = []
         for p_sym in preferred_symbols:
             p_sym_clean = p_sym.strip().upper()
             if p_sym_clean in temp_blocked_set or p_sym_clean in perm_blocked_set:
@@ -351,12 +351,12 @@ def find_top_negative_funding_candidates(
                 ok, _ = verify_binance_symbol_preflight(match["symbol"], match["price"])
                 if ok:
                     chosen_map[match["symbol"]] = match
-                    if match["symbol"] not in manual_armed_symbols:
-                        manual_armed_symbols.append(match["symbol"])
+                    valid_manual_list.append(match["symbol"])
                     if not any(c["symbol"] == match["symbol"] for c in top_10):
                         top_10.insert(0, match)
                         top_10 = top_10[:10]
 
+        manual_armed_symbols = valid_manual_list
         chosen_list = list(chosen_map.values())
         return chosen_list, soonest_settle_time, top_10, auto_armed_symbols, manual_armed_symbols
 
