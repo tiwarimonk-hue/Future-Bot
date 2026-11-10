@@ -231,10 +231,6 @@ def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[boo
         p_margin = {"symbol": symbol, "marginType": "ISOLATED", "timestamp": ts}
         signed_margin = sign_params(p_margin)
         res_margin = session.post(
-            f"{config.BINManager.BINANCE_REST_URL}/fapi/v1/marginType?{signed_margin}",
-            headers={"X-MBX-APIKEY": config.API_KEY},
-            timeout=2.5
-        ).json() if hasattr(config, "BINManager") else session.post(
             f"{config.BINANCE_REST_URL}/fapi/v1/marginType?{signed_margin}",
             headers={"X-MBX-APIKEY": config.API_KEY},
             timeout=2.5
@@ -269,14 +265,17 @@ def find_top_negative_funding_candidates(
         refresh_exchange_rules_if_needed()
         refresh_24h_volumes_if_needed()
 
+        # Load dynamic blocked coins (JSON persistence)
         blocked_data = load_blocked_coins()
         temp_blocked_set = set(blocked_data.get("temporary", []))
         perm_blocked_set = set(blocked_data.get("permanent", []))
 
+        # Sirf 1 single public request exchange par jayegi
         res = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=5)
         tickers = res.json()
 
         if not isinstance(tickers, list):
+            add_ui_log(f"⚠️ [SCANNER BACKOFF] Binance returned non-list response: {tickers}")
             return None, None, None, None, []
 
         current_time_ms = get_synced_time_ms()
@@ -287,6 +286,7 @@ def find_top_negative_funding_candidates(
                 continue
 
             symbol = t.get("symbol", "")
+            # Permanently blocked coins scan list se bahar filter honge
             if not symbol.endswith("USDT") or symbol in BLACKLISTED_PATTERNS or symbol in perm_blocked_set:
                 continue
 
@@ -335,9 +335,11 @@ def find_top_negative_funding_candidates(
         soonest_settle_time = min(c["settle_ms"] for c in eligible_candidates)
         soonest_batch = [c for c in eligible_candidates if abs(c["settle_ms"] - soonest_settle_time) < 60000]
 
+        # Top 10 Radar: Sorted ascending (Temp blocked coins radar me visible rahenge)
         soonest_batch.sort(key=lambda x: x["rate"])
         top_10 = soonest_batch[:10]
 
+        # In-Memory Safe Filtering (Temporary blocked coins auto-trade se bahar)
         safe_batch = [
             c for c in soonest_batch
             if config.MAX_DANGER_FUNDING_RATE <= c["rate"] <= config.MIN_FUNDING_RATE
@@ -351,9 +353,10 @@ def find_top_negative_funding_candidates(
 
         chosen = None
 
+        # Manual Override Priority (User ka selected coin agar unblocked hai)
         if preferred_symbol:
             if preferred_symbol in temp_blocked_set or preferred_symbol in perm_blocked_set:
-                pass
+                add_ui_log(f"⚠️ [PREFERRED SYMBOL IGNORED] {preferred_symbol} is in block list. Falling back to default.")
             else:
                 match = next((c for c in soonest_batch if c["symbol"] == preferred_symbol), None)
                 if match and match["rate"] < 0.0 and not match.get("is_temp_blocked", False):
@@ -364,6 +367,7 @@ def find_top_negative_funding_candidates(
                             top_10.insert(0, match)
                             top_10 = top_10[:10]
 
+        # Auto Mode: Sirf Top-1 valid coin par preflight chalega, pehla pass hote hi loop break
         if not chosen:
             candidates_to_filter = sweet_spot if sweet_spot else safe_batch
             for c in candidates_to_filter:
@@ -373,6 +377,7 @@ def find_top_negative_funding_candidates(
                     break
                 time.sleep(0.15)
 
+            # Agar sweet spot ka pehla coin fail hua to bache hue safe coins me se pehla check hoga
             if not chosen and sweet_spot and safe_batch:
                 for c in safe_batch:
                     if c in candidates_to_filter:
@@ -389,6 +394,7 @@ def find_top_negative_funding_candidates(
         return chosen["symbol"], chosen["rate"], chosen["price"], chosen["settle_ms"], top_10
 
     except Exception as e:
+        add_ui_log(f"Scanner error: {e}")
         return None, None, None, None, []
 
 
