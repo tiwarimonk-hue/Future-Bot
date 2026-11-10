@@ -69,9 +69,8 @@ def refresh_exchange_rules_if_needed() -> None:
         if new_rules:
             cached_exchange_rules = new_rules
             last_exchange_info_time = now
-            add_ui_log(f"⚡ [RULES CACHED] Loaded Binance rules for {len(new_rules)} perpetual pairs.")
     except Exception as e:
-        add_ui_log(f"Exchange info refresh warning: {e}")
+        pass
 
 
 def refresh_24h_volumes_if_needed() -> None:
@@ -91,7 +90,7 @@ def refresh_24h_volumes_if_needed() -> None:
             cached_24h_volumes = new_vols
             last_24h_volume_time = now
     except Exception as e:
-        add_ui_log(f"24h volume refresh warning: {e}")
+        pass
 
 
 def format_volume(vol: float) -> str:
@@ -118,10 +117,8 @@ def sync_binance_clock() -> None:
             clock_offset_ms = estimated_server_time - t_recv
             with data_lock:
                 dashboard_data["clock_offset_ms"] = round(clock_offset_ms, 2)
-        else:
-            add_ui_log(f"⚠️ Binance clock sync non-standard response: {data}")
     except Exception as e:
-        add_ui_log(f"Binance clock sync warning: {e}")
+        pass
 
 
 def get_synced_time_ms() -> float:
@@ -138,16 +135,6 @@ def precision_wait_until(target_time_ms: float) -> None:
             time.sleep(0.002)
         elif diff > 2:
             time.sleep(0.0005)
-
-
-def format_duration(seconds: int) -> str:
-    mins, secs = divmod(seconds, 60)
-    hours, mins = divmod(mins, 60)
-    if hours:
-        return f"{hours}h {mins}m {secs}s"
-    elif mins > 0:
-        return f"{mins}m {secs}s"
-    return f"{secs}s"
 
 
 def format_step(value: float, step: float) -> str:
@@ -208,47 +195,41 @@ def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[boo
         return False, "Rules not cached"
 
     if rules.get("status") != "TRADING" or rules.get("contract_type") != "PERPETUAL":
-        return False, f"Not trading perpetual ({rules.get('status')}/{rules.get('contract_type')})"
+        return False, "Not trading perpetual"
 
     coin_max_lev = get_symbol_max_leverage(symbol)
     effective_lev = min(coin_max_lev, int(config.MAX_LEVERAGE_CAP))
     purchasing_power = config.TRADE_MARGIN_USD * effective_lev
 
     if purchasing_power < config.BINANCE_MIN_NOTIONAL:
-        return False, f"Purchasing power ({purchasing_power:.2f} USDT) < Min Notional ({config.BINANCE_MIN_NOTIONAL} USDT)"
-
-    min_qty = rules["min_qty"]
-    min_lot_cost = min_qty * mark_price
-    if min_lot_cost > purchasing_power:
-        return False, f"1 Lot cost ({min_lot_cost:.2f} USDT) > max purchasing power ({purchasing_power:.2f} USDT)"
+        return False, "Min Notional error"
 
     if symbol in configured_symbols:
-        return True, "Pre-flight verified (cached)"
+        return True, "Verified (cached)"
 
     try:
-        time.sleep(0.15)
+        time.sleep(0.1)
         ts = int(get_synced_time_ms())
         p_margin = {"symbol": symbol, "marginType": "ISOLATED", "timestamp": ts}
         signed_margin = sign_params(p_margin)
-        res_margin = session.post(
+        session.post(
             f"{config.BINANCE_REST_URL}/fapi/v1/marginType?{signed_margin}",
             headers={"X-MBX-APIKEY": config.API_KEY},
-            timeout=2.5
-        ).json()
+            timeout=2.0
+        )
 
-        time.sleep(0.15)
+        time.sleep(0.1)
         ts = int(get_synced_time_ms())
         p_lev = {"symbol": symbol, "leverage": int(effective_lev), "timestamp": ts}
         signed_lev = sign_params(p_lev)
-        res_lev = session.post(
+        session.post(
             f"{config.BINANCE_REST_URL}/fapi/v1/leverage?{signed_lev}",
             headers={"X-MBX-APIKEY": config.API_KEY},
-            timeout=2.5
-        ).json()
-
+            timeout=2.0
+        )
         configured_symbols.add(symbol)
     except Exception as e:
-        return False, f"Exchange API handshake exception: {e}"
+        return False, str(e)
 
     return True, "Pre-flight verified"
 
@@ -338,7 +319,7 @@ def find_top_negative_funding_candidates(
         manual_armed_symbols = []
         chosen_map = {}
 
-        # 1. Automatic Selection (Top N candidates)
+        # 1. Automatic Selection (Top N candidates meeting criteria)
         candidates_to_filter = sweet_spot if sweet_spot else safe_batch
         for c in candidates_to_filter:
             if len(auto_armed_symbols) >= config.MAX_ARMED_COINS:
@@ -347,16 +328,15 @@ def find_top_negative_funding_candidates(
             if ok:
                 chosen_map[c["symbol"]] = c
                 auto_armed_symbols.append(c["symbol"])
-            time.sleep(0.1)
 
-        # 2. Add User Manual Selections ON TOP OF Auto Selections
+        # 2. Add User Manual Selections ON TOP OF Auto Selections (Clean validation)
         preferred_symbols = preferred_symbols or []
         for p_sym in preferred_symbols:
             p_sym_clean = p_sym.strip().upper()
             if p_sym_clean in temp_blocked_set or p_sym_clean in perm_blocked_set:
                 continue
             match = next((c for c in soonest_batch if c["symbol"] == p_sym_clean), None)
-            if match and match["rate"] < 0.0 and not match.get("is_temp_blocked", False):
+            if match and not match.get("is_temp_blocked", False):
                 ok, _ = verify_binance_symbol_preflight(match["symbol"], match["price"])
                 if ok:
                     chosen_map[match["symbol"]] = match
