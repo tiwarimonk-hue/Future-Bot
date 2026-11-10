@@ -95,6 +95,9 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
         now_ms = get_synced_time_ms()
         remaining_ms = t_rescan_20s - now_ms
         current_sec_left = max(0, int((settle_epoch - now_ms) / 1000))
+        
+        with data_lock:
+            dashboard_data["selection_locked"] = (current_sec_left <= 60)
 
         blocked_now = load_blocked_coins()
         if target_symbol in blocked_now.get("temporary", []) or target_symbol in blocked_now.get("permanent", []):
@@ -113,11 +116,16 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
         time.sleep(0.5 if remaining_ms > 10000 else 0.1)
 
         with data_lock:
-            if dashboard_data.get("force_rescan", False):
+            if dashboard_data.get("force_rescan", False) and not dashboard_data["selection_locked"]:
                 break
 
     if abort_cycle:
         return
+
+    with data_lock:
+        if dashboard_data.get("force_rescan", False) and not dashboard_data["selection_locked"]:
+            ws_pipeline.reset_cycle_state(target_symbol)
+            return
 
     # PHASE 1: T-20s Fresh Scan
     precision_wait_until(t_rescan_20s)
@@ -173,6 +181,7 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
     try:
         with data_lock:
             trading_active = dashboard_data.get("trading_enabled", True)
+            dashboard_data["selection_locked"] = True
 
         if not trading_active:
             add_ui_log(f"🛑 [TRADING PAUSED] Skipping orders for {target_symbol}.")
@@ -436,7 +445,7 @@ def run_dump_dip_engine() -> None:
                 dashboard_data["target_symbol"] = "Scanning 1h/2h/4h/8h..."
                 dashboard_data["funding_rate"] = "0.00%"
                 dashboard_data["active_tier"] = "IDLE"
-                dashboard_data["status"] = f"IDLE: Next scheduled scan at {next_scan_time_str} ({idle_wait_sec}s)..."
+                dashboard_data["status"] = f"IDLE: Next scheduled scan at {next_scan_time_str}..."
                 dashboard_data["target_settlement_ms"] = 0
                 dashboard_data["target_settlement_time"] = "--:--:-- IST"
                 dashboard_data["selection_locked"] = False
@@ -446,7 +455,7 @@ def run_dump_dip_engine() -> None:
                 with data_lock:
                     if dashboard_data.get("force_rescan", False):
                         dashboard_data["force_rescan"] = False
-                        time.sleep(2.0)
+                        time.sleep(1.0)
                         break
                 time.sleep(1.0)
             continue
@@ -473,12 +482,19 @@ def run_dump_dip_engine() -> None:
             threads.append(t)
             t.start()
 
+        # Dynamic monitor: Allows instant rescan if user unarms/arms before 60s lock window
+        while any(t.is_alive() for t in threads):
+            with data_lock:
+                if dashboard_data.get("force_rescan", False) and not dashboard_data.get("selection_locked", False):
+                    dashboard_data["force_rescan"] = False
+                    add_ui_log("⚡ [RESCAN BREAK] User changed manual selections. Rescanning targets...")
+                    break
+            time.sleep(0.2)
+
         for t in threads:
-            t.join()
+            t.join(timeout=0.1)
 
         with data_lock:
-            dashboard_data["manual_selected_symbols"] = []
-            dashboard_data["auto_armed_symbols"] = []
             dashboard_data["selection_locked"] = False
             dashboard_data["force_rescan"] = False
 
