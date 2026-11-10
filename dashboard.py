@@ -14,6 +14,7 @@ trade_history: list[dict] = []
 
 BLOCKED_COINS_FILE = Path(__file__).resolve().parent / "blocked_coins.json"
 
+
 def load_blocked_coins() -> dict[str, list[str]]:
     """Disk se blocked_coins.json load karta hai (Persistent across server restarts)"""
     default_data = {"temporary": [], "permanent": []}
@@ -38,6 +39,7 @@ def load_blocked_coins() -> dict[str, list[str]]:
         print(f"⚠️ [BLOCKED COINS LOAD ERROR]: {e}", flush=True)
         return default_data
 
+
 def save_blocked_coins(data: dict[str, list[str]]) -> bool:
     """Disk par blocked_coins.json atomically save karta hai"""
     try:
@@ -47,6 +49,7 @@ def save_blocked_coins(data: dict[str, list[str]]) -> bool:
     except Exception as e:
         print(f"⚠️ [BLOCKED COINS SAVE ERROR]: {e}", flush=True)
         return False
+
 
 def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
     symbol = symbol.strip().upper()
@@ -62,7 +65,7 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
                 data["permanent"].remove(symbol)
             if symbol not in data["temporary"]:
                 data["temporary"].append(symbol)
-        else:
+        else:  # permanent
             if symbol in data["temporary"]:
                 data["temporary"].remove(symbol)
             if symbol not in data["permanent"]:
@@ -77,6 +80,7 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
 
     add_ui_log(f"🚫 [COIN BLOCKED] {symbol} moved to {block_type.upper()} block list.")
     return True, f"{symbol} added to {block_type} block list"
+
 
 def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
     symbol = symbol.strip().upper()
@@ -102,6 +106,7 @@ def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
             return True, f"{symbol} unblocked successfully"
         return False, f"{symbol} not found in block list"
 
+
 dashboard_data = {
     "target_symbol": "Scanning...",
     "funding_rate": "0.00%",
@@ -121,13 +126,16 @@ dashboard_data = {
     "blocked_coins": load_blocked_coins()
 }
 
+
 def add_ui_log(message: str) -> None:
     timestamp = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
     print(f"[{timestamp}] {message}", flush=True)
 
+
 def set_dashboard_status(status_msg: str) -> None:
     with data_lock:
         dashboard_data["status"] = status_msg
+
 
 def record_completed_trade(trade_record: dict) -> None:
     with data_lock:
@@ -135,6 +143,7 @@ def record_completed_trade(trade_record: dict) -> None:
         if len(trade_history) > 20:
             trade_history.pop()
         dashboard_data["trades"] = list(trade_history)
+
 
 class FundingDashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -172,8 +181,10 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
                         return
+
                     dashboard_data["manual_selected_symbol"] = ""
                     dashboard_data["force_rescan"] = True
+
                 add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Resetting manual target...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
@@ -198,6 +209,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
                         return
+
                     blocked = load_blocked_coins()
                     if selected_sym in blocked.get("temporary", []) or selected_sym in blocked.get("permanent", []):
                         self.send_response(400)
@@ -206,13 +218,16 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         self.wfile.write(json.dumps({"success": False, "message": f"{selected_sym} is BLOCKED! Unblock it first to trade."}).encode("utf-8"))
                         return
+
                     if dashboard_data.get("manual_selected_symbol") == selected_sym:
                         dashboard_data["manual_selected_symbol"] = ""
                         action_msg = f"Deselected {selected_sym}. Reverting to AUTOMATIC mode."
                     else:
                         dashboard_data["manual_selected_symbol"] = selected_sym
                         action_msg = f"Switched to MANUAL mode ({selected_sym})."
+
                     dashboard_data["force_rescan"] = True
+
                 add_ui_log(f"🎯 [RADAR SELECTION] {action_msg} Triggering instant real-time market audit...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
@@ -279,6 +294,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         html_content = get_dashboard_html()
         self.wfile.write(html_content.encode("utf-8"))
+
 
 def run_web_server() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", config.DASHBOARD_PORT), FundingDashboardHandler)
