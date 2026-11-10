@@ -786,7 +786,7 @@ async function updateUI() {{
             }}).join('');
         }}
 
-    } catch (e) {{}}
+    }} catch (e) {{}}
 }}
 
 setInterval(updateUI, 1000);
