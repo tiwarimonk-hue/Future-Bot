@@ -131,7 +131,7 @@ def find_top_negative_funding_candidates(
         ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=3).json()
         valid_symbols = {
             s["symbol"] for s in ex_r.get("symbols", [])
-            if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
+            if s.get("contractType") == "PERPETUAL" and s.get("status"] == "TRADING"
         }
     except Exception:
         valid_symbols = set()
@@ -140,6 +140,18 @@ def find_top_negative_funding_candidates(
         prem_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=3).json()
     except Exception:
         prem_r = []
+
+    # Fetch 24h ticker volume map
+    volume_map = {}
+    try:
+        ticker_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/ticker/24hr", timeout=3).json()
+        if isinstance(ticker_r, list):
+            for t in ticker_r:
+                s_name = t.get("symbol")
+                q_vol = float(t.get("quoteVolume", 0))
+                volume_map[s_name] = q_vol
+    except Exception:
+        pass
 
     candidates = []
     next_funding_ms = 0
@@ -152,7 +164,6 @@ def find_top_negative_funding_candidates(
             rate = float(item.get("lastFundingRate", 0))
             nxt_time = int(item.get("nextFundingTime", 0))
             mark_p = float(item.get("markPrice", 0))
-            vol_val = float(item.get("quoteVolume", 0))
         except Exception:
             continue
 
@@ -160,12 +171,12 @@ def find_top_negative_funding_candidates(
             if next_funding_ms == 0 or nxt_time < next_funding_ms:
                 next_funding_ms = nxt_time
 
-        # Format settlement string for dashboard_template.py compatibility
         settle_time_str = "--:--:-- IST"
         if nxt_time > 0:
             settle_dt = datetime.fromtimestamp(nxt_time / 1000, tz=IST)
             settle_time_str = settle_dt.strftime("%H:%M:%S IST")
 
+        vol_val = volume_map.get(sym, 0.0)
         vol_str = f"${vol_val:,.0f}" if vol_val > 0 else "--"
 
         candidates.append({
@@ -180,10 +191,11 @@ def find_top_negative_funding_candidates(
     candidates.sort(key=lambda x: x["rate"])
     top_10 = candidates[:10]
 
-    # Qualified threshold filter (matching your -0.35% threshold)
+    # Qualified threshold filter (using config threshold, e.g. 0.35% or 0.9%)
     qualified = [c for c in candidates if c["rate"] <= -config.FR_THRESHOLD_RATIO]
 
     auto_armed = []
+    manual_manual_armed = []
     manual_armed = []
 
     for sym in preferred_symbols:
