@@ -131,7 +131,7 @@ def find_top_negative_funding_candidates(
         ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=3).json()
         valid_symbols = {
             s["symbol"] for s in ex_r.get("symbols", [])
-            if s.get("contractType") == "PERPETUAL" and s.get("status"] == "TRADING"
+            if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
         }
     except Exception:
         valid_symbols = set()
@@ -159,13 +159,11 @@ def find_top_negative_funding_candidates(
             if next_funding_ms == 0 or nxt_time < next_funding_ms:
                 next_funding_ms = nxt_time
 
-        # Format settlement time for radar display
         settle_time_str = "--:--"
         if nxt_time > 0:
             settle_dt = datetime.fromtimestamp(nxt_time / 1000, tz=IST)
             settle_time_str = settle_dt.strftime("%H:%M:%S IST")
 
-        # Collect negative candidates or all active top coins for radar view
         candidates.append({
             "symbol": sym,
             "rate": rate,
@@ -174,17 +172,14 @@ def find_top_negative_funding_candidates(
             "next_settlement": settle_time_str
         })
 
-    # Sort by most negative funding rate first
     candidates.sort(key=lambda x: x["rate"])
     top_10 = candidates[:10]
 
-    # Filter qualified threshold candidates (Negative funding & meeting threshold)
     qualified = [c for c in candidates if c["rate"] < 0 and c["rate"] <= -config.FR_THRESHOLD_RATIO]
 
     auto_armed = []
     manual_armed = []
 
-    # Process manual user preferences (Skipping if explicitly disarmed)
     for sym in preferred_symbols:
         if sym in explicitly_disarmed:
             continue
@@ -192,12 +187,11 @@ def find_top_negative_funding_candidates(
         if match:
             manual_armed.append(sym)
 
-    # Process auto candidates (Max Top 2, excluding explicitly disarmed coins)
     for c in qualified:
         sym = c["symbol"]
         if sym in manual_armed or sym in explicitly_disarmed:
             continue
-        if len(auto_armed) < 2:  # STRICT AUTO TOP 2 CAPPING
+        if len(auto_armed) < 2:
             auto_armed.append(sym)
 
     final_selected_symbols = list(set(manual_armed + auto_armed))
