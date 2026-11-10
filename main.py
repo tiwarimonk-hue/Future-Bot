@@ -26,19 +26,6 @@ session.headers.update({
 })
 
 
-def get_seconds_until_next_scheduled_scan() -> tuple[int, str]:
-    now = datetime.now(IST)
-    for m in config.SCHEDULED_SCAN_MINUTES:
-        if now.minute < m:
-            target_dt = now.replace(minute=m, second=0, microsecond=0)
-            sec = max(1, int((target_dt - now).total_seconds()))
-            return sec, target_dt.strftime("%H:%M:%S IST")
-    next_hour = now + timedelta(hours=1)
-    target_dt = next_hour.replace(minute=config.SCHEDULED_SCAN_MINUTES[0], second=0, microsecond=0)
-    sec = max(1, int((target_dt - now).total_seconds()))
-    return sec, target_dt.strftime("%H:%M:%S IST")
-
-
 def get_strategy_label(rate_val: float) -> str:
     if abs(float(rate_val)) >= config.FR_THRESHOLD_RATIO:
         return f"COND 1 (>=0.9%): 4 LIMITS (30/50/70/130% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
@@ -82,7 +69,6 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
     
     qty_str, applied_leverage, tick_size, qty_step, min_qty = calculate_order_specs(target_symbol, last_price)
     t_rescan_20s = settle_epoch - config.RESCAN_BEFORE_SETTLE_MS
-    strategy_label = get_strategy_label(rate)
 
     add_ui_log(f"🎯 [COIN THREAD ARMED] {target_symbol} | Rate: {rate_percent} | Settle: {settle_dt.strftime('%H:%M:%S IST')}")
     ws_pipeline.reset_cycle_state(target_symbol)
@@ -439,19 +425,20 @@ def run_dump_dip_engine() -> None:
             dashboard_data["auto_armed_symbols"] = auto_armed
             dashboard_data["manual_selected_symbols"] = manual_armed
 
+        # Agar koi candidates nahi mile toh 30 sec idle scan
         if not chosen_candidates or next_funding_ms is None or next_funding_ms == 0:
-            idle_wait_sec, next_scan_time_str = get_seconds_until_next_scheduled_scan()
             with data_lock:
                 dashboard_data["target_symbol"] = "Scanning 1h/2h/4h/8h..."
                 dashboard_data["funding_rate"] = "0.00%"
                 dashboard_data["active_tier"] = "IDLE"
-                dashboard_data["status"] = f"IDLE: Next scheduled scan at {next_scan_time_str}..."
+                dashboard_data["status"] = "IDLE: Scanning fresh funding rates every 30s..."
                 dashboard_data["target_settlement_ms"] = 0
                 dashboard_data["target_settlement_time"] = "--:--:-- IST"
                 dashboard_data["selection_locked"] = False
 
-            add_ui_log(f"[IDLE SYNC] No qualified coins found. Next scan at {next_scan_time_str}...")
-            for _ in range(idle_wait_sec):
+            add_ui_log("[IDLE SYNC] No qualified coins found. Re-scanning market in 30 seconds...")
+            
+            for _ in range(30):
                 with data_lock:
                     if dashboard_data.get("force_rescan", False):
                         dashboard_data["force_rescan"] = False
@@ -482,14 +469,35 @@ def run_dump_dip_engine() -> None:
             threads.append(t)
             t.start()
 
-        # Dynamic monitor: Allows instant rescan if user unarms/arms before 60s lock window
+        # =========================================================================
+        # CONTINUOUS 30-SEC MARKET SCAN EVEN WHEN ARMED (Until selection lock at 60s)
+        # =========================================================================
+        last_scan_time = time.time()
         while any(t.is_alive() for t in threads):
+            now_t = time.time()
+            
+            # Har 30 seconds mein background mein market scanner run karega agar selection locked nahi hai
+            if (now_t - last_scan_time) >= 30.0:
+                last_scan_time = now_t
+                with data_lock:
+                    is_locked = dashboard_data.get("selection_locked", False)
+                    current_manual = list(dashboard_data.get("manual_selected_symbols", []))
+                
+                if not is_locked:
+                    add_ui_log("🔄 [BACKGROUND SCAN] Refreshing market radar and funding rates (30s interval)...")
+                    _, _, updated_top10, _, _ = find_top_negative_funding_candidates(
+                        target_settle_ms=next_funding_ms, preferred_symbols=current_manual
+                    )
+                    with data_lock:
+                        if updated_top10:
+                            dashboard_data["top_5_candidates"] = updated_top10
+
             with data_lock:
                 if dashboard_data.get("force_rescan", False) and not dashboard_data.get("selection_locked", False):
                     dashboard_data["force_rescan"] = False
                     add_ui_log("⚡ [RESCAN BREAK] User changed manual selections. Rescanning targets...")
                     break
-            time.sleep(0.2)
+            time.sleep(0.5)
 
         for t in threads:
             t.join(timeout=0.1)
