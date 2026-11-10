@@ -3,265 +3,361 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Futures Algo Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>Binance Master Quant Cockpit - Dual Strategy</title>
     <style>
-        body {
-            background-color: #121212;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        :root {
+            --bg-color: #090d16;
+            --card-bg: #111827;
+            --card-border: #1f2937;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --accent-cyan: #00f0ff;
+            --green: #10b981;
+            --red: #f43f5e;
+            --blue: #38bdf8;
+            --yellow: #f59e0b;
         }
-        .card {
-            background-color: #1e1e1e;
-            border: 1px solid #333;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .card-header {
-            background-color: #252525;
-            border-bottom: 1px solid #333;
-            font-weight: bold;
-            color: #fff;
-        }
-        .table-dark {
-            background-color: #1e1e1e;
-        }
-        .table-dark th {
-            border-color: #333;
-            color: #888;
-        }
-        .table-dark td {
-            border-color: #2a2a2a;
-        }
-        .tag-success {
-            background-color: #1b5e20;
-            color: #81c784;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.85rem;
-        }
-        .tag-warn {
-            background-color: #b71c1c;
-            color: #ef9a9a;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.85rem;
-        }
-        .log-box {
-            background-color: #0d0d0d;
-            border: 1px solid #2a2a2a;
-            border-radius: 5px;
-            height: 250px;
-            overflow-y: auto;
-            font-family: monospace;
-            font-size: 0.85rem;
-            padding: 10px;
-            color: #00ff66;
-        }
-        .badge-manual {
-            background-color: #0d6efd;
-            color: #fff;
-        }
-        .badge-params {
-            background-color: #333;
-            color: #ffca28;
-            font-size: 0.8rem;
-            margin-left: 5px;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 12px; font-size: 0.85rem; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px; }
+        h1 { font-size: 1.2rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 6px; text-shadow: 0 0 10px rgba(0,240,255,0.3); }
+        .status-badge { background: rgba(16, 185, 129, 0.15); color: var(--green); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; border: 1px solid var(--green); }
+
+        .strategy-container { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 14px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
+        .strategy-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--card-border); padding-bottom: 8px; flex-wrap: wrap; gap: 10px; }
+        .strategy-title { font-size: 1.05rem; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px; }
+        .strategy-features { font-size: 0.75rem; color: var(--text-muted); background: rgba(255,255,255,0.03); padding: 4px 10px; border-radius: 4px; border: 1px solid var(--card-border); }
+
+        .sub-section-title { font-size: 0.85rem; font-weight: 600; color: var(--accent-cyan); margin: 12px 0 6px 0; display: flex; align-items: center; gap: 6px; }
+
+        .armed-chips-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; min-height: 36px; align-items: center; }
+        .armed-chip { background: rgba(0, 240, 255, 0.1); border: 1px solid var(--accent-cyan); color: var(--accent-cyan); padding: 4px 10px; border-radius: 20px; font-weight: 600; font-size: 0.8rem; display: flex; align-items: center; gap: 6px; }
+        .armed-chip .rate { color: var(--green); font-size: 0.75rem; }
+
+        .radar-table, .ledger-table { width: 100%; border-collapse: collapse; text-align: left; margin-bottom: 10px; }
+        .radar-table th, .ledger-table th { background: rgba(255,255,255,0.04); color: var(--text-muted); font-weight: 600; padding: 8px; font-size: 0.75rem; border-bottom: 1px solid var(--card-border); }
+        .radar-table td, .ledger-table td { padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.03); font-size: 0.8rem; vertical-align: middle; }
+
+        .action-btn { padding: 3px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; cursor: pointer; border: none; transition: 0.2s; }
+        .arm-btn { background: var(--green); color: #000; }
+        .disarm-btn { background: var(--red); color: #fff; }
+        .action-btn:hover { opacity: 0.85; }
+
+        .ledger-card-s1 { background: rgba(0, 0, 0, 0.25); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+        .s1-header-grid { display: grid; grid-template-columns: 2fr 1fr 1.5fr; gap: 10px; align-items: center; margin-bottom: 10px; border-bottom: 1px dashed var(--card-border); padding-bottom: 8px; }
+        .s1-coin-info { display: flex; flex-direction: column; }
+        .s1-coin-name { font-size: 1rem; font-weight: 700; color: #fff; }
+        .s1-coin-rate { font-size: 0.8rem; color: var(--green); }
+        .s1-mode-badge { background: rgba(56, 189, 248, 0.15); color: var(--blue); padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; text-align: center; border: 1px solid var(--blue); display: inline-block; }
+        .s1-avg-entry { text-align: right; }
+        .s1-avg-entry .price-val { font-size: 0.95rem; font-weight: 700; color: var(--yellow); }
+        .s1-avg-entry .price-label { font-size: 0.7rem; color: var(--text-muted); }
+
+        .s1-timeline { font-size: 0.75rem; color: var(--text-muted); background: rgba(255,255,255,0.02); padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; }
+        .s1-timeline .highlight-green { color: var(--green); font-weight: 600; }
+        .s1-exec-summary { font-size: 0.78rem; color: var(--text-main); margin-bottom: 8px; line-height: 1.4; }
+        .s1-exec-summary .bold { font-weight: 700; color: #fff; }
+        .s1-pnl-breakdown { font-size: 0.75rem; color: var(--accent-cyan); font-weight: 600; background: rgba(0, 240, 255, 0.05); padding: 6px 10px; border-radius: 4px; border: 1px solid rgba(0, 240, 255, 0.15); margin-bottom: 10px; }
+
+        .s1-boxes-title { font-size: 0.75rem; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; }
+        .shallow-boxes-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+        .shallow-card-box { background: rgba(17, 24, 39, 0.9); border: 1px solid var(--blue); border-radius: 6px; padding: 8px; font-size: 0.73rem; }
+        .shallow-card-box.filled-box { border-color: var(--green); background: rgba(16, 185, 129, 0.05); }
+        .box-top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 700; }
+        .box-title { color: var(--blue); }
+        .box-status-tag { padding: 1px 5px; border-radius: 3px; font-size: 0.68rem; font-weight: 700; }
+        .box-status-tag.filled { background: var(--green); color: #000; }
+        .box-status-tag.canceled { background: rgba(255,255,255,0.1); color: var(--text-muted); }
+        .box-mid-row { display: flex; justify-content: space-between; color: var(--text-muted); margin-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px; }
+        .box-telemetry-item { display: flex; justify-content: space-between; margin-bottom: 2px; }
+        .box-telemetry-item .val { color: #fff; font-family: monospace; }
+        .box-telemetry-item .latency-val { color: var(--yellow); font-weight: 600; font-family: monospace; }
+
+        .tag-success { background-color: rgba(16, 185, 129, 0.2); color: var(--green); padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 0.75rem; border: 1px solid var(--green); }
+        .tag-warn { background-color: rgba(244, 63, 94, 0.2); color: var(--red); padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 0.75rem; border: 1px solid var(--red); }
+        .empty-state { color: var(--text-muted); font-style: italic; text-align: center; padding: 15px; }
     </style>
 </head>
 <body>
-    <div class="container-fluid py-4">
-        <!-- Header -->
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>⚡ Binance Futures Strategy Manager</h2>
-            <div>
-                <span class="badge bg-secondary" id="clock-offset">Binance Offset: -- ms</span>
+    <header>
+        <h1>⚡ Master Quant Cockpit</h1>
+        <div class="status-badge">● DUAL STRATEGY ENGINE LIVE</div>
+    </header>
+
+    <!-- ================= STRATEGY 1 ================= -->
+    <div class="strategy-container">
+        <div class="strategy-header">
+            <div class="strategy-title">
+                <span>STRATEGY 1: TOKYO EXTREME SNIPER (T-100ms Limit Burst)</span>
+            </div>
+            <div class="strategy-features">
+                Features: Tokyo Fast-Lane WebSocket | Single-Shot Limit Burst | 3 Shallow Limits (30/50/70%) | DCA Grid Layers | Dynamic SL & Fast Shallow Cancel Burst.
             </div>
         </div>
 
-        <!-- Strategy 2 Status Panel -->
-        <div class="row">
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <span>🎯 Strategy 2 Status <span class="badge badge-params">$1.0 Margin | SL: 170% | Hard Exit: 5m</span></span>
-                        <span class="badge badge-manual" id="s2-status">MANUAL MODE</span>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-4">
-                                <strong>Armed Symbols:</strong> <span id="s2-symbols" class="text-info">None</span>
-                            </div>
-                            <div class="col-md-4">
-                                <strong>Funding Rates:</strong> <span id="s2-rates" class="text-warning">--</span>
-                            </div>
-                            <div class="col-md-4">
-                                <strong>Next Settlement:</strong> <span id="s2-settlement" class="text-light">--</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+        <div class="sub-section-title"><span>🛡️ Armed Sniper Target Pool</span></div>
+        <div id="s1-armed-chips" class="armed-chips-container">
+            <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
+        </div>
+
+        <div class="sub-section-title"><span>Top 20 Funding Radar</span></div>
+        <div style="max-height: 200px; overflow-y: auto;">
+            <table class="radar-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Funding Rate</th>
+                        <th>Next Settlement</th>
+                        <th>Mode</th>
+                        <th style="text-align:center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="s1-radar-body">
+                    <tr><td colspan="5" class="empty-state">Loading Strategy 1 Radar...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="sub-section-title"><span>Strategy 1: Execution Ledger (Precision Cards & Shallow Telemetry)</span></div>
+        <div id="s1-ledger-container">
+            <div class="empty-state">Waiting for Strategy 1 precision execution...</div>
+        </div>
+    </div>
+
+    <!-- ================= STRATEGY 2 ================= -->
+    <div class="strategy-container">
+        <div class="strategy-header">
+            <div class="strategy-title">
+                <span>STRATEGY 2: QUANT ARBITRAGE (Manual Mode)</span>
+            </div>
+            <div class="strategy-features">
+                Features: $1.0 Margin | T+220ms Market Buy | Manual Arm Only | SL: 170% Funding Discount | Hard Exit: 5 Minutes.
             </div>
         </div>
 
-        <!-- Strategy 2 Manual Radar Table -->
-        <div class="row">
-            <div class="col-md-7">
-                <div class="card">
-                    <div class="card-header">
-                        📡 Strategy 2 Radar (Manual Coin Selection)
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-dark table-hover mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Symbol</th>
-                                        <th>Funding Rate</th>
-                                        <th>Cycle</th>
-                                        <th>Settlement</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="s2-radar-body">
-                                    <tr>
-                                        <td colspan="5" class="text-center text-muted">Scanning negative funding coins...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- UI Live Logs -->
-            <div class="col-md-5">
-                <div class="card">
-                    <div class="card-header">
-                        📜 Live Strategy Logs
-                    </div>
-                    <div class="card-body">
-                        <div class="log-box" id="log-container">
-                            <div>Initializing strategy console...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="sub-section-title"><span>🚀 Strategy 2 Active Target Pool</span></div>
+        <div id="s2-armed-chips" class="armed-chips-container">
+            <div class="empty-state" style="padding:6px;">No coins currently armed.</div>
         </div>
 
-        <!-- Strategy 2 Execution Ledger -->
-        <div class="row">
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        📊 Strategy 2 Execution History (Ledger)
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-dark table-striped mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Coin</th>
-                                        <th>Funding Rate</th>
-                                        <th>Entry Time</th>
-                                        <th>Exit Time</th>
-                                        <th>Details</th>
-                                        <th>Outcome</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="s2-ledger-body">
-                                    <tr>
-                                        <td colspan="6" class="text-center text-muted">No completed trades recorded.</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="sub-section-title"><span>Top 20 Negative Funding Radar</span></div>
+        <div style="max-height: 200px; overflow-y: auto;">
+            <table class="radar-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Funding Rate</th>
+                        <th>Next Settlement</th>
+                        <th>Mode</th>
+                        <th style="text-align:center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="s2-radar-body">
+                    <tr><td colspan="5" class="empty-state">Loading Strategy 2 Radar...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="sub-section-title"><span>Strategy 2: Execution Ledger (T+220ms Market Entry)</span></div>
+        <div style="overflow-x: auto;">
+            <table class="ledger-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Coin & Funding</th>
+                        <th>Entry Time & Price</th>
+                        <th>Exit Time & Price</th>
+                        <th>Details / Outcome</th>
+                    </tr>
+                </thead>
+                <tbody id="s2-ledger-body">
+                    <tr><td colspan="5" class="empty-state">Waiting for Strategy 2 trades to execute...</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
     <script>
-        function toggleArm(symbol, currentArmed) {
-            const action = currentArmed ? 'disarm' : 'arm';
-            fetch(`/api/strategy2/${action}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbol: symbol })
-            })
-            .then(res => res.json())
-            .then(data => fetchDashboardData());
+        async function handleArmAction(strategy, symbol, action) {
+            try {
+                await fetch('/api/arm-control', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ strategy, symbol, action })
+                });
+                fetchDashboardData();
+            } catch(e) { console.error("Arm control error:", e); }
         }
 
-        function fetchDashboardData() {
-            fetch('/api/dashboard')
-                .then(response => response.json())
-                .then(data => {
-                    const s2 = data.strategy2 || {};
+        async function fetchDashboardData() {
+            try {
+                let res = await fetch('/api/status');
+                let data = await res.json();
 
-                    // Status Panel Updates
-                    document.getElementById('s2-status').innerText = s2.status || 'MANUAL MODE';
-                    document.getElementById('s2-symbols').innerText = s2.symbols || 'None Armed';
-                    document.getElementById('s2-rates').innerText = s2.rates || '--';
-                    document.getElementById('s2-settlement').innerText = s2.settlement || '--';
-                    if (s2.offset) {
-                        document.getElementById('clock-offset').innerText = `Binance Offset: ${s2.offset} ms`;
-                    }
-
-                    // Radar Table Render
-                    const radarBody = document.getElementById('s2-radar-body');
-                    if (s2.top20 && s2.top20.length > 0) {
-                        radarBody.innerHTML = s2.top20.map(coin => {
-                            const isArmed = coin.is_armed;
-                            const btnClass = isArmed ? 'btn-danger' : 'btn-success';
-                            const btnText = isArmed ? 'Disarm 🔴' : 'Arm 🟢';
-                            return `
-                                <tr>
-                                    <td class="fw-bold">${coin.symbol}</td>
-                                    <td class="text-warning">${coin.rate_str}</td>
-                                    <td><span class="badge bg-secondary">${coin.cycle}</span></td>
-                                    <td>${coin.settle_str}</td>
-                                    <td>
-                                        <button class="btn btn-sm ${btnClass}" onclick="toggleArm('${coin.symbol}', ${isArmed})">
-                                            ${btnText}
-                                        </button>
-                                    </td>
-                                </tr>
+                // Strategy 1 Radar & Armed Chips Sync
+                let s1RadarHtml = "";
+                let s1ArmedChipsHtml = "";
+                if(data.strategy1_top20 && data.strategy1_top20.length > 0) {
+                    data.strategy1_top20.forEach(c => {
+                        if(c.is_armed) {
+                            s1ArmedChipsHtml += `
+                                <div class="armed-chip">
+                                    <span class="coin">${c.symbol}</span>
+                                    <span class="rate">${c.rate_str}</span>
+                                </div>
                             `;
-                        }).join('');
-                    } else {
-                        radarBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No eligible coins found.</td></tr>`;
-                    }
-
-                    // Logs Update
-                    if (data.logs) {
-                        const logBox = document.getElementById('log-container');
-                        logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
-                        logBox.scrollTop = logBox.scrollHeight;
-                    }
-
-                    // Ledger Update
-                    if (data.s2_ledger && data.s2_ledger.length > 0) {
-                        const ledgerBody = document.getElementById('s2-ledger-body');
-                        ledgerBody.innerHTML = data.s2_ledger.map(row => `
+                        }
+                        let actionBtn = c.is_armed 
+                            ? `<button class="action-btn disarm-btn" onclick="handleArmAction(1, '${c.symbol}', 'disarm')">Disarm 🔴</button>`
+                            : `<button class="action-btn arm-btn" onclick="handleArmAction(1, '${c.symbol}', 'arm')">Arm 🟢</button>`;
+                        s1RadarHtml += `
                             <tr>
-                                <td>${row.coin}</td>
-                                <td>${row.rate}</td>
-                                <td>${row.entry_time}</td>
-                                <td>${row.exit_time}</td>
-                                <td><small class="text-muted">${row.detail}</small></td>
-                                <td><span class="${row.badge_class}">${row.badge_text}</span></td>
+                                <td><strong>${c.symbol}</strong></td>
+                                <td style="color:var(--green);">${c.rate_str}</td>
+                                <td>${c.settle_str}</td>
+                                <td>${c.arm_mode}</td>
+                                <td style="text-align:center;">${actionBtn}</td>
                             </tr>
-                        `).join('');
-                    }
-                })
-                .catch(err => console.error("Dashboard fetch error:", err));
+                        `;
+                    });
+                } else { s1RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                
+                document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
+                document.getElementById('s1-armed-chips').innerHTML = s1ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
+
+                // Strategy 1 Ledger Rendering
+                let s1LedgerContainer = document.getElementById('s1-ledger-container');
+                if(data.trades && data.trades.length > 0) {
+                    let html = "";
+                    data.trades.forEach((t, i) => {
+                        let shallowBoxesHtml = "";
+                        if(t.shallow_boxes && t.shallow_boxes.length > 0) {
+                            t.shallow_boxes.forEach(b => {
+                                let statusClass = b.status === "FILLED" ? "filled" : "canceled";
+                                shallowBoxesHtml += `
+                                    <div class="shallow-card-box ${b.status === 'FILLED' ? 'filled-box' : ''}">
+                                        <div class="box-top-row">
+                                            <span class="box-title">${b.label}</span>
+                                            <span class="box-status-tag ${statusClass}">${b.status}</span>
+                                        </div>
+                                        <div class="box-mid-row">
+                                            <span>Target Price: ${b.target_price}</span>
+                                            <span>Target Qty: ${b.target_qty}</span>
+                                        </div>
+                                        <div class="box-telemetry-item">
+                                            <span>🚀 Cancel Fired:</span>
+                                            <span class="val">${b.cancel_fired}</span>
+                                        </div>
+                                        <div class="box-telemetry-item">
+                                            <span>🎯 Binance Canceled:</span>
+                                            <span class="val">${b.binance_canceled}</span>
+                                        </div>
+                                        <div class="box-telemetry-item">
+                                            <span>⚡ Cancel Latency:</span>
+                                            <span class="latency-val">${b.cancel_latency}</span>
+                                        </div>
+                                    </div>
+                                `;
+                            });
+                        } else {
+                            shallowBoxesHtml = `<div class="empty-state" style="grid-column: span 3; padding:10px;">No shallow limit telemetry recorded.</div>`;
+                        }
+
+                        html += `
+                            <div class="ledger-card-s1">
+                                <div class="s1-header-grid">
+                                    <div class="s1-coin-info">
+                                        <span class="s1-coin-name">${i+1}. ${t.symbol}</span>
+                                        <span class="s1-coin-rate">Rate: ${t.funding_rate}</span>
+                                    </div>
+                                    <div>
+                                        <span class="s1-mode-badge">${t.tier}</span>
+                                    </div>
+                                    <div class="s1-avg-entry">
+                                        <div class="price-val">${t.entry_fill_price}</div>
+                                        <div class="price-label">Weighted Avg Entry</div>
+                                    </div>
+                                </div>
+
+                                <div class="s1-timeline" style="margin-bottom:8px;">
+                                    Sent: ${t.entry_sent} &nbsp;&nbsp;|&nbsp;&nbsp; ACK: <span class="highlight-green">${t.entry_ack}</span> &nbsp;&nbsp;|&nbsp;&nbsp; First Fill: <span class="highlight-green">${t.entry_fill_time}</span>
+                                </div>
+
+                                <div class="s1-exec-summary">
+                                    <span class="bold">EXECUTION SUMMARY:</span> ${t.details}
+                                </div>
+
+                                <div class="s1-pnl-breakdown">
+                                    PNL BREAKDOWN (INCL. FUNDING): ${t.pnl_breakdown || 'None (No Trades Executed)'}
+                                </div>
+
+                                <div class="s1-boxes-title">
+                                    LIMIT ORDER FILLS (3 LEVELS HIT — ROW 1: BLUE SHALLOW | ROW 2: YELLOW DCA):
+                                </div>
+
+                                <div class="shallow-boxes-container">
+                                    ${shallowBoxesHtml}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    s1LedgerContainer.innerHTML = html;
+                }
+
+                // Strategy 2 Radar & Armed Chips Sync
+                let s2RadarHtml = "";
+                let s2ArmedChipsHtml = "";
+                if(data.strategy2 && data.strategy2.top20 && data.strategy2.top20.length > 0) {
+                    data.strategy2.top20.forEach(c => {
+                        if(c.is_armed) {
+                            s2ArmedChipsHtml += `
+                                <div class="armed-chip">
+                                    <span class="coin">${c.symbol}</span>
+                                    <span class="rate">${c.rate_str}</span>
+                                </div>
+                            `;
+                        }
+                        let actionBtn = c.is_armed 
+                            ? `<button class="action-btn disarm-btn" onclick="handleArmAction(2, '${c.symbol}', 'disarm')">Disarm 🔴</button>`
+                            : `<button class="action-btn arm-btn" onclick="handleArmAction(2, '${c.symbol}', 'arm')">Arm 🟢</button>`;
+                        s2RadarHtml += `
+                            <tr>
+                                <td><strong>${c.symbol}</strong></td>
+                                <td style="color:var(--green);">${c.rate_str}</td>
+                                <td>${c.settle_str}</td>
+                                <td>${c.arm_mode}</td>
+                                <td style="text-align:center;">${actionBtn}</td>
+                            </tr>
+                        `;
+                    });
+                } else { s2RadarHtml = `<tr><td colspan="5" class="empty-state">No negative funding coins found.</td></tr>`; }
+                
+                document.getElementById('s2-radar-body').innerHTML = s2RadarHtml;
+                document.getElementById('s2-armed-chips').innerHTML = s2ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
+
+                // Strategy 2 Ledger
+                let s2Body = document.getElementById('s2-ledger-body');
+                if(data.strategy2_trades && data.strategy2_trades.length > 0) {
+                    let html = "";
+                    data.strategy2_trades.forEach((t, i) => {
+                        html += `
+                            <tr>
+                                <td>${i+1}</td>
+                                <td><strong>${t.coin}</strong><br><span style="color:var(--accent-cyan);">${t.rate}</span></td>
+                                <td>${t.entry_time}<br>Price: ${t.entry_price || '--'}</td>
+                                <td>${t.exit_time}<br>Price: ${t.exit_price || '--'}</td>
+                                <td>${t.detail}<br><span class="${t.badge_class}">${t.badge_text}</span></td>
+                            </tr>
+                        `;
+                    });
+                    s2Body.innerHTML = html;
+                }
+
+            } catch (err) { console.error("Dashboard sync error:", err); }
         }
 
-        // Auto Refresh every 1.5 Seconds
-        setInterval(fetchDashboardData, 1500);
+        setInterval(fetchDashboardData, 1000);
         fetchDashboardData();
     </script>
 </body>
