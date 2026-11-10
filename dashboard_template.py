@@ -57,48 +57,208 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .mono {{ font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; }}
 .sub-text {{ font-size: 11px; color: #848e9c; margin-top: 2px; }}
 
+/* PnL and Funding Fee Specific Styling */
 .pnl-positive {{ color: #0ecb81 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(14, 203, 129, 0.25); }}
 .pnl-negative {{ color: #f87171 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }}
 .pnl-neutral {{ color: #848e9c !important; font-size: 13px; }}
 
-.limit-rows-wrapper {{ display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 4px; }}
-.limit-row {{ display: flex; flex-wrap: wrap; gap: 10px; width: 100%; align-items: stretch; }}
-.limit-box {{ flex: 1 1 260px; max-width: 350px; padding: 10px 12px; border-radius: 8px; font-family: 'SFMono-Regular', Consolas, monospace; display: flex; flex-direction: column; gap: 6px; }}
-.limit-box-blue {{ background: rgba(59, 130, 246, 0.10); border: 1px solid rgba(59, 130, 246, 0.55); border-left: 4px solid #3b82f6; color: #93c5fd; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08); }}
-.limit-box-yellow {{ background: rgba(240, 185, 11, 0.10); border: 1px solid rgba(240, 185, 11, 0.55); border-left: 4px solid #f0b90b; color: #fcd34d; box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08); }}
-.limit-box-header {{ font-size: 12px; font-weight: 800; padding-bottom: 5px; border-bottom: 1px solid rgba(255, 255, 255, 0.10); display: flex; justify-content: space-between; align-items: center; }}
+/* 2-Row Limit Order Boxes Layout (Row 1: Blue Shallow Limits, Row 2: Yellow DCA Limits) */
+.limit-rows-wrapper {{
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    margin-top: 4px;
+}}
+.limit-row {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    width: 100%;
+    align-items: stretch;
+}}
+.limit-box {{
+    flex: 1 1 260px;
+    max-width: 350px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}}
+.limit-box-blue {{
+    background: rgba(59, 130, 246, 0.10);
+    border: 1px solid rgba(59, 130, 246, 0.55);
+    border-left: 4px solid #3b82f6;
+    color: #93c5fd;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08);
+}}
+.limit-box-yellow {{
+    background: rgba(240, 185, 11, 0.10);
+    border: 1px solid rgba(240, 185, 11, 0.55);
+    border-left: 4px solid #f0b90b;
+    color: #fcd34d;
+    box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08);
+}}
+.limit-box-header {{
+    font-size: 12px;
+    font-weight: 800;
+    padding-bottom: 5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}}
 .limit-box-blue .limit-box-header {{ color: #60a5fa; }}
 .limit-box-yellow .limit-box-header {{ color: #f0b90b; }}
-.limit-box-metrics {{ font-size: 11px; color: #eaecef; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; }}
-.limit-box-timings {{ font-size: 11px; line-height: 1.45; color: #cbd5e1; background: rgba(0, 0, 0, 0.25); padding: 6px 8px; border-radius: 5px; }}
+.limit-box-metrics {{
+    font-size: 11px;
+    color: #eaecef;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}}
+.limit-box-timings {{
+    font-size: 11px;
+    line-height: 1.45;
+    color: #cbd5e1;
+    background: rgba(0, 0, 0, 0.25);
+    padding: 6px 8px;
+    border-radius: 5px;
+}}
 
 .candidate-row {{ cursor: pointer; transition: background 0.2s, border 0.2s; }}
 .candidate-row:hover {{ background: rgba(240, 185, 11, 0.08); }}
 
-.candidate-active {{ background: rgba(14, 203, 129, 0.20) !important; border-left: 5px solid #0ecb81 !important; box-shadow: inset 0 0 10px rgba(14, 203, 129, 0.15); }}
-.candidate-active td {{ color: #ffffff !important; }}
-.active-tag {{ background: #0ecb81; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
+.candidate-active {{
+    background: rgba(14, 203, 129, 0.20) !important;
+    border-left: 5px solid #0ecb81 !important;
+    box-shadow: inset 0 0 10px rgba(14, 203, 129, 0.15);
+}}
+.candidate-active td {{
+    color: #ffffff !important;
+}}
+.active-tag {{
+    background: #0ecb81;
+    color: #0b0e11;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    display: inline-block;
+}}
 
-.candidate-row.row-temp-blocked {{ background: rgba(240, 185, 11, 0.15) !important; border-left: 5px solid #f0b90b !important; }}
-.candidate-row.row-temp-blocked td {{ color: #f0b90b !important; }}
-.badge-temp-block {{ background: #f0b90b; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
+/* Temporary Blocked Row Styling */
+.candidate-row.row-temp-blocked {{
+    background: rgba(240, 185, 11, 0.15) !important;
+    border-left: 5px solid #f0b90b !important;
+}}
+.candidate-row.row-temp-blocked td {{
+    color: #f0b90b !important;
+}}
+.badge-temp-block {{
+    background: #f0b90b;
+    color: #0b0e11;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    display: inline-block;
+}}
 
-.dot-group {{ display: flex; gap: 10px; justify-content: center; align-items: center; }}
-.btn-dot {{ width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.2); cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; outline: none; }}
-.btn-dot:hover {{ transform: scale(1.3); }}
-.btn-dot-yellow {{ background: #f0b90b; box-shadow: 0 0 8px rgba(240, 185, 11, 0.6); }}
-.btn-dot-red {{ background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }}
+/* Dot Action Buttons */
+.dot-group {{
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    align-items: center;
+}}
+.btn-dot {{
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    outline: none;
+}}
+.btn-dot:hover {{
+    transform: scale(1.3);
+}}
+.btn-dot-yellow {{
+    background: #f0b90b;
+    box-shadow: 0 0 8px rgba(240, 185, 11, 0.6);
+}}
+.btn-dot-red {{
+    background: #ef4444;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+}}
 
-.chip-blocked {{ display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 8px; font-size: 12px; font-family: 'SFMono-Regular', Consolas, monospace; font-weight: 700; cursor: pointer; transition: all 0.2s; user-select: none; }}
-.chip-blocked:hover {{ transform: translateY(-2px); }}
-.chip-temp {{ background: rgba(240, 185, 11, 0.15); border: 1px solid rgba(240, 185, 11, 0.4); color: #f0b90b; }}
-.chip-temp:hover {{ background: rgba(240, 185, 11, 0.3); box-shadow: 0 0 10px rgba(240, 185, 11, 0.35); }}
-.chip-perm {{ background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; }}
-.chip-perm:hover {{ background: rgba(239, 68, 68, 0.3); box-shadow: 0 0 10px rgba(239, 68, 68, 0.35); }}
-.chip-close {{ font-size: 13px; opacity: 0.75; margin-left: 2px; }}
-.chip-close:hover {{ opacity: 1; color: #ffffff; }}
-.btn-see-more {{ background: #14181d; border: 1px solid #2b313a; color: #f0b90b; padding: 6px 16px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; transition: 0.2s; }}
-.btn-see-more:hover {{ background: rgba(240, 185, 11, 0.12); border-color: #f0b90b; }}
+/* Blocked Coin Chips */
+.chip-blocked {{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+}}
+.chip-blocked:hover {{
+    transform: translateY(-2px);
+}}
+.chip-temp {{
+    background: rgba(240, 185, 11, 0.15);
+    border: 1px solid rgba(240, 185, 11, 0.4);
+    color: #f0b90b;
+}}
+.chip-temp:hover {{
+    background: rgba(240, 185, 11, 0.3);
+    box-shadow: 0 0 10px rgba(240, 185, 11, 0.35);
+}}
+.chip-perm {{
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #f87171;
+}}
+.chip-perm:hover {{
+    background: rgba(239, 68, 68, 0.3);
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.35);
+}}
+.chip-close {{
+    font-size: 13px;
+    opacity: 0.75;
+    margin-left: 2px;
+}}
+.chip-close:hover {{
+    opacity: 1;
+    color: #ffffff;
+}}
+.btn-see-more {{
+    background: #14181d;
+    border: 1px solid #2b313a;
+    color: #f0b90b;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 0.2s;
+}}
+.btn-see-more:hover {{
+    background: rgba(240, 185, 11, 0.12);
+    border-color: #f0b90b;
+}}
 </style>
 </head>
 <body>
@@ -240,6 +400,7 @@ function formatDurationJs(sec) {{
 }}
 
 function renderLimitBoxHtml(d, boxColorClass) {{
+    // Canceled Shallow Limit Order Box (T+230ms Telemetry)
     if (d.status === "CANCELED") {{
         const cancelFired = d.cancel_fired || '--';
         const binanceCanceled = d.binance_canceled || '--';
@@ -263,6 +424,7 @@ function renderLimitBoxHtml(d, boxColorClass) {{
         `;
     }}
 
+    // Normal Filled Limit Order Box
     const firstTime = d.first_time || d.time || '--';
     const lastTime = d.last_time || d.time || '--';
     const spanMs = (d.span_ms !== undefined && d.span_ms !== null) ? d.span_ms : 0;
@@ -409,6 +571,7 @@ async function updateUI() {{
         document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
         updateToggleBtn(data.trading_enabled);
 
+        // Update Automatic / Manual Mode Buttons
         const isManual = !!(data.manual_selected_symbol && data.manual_selected_symbol.trim().length > 0);
         const btnAuto = document.getElementById('btn-mode-auto');
         const btnManual = document.getElementById('btn-mode-manual');
@@ -452,6 +615,7 @@ async function updateUI() {{
         const tempList = blockedData.temporary || [];
         const permList = blockedData.permanent || [];
 
+        // Render Top-10 Radar Candidates Table
         const cBody = document.getElementById('candidates-body');
         if (data.top_5_candidates && data.top_5_candidates.length > 0) {{
             const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--"));
@@ -496,6 +660,7 @@ async function updateUI() {{
             }}).join('');
         }}
 
+        // Render Blocked Coins Management Cards
         document.getElementById('temp-count').innerText = tempList.length;
         document.getElementById('perm-count').innerText = permList.length;
 
@@ -543,6 +708,7 @@ async function updateUI() {{
             }}
         }}
 
+        // Render Trades History with Funding Fee & Net PnL Columns
         const tbody = document.getElementById('trades-body');
         if (!data.trades || data.trades.length === 0) {{
             tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for trades to execute...</td></tr>';
@@ -640,5 +806,4 @@ setInterval(updateUI, 1000);
 updateUI();
 </script>
 </body>
-</html>
-"""
+</html>"""
