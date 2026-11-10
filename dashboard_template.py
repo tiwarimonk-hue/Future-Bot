@@ -5,7 +5,7 @@ import config
 def get_dashboard_html() -> str:
     """
     Binance Tokyo Funding Sniper ka complete responsive dark-mode HTML,
-    CSS aur JavaScript template return karta hai (Fixed Settlement Header & Multi-Coin Tags).
+    CSS aur JavaScript template return karta hai.
     """
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -33,11 +33,13 @@ body {{ background-color: #0b0e11; color: #eaecef; padding: 14px; display: flex;
 .btn-mode-auto-active {{ background: #0ecb81; color: #ffffff; box-shadow: 0 0 8px rgba(14, 203, 129, 0.35); }}
 .btn-mode-manual-active {{ background: #f0b90b; color: #0b0e11; box-shadow: 0 0 8px rgba(240, 185, 11, 0.35); font-weight: 800; }}
 .btn-mode-inactive {{ background: transparent; color: #848e9c; }}
+.btn-mode-inactive:hover {{ color: #eaecef; background: rgba(255, 255, 255, 0.05); }}
+.btn-mode:disabled {{ opacity: 0.4; cursor: not-allowed; }}
 
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }}
 .card {{ background: #1e2329; padding: 12px 14px; border-radius: 10px; border: 1px solid #2b313a; }}
 .card-title {{ font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 4px; }}
-.card-value {{ font-size: 15px; font-weight: 700; color: #f0b90b; word-break: break-word; }}
+.card-value {{ font-size: 16px; font-weight: 700; color: #f0b90b; }}
 .table-card {{ background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; overflow: hidden; }}
 .table-header {{ font-size: 15px; font-weight: 700; color: #eaecef; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }}
 .table-wrapper {{ width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; border: 1px solid #2b313a; }}
@@ -46,7 +48,6 @@ th {{ background: #14181d; color: #848e9c; padding: 12px 14px; font-weight: 600;
 td {{ padding: 12px 14px; border-bottom: 1px solid #1e252e; vertical-align: middle; white-space: nowrap; }}
 tr.main-row:nth-child(4n+1) {{ background: #181d24; }}
 tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a; }}
-
 .sub-box {{ padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; border-left: 3px solid #f0b90b; background: rgba(240, 185, 11, 0.04); white-space: normal; }}
 .sub-item {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
 .sub-label {{ color: #848e9c; text-transform: uppercase; font-size: 10px; font-weight: 700; letter-spacing: 0.4px; }}
@@ -56,34 +57,90 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .mono {{ font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; }}
 .sub-text {{ font-size: 11px; color: #848e9c; margin-top: 2px; }}
 
+/* PnL and Funding Fee Specific Styling */
 .pnl-positive {{ color: #0ecb81 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(14, 203, 129, 0.25); }}
 .pnl-negative {{ color: #f87171 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }}
 .pnl-neutral {{ color: #848e9c !important; font-size: 13px; }}
 
-.limit-rows-wrapper {{ display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 4px; }}
-.limit-row {{ display: flex; flex-wrap: wrap; gap: 10px; width: 100%; align-items: stretch; }}
-.limit-box {{ flex: 1 1 260px; max-width: 350px; padding: 10px 12px; border-radius: 8px; font-family: 'SFMono-Regular', Consolas, monospace; display: flex; flex-direction: column; gap: 6px; }}
-.limit-box-blue {{ background: rgba(59, 130, 246, 0.10); border: 1px solid rgba(59, 130, 246, 0.55); border-left: 4px solid #3b82f6; color: #93c5fd; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08); }}
-.limit-box-yellow {{ background: rgba(240, 185, 11, 0.10); border: 1px solid rgba(240, 185, 11, 0.55); border-left: 4px solid #f0b90b; color: #fcd34d; box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08); }}
-.limit-box-header {{ font-size: 12px; font-weight: 800; padding-bottom: 5px; border-bottom: 1px solid rgba(255, 255, 255, 0.10); display: flex; justify-content: space-between; align-items: center; }}
+/* 2-Row Limit Order Boxes Layout (Row 1: Blue Shallow Limits, Row 2: Yellow DCA Limits) */
+.limit-rows-wrapper {{
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    margin-top: 4px;
+}}
+.limit-row {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    width: 100%;
+    align-items: stretch;
+}}
+.limit-box {{
+    flex: 1 1 260px;
+    max-width: 350px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}}
+.limit-box-blue {{
+    background: rgba(59, 130, 246, 0.10);
+    border: 1px solid rgba(59, 130, 246, 0.55);
+    border-left: 4px solid #3b82f6;
+    color: #93c5fd;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08);
+}}
+.limit-box-yellow {{
+    background: rgba(240, 185, 11, 0.10);
+    border: 1px solid rgba(240, 185, 11, 0.55);
+    border-left: 4px solid #f0b90b;
+    color: #fcd34d;
+    box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08);
+}}
+.limit-box-header {{
+    font-size: 12px;
+    font-weight: 800;
+    padding-bottom: 5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}}
 .limit-box-blue .limit-box-header {{ color: #60a5fa; }}
 .limit-box-yellow .limit-box-header {{ color: #f0b90b; }}
-.limit-box-metrics {{ font-size: 11px; color: #eaecef; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; }}
-.limit-box-timings {{ font-size: 11px; line-height: 1.45; color: #cbd5e1; background: rgba(0, 0, 0, 0.25); padding: 6px 8px; border-radius: 5px; }}
+.limit-box-metrics {{
+    font-size: 11px;
+    color: #eaecef;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}}
+.limit-box-timings {{
+    font-size: 11px;
+    line-height: 1.45;
+    color: #cbd5e1;
+    background: rgba(0, 0, 0, 0.25);
+    padding: 6px 8px;
+    border-radius: 5px;
+}}
 
 .candidate-row {{ cursor: pointer; transition: background 0.2s, border 0.2s; }}
 .candidate-row:hover {{ background: rgba(240, 185, 11, 0.08); }}
 
-.candidate-auto-active {{
-    background: rgba(14, 203, 129, 0.18) !important;
+.candidate-active {{
+    background: rgba(14, 203, 129, 0.20) !important;
     border-left: 5px solid #0ecb81 !important;
+    box-shadow: inset 0 0 10px rgba(14, 203, 129, 0.15);
 }}
-.candidate-manual-active {{
-    background: rgba(240, 185, 11, 0.20) !important;
-    border-left: 5px solid #f0b90b !important;
+.candidate-active td {{
+    color: #ffffff !important;
 }}
-
-.active-auto-tag {{
+.active-tag {{
     background: #0ecb81;
     color: #0b0e11;
     font-size: 10px;
@@ -91,22 +148,17 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     padding: 2px 7px;
     border-radius: 4px;
     margin-left: 6px;
-    display: inline-block;
-}}
-.active-manual-tag {{
-    background: #f0b90b;
-    color: #0b0e11;
-    font-size: 10px;
-    font-weight: 800;
-    padding: 2px 7px;
-    border-radius: 4px;
-    margin-left: 6px;
+    text-transform: uppercase;
     display: inline-block;
 }}
 
+/* Temporary Blocked Row Styling */
 .candidate-row.row-temp-blocked {{
     background: rgba(240, 185, 11, 0.15) !important;
     border-left: 5px solid #f0b90b !important;
+}}
+.candidate-row.row-temp-blocked td {{
+    color: #f0b90b !important;
 }}
 .badge-temp-block {{
     background: #f0b90b;
@@ -116,23 +168,39 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     padding: 2px 7px;
     border-radius: 4px;
     margin-left: 6px;
+    text-transform: uppercase;
     display: inline-block;
 }}
 
-.dot-group {{ display: flex; gap: 10px; justify-content: center; align-items: center; }}
+/* Dot Action Buttons */
+.dot-group {{
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    align-items: center;
+}}
 .btn-dot {{
     width: 18px;
     height: 18px;
     border-radius: 50%;
     border: 2px solid rgba(255, 255, 255, 0.2);
     cursor: pointer;
-    transition: transform 0.2s;
+    transition: transform 0.2s, box-shadow 0.2s;
     outline: none;
 }}
-.btn-dot:hover {{ transform: scale(1.25); }}
-.btn-dot-yellow {{ background: #f0b90b; box-shadow: 0 0 6px rgba(240, 185, 11, 0.5); }}
-.btn-dot-red {{ background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }}
+.btn-dot:hover {{
+    transform: scale(1.3);
+}}
+.btn-dot-yellow {{
+    background: #f0b90b;
+    box-shadow: 0 0 8px rgba(240, 185, 11, 0.6);
+}}
+.btn-dot-red {{
+    background: #ef4444;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+}}
 
+/* Blocked Coin Chips */
 .chip-blocked {{
     display: inline-flex;
     align-items: center;
@@ -144,10 +212,53 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     font-weight: 700;
     cursor: pointer;
     transition: all 0.2s;
+    user-select: none;
 }}
-.chip-blocked:hover {{ transform: translateY(-2px); }}
-.chip-temp {{ background: rgba(240, 185, 11, 0.15); border: 1px solid rgba(240, 185, 11, 0.4); color: #f0b90b; }}
-.chip-perm {{ background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; }}
+.chip-blocked:hover {{
+    transform: translateY(-2px);
+}}
+.chip-temp {{
+    background: rgba(240, 185, 11, 0.15);
+    border: 1px solid rgba(240, 185, 11, 0.4);
+    color: #f0b90b;
+}}
+.chip-temp:hover {{
+    background: rgba(240, 185, 11, 0.3);
+    box-shadow: 0 0 10px rgba(240, 185, 11, 0.35);
+}}
+.chip-perm {{
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #f87171;
+}}
+.chip-perm:hover {{
+    background: rgba(239, 68, 68, 0.3);
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.35);
+}}
+.chip-close {{
+    font-size: 13px;
+    opacity: 0.75;
+    margin-left: 2px;
+}}
+.chip-close:hover {{
+    opacity: 1;
+    color: #ffffff;
+}}
+.btn-see-more {{
+    background: #14181d;
+    border: 1px solid #2b313a;
+    color: #f0b90b;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 0.2s;
+}}
+.btn-see-more:hover {{
+    background: rgba(240, 185, 11, 0.12);
+    border-color: #f0b90b;
+}}
 </style>
 </head>
 <body>
@@ -155,14 +266,14 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 <div class="header">
     <div>
         <h1>Binance Tokyo Funding Sniper</h1>
-        <div style="font-size: 11px; color: #848e9c;">Radar Top 10 &bull; Auto Top 2 + Manual Add &bull; T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
+        <div class="sub-text" style="color: #848e9c;">Radar Top 10 &bull; 24h Volume &bull; Automatic/Manual Modes &bull; T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
     </div>
     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
         <button id="btn-trade-toggle" class="btn-toggle btn-on" onclick="toggleTrading()">TRADING: ON</button>
         
         <div class="mode-container">
-            <button id="btn-mode-auto" class="btn-mode btn-mode-auto-active" onclick="setModeAuto()">⚡ AUTO TOP 2</button>
-            <button id="btn-mode-manual" class="btn-mode btn-mode-inactive" onclick="setModeManualPrompt()">🎯 ADD MANUAL</button>
+            <button id="btn-mode-auto" class="btn-mode btn-mode-auto-active" onclick="setModeAuto()">⚡ AUTOMATIC</button>
+            <button id="btn-mode-manual" class="btn-mode btn-mode-inactive" onclick="setModeManualPrompt()">🎯 MANUAL</button>
         </div>
 
         <div class="badge-mode" id="lock-badge">SELECTION: OPEN (>1m)</div>
@@ -171,24 +282,24 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 </div>
 
 <div class="grid">
-    <div class="card"><div class="card-title">Armed Target Coins</div><div class="card-value" id="coin">--</div></div>
+    <div class="card"><div class="card-title">Target Coin</div><div class="card-value" id="coin">--</div></div>
     <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color: #0ecb81;">--%</div></div>
     <div class="card"><div class="card-title">Next Settlement</div><div class="card-value" id="settle" style="color: #eaecef;">--:--:-- IST</div></div>
     <div class="card"><div class="card-title">Base Margin</div><div class="card-value" style="color: #f0b90b;">${config.TRADE_MARGIN_USD} USDT</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset" style="color: #0ecb81;">0.0 ms</div></div>
 </div>
 
-<!-- TOP 10 CANDIDATES RADAR TABLE -->
+<!-- 1. TOP 10 CANDIDATES RADAR TABLE -->
 <div class="table-card">
     <div class="table-header">
-        <span>Top 10 Radar (🟢 AUTO ARMED &bull; 🟡 MANUAL ARMED)</span>
+        <span>Top 10 Funding Radar (Click row to Select &bull; 🟡 Temp Block &bull; 🔴 Perm Block)</span>
         <span id="lock-warning" style="font-size: 12px; color: #f0b90b;">Locked automatically within 1 min of settlement</span>
     </div>
     <div class="table-wrapper">
         <table style="min-width: 780px;">
             <thead>
                 <tr>
-                    <th style="width: 45px; text-align: center;">Select</th>
+                    <th style="width: 45px; text-align: center;">Active</th>
                     <th># Rank</th>
                     <th>Coin</th>
                     <th>24h Volume (USDT)</th>
@@ -204,21 +315,49 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     </div>
 </div>
 
-<!-- BLOCKED COINS MANAGEMENT CARDS -->
+<!-- 2. BLOCKED COINS MANAGEMENT CARDS -->
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px;">
+    <!-- Box 1: Temporary Blocked Coins -->
     <div class="table-card">
-        <div class="table-header"><span style="color: #f0b90b;">Temporary Blocked Coins (<span id="temp-count">0</span>)</span></div>
-        <div id="temp-blocked-container" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; align-items: center;"></div>
+        <div class="table-header">
+            <span style="color: #f0b90b; display: flex; align-items: center; gap: 8px;">
+                <span class="btn-dot btn-dot-yellow" style="cursor: default;"></span>
+                Temporary Blocked Coins (<span id="temp-count">0</span>)
+            </span>
+            <span style="font-size: 11px; color: #848e9c;">Click chip to Unblock</span>
+        </div>
+        <div id="temp-blocked-container" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; align-items: center;">
+            <span style="color: #848e9c; font-size: 12px;">No temporary blocked coins</span>
+        </div>
+        <div id="temp-see-more-btn" style="display: none; margin-top: 12px; text-align: center;">
+            <button class="btn-see-more" onclick="toggleSeeMore('temp')">See More (<span id="temp-extra-count">0</span>)</button>
+        </div>
     </div>
+
+    <!-- Box 2: Permanently Blocked Coins -->
     <div class="table-card">
-        <div class="table-header"><span style="color: #f87171;">Permanently Blocked Coins (<span id="perm-count">0</span>)</span></div>
-        <div id="perm-blocked-container" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; align-items: center;"></div>
+        <div class="table-header">
+            <span style="color: #f87171; display: flex; align-items: center; gap: 8px;">
+                <span class="btn-dot btn-dot-red" style="cursor: default;"></span>
+                Permanently Blocked Coins (<span id="perm-count">0</span>)
+            </span>
+            <span style="font-size: 11px; color: #848e9c;">Click chip to Unblock</span>
+        </div>
+        <div id="perm-blocked-container" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; align-items: center;">
+            <span style="color: #848e9c; font-size: 12px;">No permanently blocked coins</span>
+        </div>
+        <div id="perm-see-more-btn" style="display: none; margin-top: 12px; text-align: center;">
+            <button class="btn-see-more" onclick="toggleSeeMore('perm')">See More (<span id="perm-extra-count">0</span>)</button>
+        </div>
     </div>
 </div>
 
-<!-- TRADE HISTORY TABLE -->
+<!-- 3. TRADE HISTORY TABLE WITH FUNDING FEE & NET PNL COLUMNS -->
 <div class="table-card">
-    <div class="table-header"><span>Last 20 Trades Precision Ledger</span></div>
+    <div class="table-header">
+        <span>Last 20 Trades Precision Ledger</span>
+        <span style="font-size: 12px; color: #848e9c;">Auto-Refreshes every 1s</span>
+    </div>
     <div class="table-wrapper">
         <table>
             <thead>
@@ -230,8 +369,8 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
                     <th>Avg Entry Price</th>
                     <th>Exit Timeline</th>
                     <th>Exit Price</th>
-                    <th>Funding Fee</th>
-                    <th>Net PnL</th>
+                    <th style="min-width: 120px;">Funding Fee</th>
+                    <th style="min-width: 105px;">Net PnL</th>
                     <th>Status</th>
                 </tr>
             </thead>
@@ -245,7 +384,10 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 </div>
 
 <script>
+let currentTargetSymbol = "";
 let isLocked = false;
+let showAllTemp = false;
+let showAllPerm = false;
 
 function formatDurationJs(sec) {{
     if (sec <= 0) return '0s (Settling...)';
@@ -258,6 +400,7 @@ function formatDurationJs(sec) {{
 }}
 
 function renderLimitBoxHtml(d, boxColorClass) {{
+    // Canceled Shallow Limit Order Box (T+230ms Telemetry)
     if (d.status === "CANCELED") {{
         const cancelFired = d.cancel_fired || '--';
         const binanceCanceled = d.binance_canceled || '--';
@@ -273,14 +416,15 @@ function renderLimitBoxHtml(d, boxColorClass) {{
                     <span>Target Qty: <strong style="color: #94a3b8;">${{d.target_qty || d.qty || '--'}}</strong></span>
                 </div>
                 <div class="limit-box-timings">
-                    <div>🚀 Cancel Fired: <strong style="color: #ffffff;">${{cancelFired}}</strong></div>
-                    <div>🎯 Binance Canceled: <strong style="color: #60a5fa;">${{binanceCanceled}}</strong></div>
+                    <div>🚀 Cancel Fired (Local VPS): <strong style="color: #ffffff;">${{cancelFired}}</strong></div>
+                    <div>🎯 Binance Canceled (Engine): <strong style="color: #60a5fa;">${{binanceCanceled}}</strong></div>
                     <div style="margin-top: 2px; color: #94a3b8;">⚡ Cancel Latency: <strong style="color: #f0b90b;">${{latencyMs}} ms</strong></div>
                 </div>
             </div>
         `;
     }}
 
+    // Normal Filled Limit Order Box
     const firstTime = d.first_time || d.time || '--';
     const lastTime = d.last_time || d.time || '--';
     const spanMs = (d.span_ms !== undefined && d.span_ms !== null) ? d.span_ms : 0;
@@ -316,120 +460,199 @@ async function toggleTrading() {{
 
 function updateToggleBtn(enabled) {{
     const btn = document.getElementById('btn-trade-toggle');
-    btn.className = enabled ? "btn-toggle btn-on" : "btn-toggle btn-off";
-    btn.innerText = enabled ? "TRADING: ON" : "TRADING: OFF";
+    if (enabled) {{
+        btn.className = "btn-toggle btn-on";
+        btn.innerText = "TRADING: ON";
+    }} else {{
+        btn.className = "btn-toggle btn-off";
+        btn.innerText = "TRADING: OFF";
+    }}
 }}
 
 async function setModeAuto() {{
-    if (isLocked) return alert("Selection is LOCKED!");
+    if (isLocked) {{
+        alert("Selection is LOCKED because settlement is less than 1 minute away!");
+        return;
+    }}
     try {{
-        await fetch('/api/reset-auto', {{ method: 'POST' }});
+        const res = await fetch('/api/reset-auto', {{ method: 'POST' }});
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Failed to switch mode.");
+        }}
     }} catch(e) {{}}
 }}
 
 function setModeManualPrompt() {{
-    if (isLocked) return alert("Selection is LOCKED!");
-    alert("🎯 Niche table me kisi bhi coin par click karke use Extra Armed list me add ya remove kar sakte hain!");
+    if (isLocked) {{
+        alert("Selection is LOCKED because settlement is less than 1 minute away!");
+        return;
+    }}
+    alert("🎯 मैन्युअल मोड एक्टिवेट करने के लिए नीचे दी गई Top 10 टेबल में से किसी भी अनब्लॉक कॉइन पर क्लिक करें!");
 }}
 
 async function toggleSelectCandidate(sym, isTempBlocked) {{
-    if (isTempBlocked) return alert(`⚠️ ${{sym}} TEMPORARY BLOCKED hai!`);
-    if (isLocked) return alert("Selection is LOCKED!");
+    if (isTempBlocked) {{
+        alert(`⚠️ ${{sym}} TEMPORARY BLOCKED hai! Isme trade nahi ho sakti. Pehle niche wale card se ise unblock karein.`);
+        return;
+    }}
+    if (isLocked) {{
+        alert("Coin selection is LOCKED because settlement is less than 1 minute away!");
+        return;
+    }}
     try {{
-        await fetch('/api/select-coin', {{
+        const res = await fetch('/api/select-coin', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             body: JSON.stringify({{ symbol: sym }})
         }});
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Action failed.");
+        }}
     }} catch(e) {{}}
 }}
 
 async function blockCoin(sym, type) {{
-    if (!confirm(`Block ${{sym}} (${{type}})?`)) return;
+    const label = type === 'temporary' ? 'Temporary (🟡)' : 'Permanent (🔴)';
+    if (!confirm(`Kya aap ${{sym}} ko ${{label}} block karna chahte hain?`)) return;
     try {{
-        await fetch('/api/block-coin', {{
+        const res = await fetch('/api/block-coin', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             body: JSON.stringify({{ symbol: sym, type: type }})
         }});
-        updateUI();
-    }} catch(e) {{}}
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Block failed");
+        }} else {{
+            updateUI();
+        }}
+    }} catch(e) {{
+        alert("Network error while blocking coin");
+    }}
 }}
 
 async function unblockCoin(sym, type) {{
-    if (!confirm(`Unblock ${{sym}}?`)) return;
+    if (!confirm(`Kya aap ${{sym}} ko Unblock karna chahte hain?`)) return;
     try {{
-        await fetch('/api/unblock-coin', {{
+        const res = await fetch('/api/unblock-coin', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             body: JSON.stringify({{ symbol: sym, type: type }})
         }});
-        updateUI();
-    }} catch(e) {{}}
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Unblock failed");
+        }} else {{
+            updateUI();
+        }}
+    }} catch(e) {{
+        alert("Network error while unblocking coin");
+    }}
+}}
+
+function toggleSeeMore(type) {{
+    if (type === 'temp') showAllTemp = !showAllTemp;
+    else if (type === 'perm') showAllPerm = !showAllPerm;
+    updateUI();
 }}
 
 async function updateUI() {{
     try {{
         const res = await fetch('/api/status');
         const data = await res.json();
+        currentTargetSymbol = data.target_symbol || "";
         isLocked = !!data.selection_locked;
 
         document.getElementById('ws-status').innerText = data.status;
-        document.getElementById('coin').innerText = data.target_symbol || '--';
+        document.getElementById('coin').innerText = data.target_symbol;
         document.getElementById('rate').innerText = data.funding_rate;
         document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
         updateToggleBtn(data.trading_enabled);
 
-        // Header Settlement Card calculation fix
+        // Update Automatic / Manual Mode Buttons
+        const isManual = !!(data.manual_selected_symbol && data.manual_selected_symbol.trim().length > 0);
+        const btnAuto = document.getElementById('btn-mode-auto');
+        const btnManual = document.getElementById('btn-mode-manual');
+
+        if (btnAuto && btnManual) {{
+            btnAuto.disabled = isLocked;
+            btnManual.disabled = isLocked;
+
+            if (isManual) {{
+                btnAuto.className = "btn-mode btn-mode-inactive";
+                btnManual.className = "btn-mode btn-mode-manual-active";
+                btnManual.innerText = `🎯 MANUAL: ${{data.manual_selected_symbol}}`;
+            }} else {{
+                btnAuto.className = "btn-mode btn-mode-auto-active";
+                btnManual.className = "btn-mode btn-mode-inactive";
+                btnManual.innerText = "🎯 MANUAL";
+            }}
+        }}
+
+        const lockBadge = document.getElementById('lock-badge');
+        if (isLocked) {{
+            lockBadge.className = "badge-locked";
+            lockBadge.innerText = "🔒 SELECTION LOCKED (<=1m)";
+            document.getElementById('lock-warning').innerText = "Selection is locked for execution safety";
+        }} else {{
+            lockBadge.className = "badge-mode";
+            lockBadge.innerText = "SELECTION: OPEN (>1m)";
+            document.getElementById('lock-warning').innerText = "Locked automatically within 1 min of settlement";
+        }}
+
         if (data.target_settlement_ms && data.target_settlement_ms > 0) {{
             const nowMs = Date.now() + (data.clock_offset_ms || 0);
             const diffSec = Math.max(0, Math.floor((data.target_settlement_ms - nowMs) / 1000));
             const timeStr = data.target_settlement_time || '--:--:-- IST';
             document.getElementById('settle').innerText = `${{timeStr}} (${{formatDurationJs(diffSec)}})`;
-        }} else if (data.top_5_candidates && data.top_5_candidates.length > 0) {{
-            document.getElementById('settle').innerText = data.top_5_candidates[0].settle_str || '--:--:-- IST';
         }} else {{
             document.getElementById('settle').innerText = data.target_settlement || '--:--:-- IST';
         }}
 
-        const autoList = data.auto_armed_symbols || [];
-        const manualList = data.manual_selected_symbols || [];
         const blockedData = data.blocked_coins || {{ temporary: [], permanent: [] }};
         const tempList = blockedData.temporary || [];
         const permList = blockedData.permanent || [];
 
+        // Render Top-10 Radar Candidates Table
         const cBody = document.getElementById('candidates-body');
         if (data.top_5_candidates && data.top_5_candidates.length > 0) {{
+            const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--"));
+            
             cBody.innerHTML = data.top_5_candidates.map((c, i) => {{
                 const isTemp = tempList.includes(c.symbol);
-                const isAuto = autoList.includes(c.symbol);
-                const isManual = manualList.includes(c.symbol);
-                const isArmed = isAuto || isManual;
-
+                const isSelected = hasValidTarget && (c.symbol === data.target_symbol);
+                const disabledAttr = (isLocked || isTemp) ? "disabled" : "";
+                
                 let rowClass = "candidate-row";
-                if (isTemp) rowClass += " row-temp-blocked";
-                else if (isAuto) rowClass += " candidate-auto-active";
-                else if (isManual) rowClass += " candidate-manual-active";
+                if (isTemp) {{
+                    rowClass += " row-temp-blocked";
+                }} else if (isSelected) {{
+                    rowClass += " candidate-active";
+                }}
 
-                let tagHtml = '';
-                if (isTemp) tagHtml = '<span class="badge-temp-block">TEMP BLOCKED</span>';
-                else if (isAuto) tagHtml = '<span class="active-auto-tag">⚡ AUTO ARMED</span>';
-                else if (isManual) tagHtml = '<span class="active-manual-tag">🎯 MANUAL ARMED</span>';
+                let activeTagHtml = '';
+                if (isTemp) {{
+                    activeTagHtml = '<span class="badge-temp-block">TEMP BLOCKED</span>';
+                }} else if (isSelected) {{
+                    activeTagHtml = '<span class="active-tag">ARMED</span>';
+                }}
 
                 return `
                     <tr class="${{rowClass}}" onclick="${{isLocked ? '' : `toggleSelectCandidate('${{c.symbol}}', ${{isTemp}})`}}">
                         <td style="text-align: center;">
-                            <input type="checkbox" ${{isArmed ? 'checked' : ''}} ${{isLocked || isTemp ? 'disabled' : ''}}>
+                            <input type="radio" name="candidate-select" ${{isSelected ? 'checked' : ''}} ${{disabledAttr}} onclick="event.stopPropagation(); toggleSelectCandidate('${{c.symbol}}', ${{isTemp}});">
                         </td>
-                        <td><strong>#${{i + 1}}</strong></td>
-                        <td><strong>${{c.symbol}}</strong>${{tagHtml}}</td>
-                        <td style="color: #f0b90b; font-family: monospace;">${{c.vol_str || '--'}}</td>
-                        <td style="color: #0ecb81; font-weight: 700;">${{(c.rate * 100).toFixed(4)}}%</td>
+                        <td><strong style="color: ${{isTemp ? '#f0b90b' : (isSelected ? '#0ecb81' : (i === 0 ? '#f0b90b' : '#848e9c'))}};">#${{i + 1}}</strong></td>
+                        <td><strong>${{c.symbol}}</strong>${{activeTagHtml}}</td>
+                        <td style="color: #f0b90b; font-family: monospace; font-weight: 600;">${{c.vol_str || '--'}}</td>
+                        <td style="color: ${{isTemp ? '#f0b90b' : '#0ecb81'}}; font-weight: 700;">${{(c.rate * 100).toFixed(4)}}%</td>
                         <td>${{c.settle_str}}</td>
                         <td style="text-align: center;">
                             <div class="dot-group">
-                                <button class="btn-dot btn-dot-yellow" onclick="event.stopPropagation(); blockCoin('${{c.symbol}}', 'temporary');"></button>
-                                <button class="btn-dot btn-dot-red" onclick="event.stopPropagation(); blockCoin('${{c.symbol}}', 'permanent');"></button>
+                                <button class="btn-dot btn-dot-yellow" title="Temporary Block ${{c.symbol}}" onclick="event.stopPropagation(); blockCoin('${{c.symbol}}', 'temporary');"></button>
+                                <button class="btn-dot btn-dot-red" title="Permanent Block ${{c.symbol}}" onclick="event.stopPropagation(); blockCoin('${{c.symbol}}', 'permanent');"></button>
                             </div>
                         </td>
                     </tr>
@@ -437,17 +660,55 @@ async function updateUI() {{
             }}).join('');
         }}
 
+        // Render Blocked Coins Management Cards
         document.getElementById('temp-count').innerText = tempList.length;
         document.getElementById('perm-count').innerText = permList.length;
 
-        document.getElementById('temp-blocked-container').innerHTML = tempList.map(s => `
-            <span class="chip-blocked chip-temp" onclick="unblockCoin('${{s}}', 'temporary')">${{s}} ✖</span>
-        `).join('') || '<span style="color: #848e9c; font-size: 12px;">No temporary blocked coins</span>';
+        const tempContainer = document.getElementById('temp-blocked-container');
+        const tempSeeMore = document.getElementById('temp-see-more-btn');
+        if (tempList.length === 0) {{
+            tempContainer.innerHTML = '<span style="color: #848e9c; font-size: 12px;">No temporary blocked coins</span>';
+            tempSeeMore.style.display = 'none';
+        }} else {{
+            const visibleTemp = showAllTemp ? tempList : tempList.slice(0, 25);
+            tempContainer.innerHTML = visibleTemp.map(sym => `
+                <span class="chip-blocked chip-temp" onclick="unblockCoin('${{sym}}', 'temporary')" title="Click to Unblock ${{sym}}">
+                    ${{sym}} <span class="chip-close">✖</span>
+                </span>
+            `).join('');
 
-        document.getElementById('perm-blocked-container').innerHTML = permList.map(s => `
-            <span class="chip-blocked chip-perm" onclick="unblockCoin('${{s}}', 'permanent')">${{s}} ✖</span>
-        `).join('') || '<span style="color: #848e9c; font-size: 12px;">No permanently blocked coins</span>';
+            if (tempList.length > 25) {{
+                tempSeeMore.style.display = 'block';
+                const extra = tempList.length - 25;
+                tempSeeMore.querySelector('button').innerText = showAllTemp ? "Show Less" : `See More (${{extra}} more)`;
+            }} else {{
+                tempSeeMore.style.display = 'none';
+            }}
+        }}
 
+        const permContainer = document.getElementById('perm-blocked-container');
+        const permSeeMore = document.getElementById('perm-see-more-btn');
+        if (permList.length === 0) {{
+            permContainer.innerHTML = '<span style="color: #848e9c; font-size: 12px;">No permanently blocked coins</span>';
+            permSeeMore.style.display = 'none';
+        }} else {{
+            const visiblePerm = showAllPerm ? permList : permList.slice(0, 25);
+            permContainer.innerHTML = visiblePerm.map(sym => `
+                <span class="chip-blocked chip-perm" onclick="unblockCoin('${{sym}}', 'permanent')" title="Click to Unblock ${{sym}}">
+                    ${{sym}} <span class="chip-close">✖</span>
+                </span>
+            `).join('');
+
+            if (permList.length > 25) {{
+                permSeeMore.style.display = 'block';
+                const extra = permList.length - 25;
+                permSeeMore.querySelector('button').innerText = showAllPerm ? "Show Less" : `See More (${{extra}} more)`;
+            }} else {{
+                permSeeMore.style.display = 'none';
+            }}
+        }}
+
+        // Render Trades History with Funding Fee & Net PnL Columns
         const tbody = document.getElementById('trades-body');
         if (!data.trades || data.trades.length === 0) {{
             tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for trades to execute...</td></tr>';
@@ -528,7 +789,7 @@ async function updateUI() {{
                                     <strong class="mono" style="color:#f0b90b;">${{t.pnl_breakdown || '--'}}</strong>
                                 </div>
                                 <div class="sub-item" style="flex-direction: column; align-items: flex-start; width: 100%;">
-                                    <span class="sub-label">Limit Order Fills (${{hitsList.length}} Levels Hit):</span>
+                                    <span class="sub-label">Limit Order Fills (${{hitsList.length}} Levels Hit — Row 1: Blue Shallow | Row 2: Yellow DCA):</span>
                                     ${{dcaHtml}}
                                 </div>
                             </div>
@@ -538,7 +799,7 @@ async function updateUI() {{
             }}).join('');
         }}
 
-    }} catch (e) {{}}
+    } catch (e) {{}}
 }}
 
 setInterval(updateUI, 1000);
