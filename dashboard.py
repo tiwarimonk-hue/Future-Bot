@@ -35,7 +35,6 @@ def load_blocked_coins() -> dict[str, list[str]]:
                 data["permanent"] = []
             return data
     except Exception as e:
-        print(f"⚠️ [BLOCKED COINS LOAD ERROR]: {e}", flush=True)
         return default_data
 
 
@@ -45,7 +44,6 @@ def save_blocked_coins(data: dict[str, list[str]]) -> bool:
             json.dump(data, f, indent=2)
         return True
     except Exception as e:
-        print(f"⚠️ [BLOCKED COINS SAVE ERROR]: {e}", flush=True)
         return False
 
 
@@ -53,9 +51,6 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
     symbol = symbol.strip().upper()
     if not symbol:
         return False, "Invalid symbol"
-    if block_type not in ("temporary", "permanent"):
-        return False, "Invalid block type"
-
     with data_lock:
         data = load_blocked_coins()
         if block_type == "temporary":
@@ -77,7 +72,7 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
             dashboard_data["manual_selected_symbols"].remove(symbol)
 
     add_ui_log(f"🚫 [COIN BLOCKED] {symbol} moved to {block_type.upper()} block list.")
-    return True, f"{symbol} added to {block_type} block list"
+    return True, f"{symbol} blocked"
 
 
 def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
@@ -100,9 +95,9 @@ def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
             save_blocked_coins(data)
             dashboard_data["blocked_coins"] = data
             dashboard_data["force_rescan"] = True
-            add_ui_log(f"✅ [COIN UNBLOCKED] {symbol} removed from block list.")
-            return True, f"{symbol} unblocked successfully"
-        return False, f"{symbol} not found in block list"
+            add_ui_log(f"✅ [COIN UNBLOCKED] {symbol} unblocked.")
+            return True, f"{symbol} unblocked"
+        return False, f"{symbol} not found"
 
 
 dashboard_data = {
@@ -117,7 +112,8 @@ dashboard_data = {
     "margin_usd": f"${config.TRADE_MARGIN_USD} USDT",
     "trades": trade_history,
     "trading_enabled": True,
-    "manual_selected_symbols": [],  # Multi-coin manual selections list
+    "manual_selected_symbols": [],
+    "auto_armed_symbols": [],
     "selection_locked": False,
     "force_rescan": False,
     "top_5_candidates": [],
@@ -162,7 +158,6 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                 current_state = dashboard_data["trading_enabled"]
                 if current_state:
                     dashboard_data["force_rescan"] = True
-            add_ui_log(f"🔘 [TRADING TOGGLED] Master Switch is now {'ON (Instant Scan Triggered)' if current_state else 'OFF'}")
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -177,13 +172,11 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.send_response(403)
                         self.send_header("Content-type", "application/json")
                         self.end_headers()
-                        self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
+                        self.wfile.write(json.dumps({"success": False, "message": "Selection locked."}).encode("utf-8"))
                         return
-
                     dashboard_data["manual_selected_symbols"] = []
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Cleared manual targets...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -205,29 +198,20 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.send_response(403)
                         self.send_header("Content-type", "application/json")
                         self.end_headers()
-                        self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
-                        return
-
-                    blocked = load_blocked_coins()
-                    if selected_sym in blocked.get("temporary", []) or selected_sym in blocked.get("permanent", []):
-                        self.send_response(400)
-                        self.send_header("Content-type", "application/json")
-                        self.send_header("Access-Control-Allow-Origin", "*")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"success": False, "message": f"{selected_sym} is BLOCKED! Unblock it first to trade."}).encode("utf-8"))
+                        self.wfile.write(json.dumps({"success": False, "message": "Selection locked."}).encode("utf-8"))
                         return
 
                     manual_list = dashboard_data.setdefault("manual_selected_symbols", [])
                     if selected_sym in manual_list:
                         manual_list.remove(selected_sym)
-                        action_msg = f"Deselected {selected_sym} from manual list."
+                        action_msg = f"Removed {selected_sym} from manual list."
                     else:
                         manual_list.append(selected_sym)
                         action_msg = f"Added {selected_sym} to manual list."
 
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg} Triggering instant market audit...")
+                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg}")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -250,7 +234,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": ok, "message": msg, "blocked_coins": load_blocked_coins()}).encode("utf-8"))
+                self.wfile.write(json.dumps({"success": ok, "message": msg}).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(400)
@@ -268,7 +252,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": ok, "message": msg, "blocked_coins": load_blocked_coins()}).encode("utf-8"))
+                self.wfile.write(json.dumps({"success": ok, "message": msg}).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(400)
