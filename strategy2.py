@@ -1,435 +1,416 @@
-from __future__ import annotations
-import gc
-import hmac
-import hashlib
-import json
-import threading
+import os
 import time
-import uuid
+import math
+import threading
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Callable, Optional, Sequence, Tuple, List, Dict
-import requests
-import websocket
+from binance.um_futures import UMFutures
 
 IST = timezone(timedelta(hours=5, minutes=30))
-DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '')
+BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
+
+INITIAL_ENTRY_MARGIN_USD = 1.0        # $1 Margin (Updated)
+MAX_ALLOWED_LEVERAGE = 20
+TP_PROFIT_PCT = 0.001                 # +0.10% TP Profit
+HARD_EXIT_SECONDS = 300               # 5 Minutes Hard Exit (Updated)
+SL_FUNDING_MULTIPLIER = 1.7           # 170% Stop Loss multiplier (Updated)
+
+binance_offset_ms = 0.0
+active_executors = set()
+executors_lock = threading.Lock()
+funding_intervals_map = {}
 
 
-class BinanceFastLaneWS:
-    def __init__(self, api_key: str, api_secret: str, rest_url: str, ws_url: str, ws_api_url: str, log_fn: Callable[[str], None], status_fn: Callable[[str], None]):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.rest_url = rest_url
-        self.ws_url = ws_url
-        self.ws_api_url = ws_api_url
-        self.log_fn = log_fn
-        self.status_fn = status_fn
-        self.ws_lock = threading.Lock()
-        self.order_send_lock = threading.Lock()
+def sync_binance_clock(client, dashboard_data, data_lock):
+    global binance_offset_ms
+    try:
+        t_send = time.time() * 1000
+        server_time_resp = client.time()
+        t_recv = time.time() * 1000
+        server_time = float(server_time_resp['serverTime'])
+        binance_offset_ms = (server_time + ((t_recv - t_send) / 2.0)) - t_recv
+        with data_lock:
+            if 'strategy2' in dashboard_data:
+                dashboard_data['strategy2']['offset'] = round(binance_offset_ms, 2)
+    except Exception:
+        pass
 
-        self.listen_key: str = ""
-        self.user_ws: Optional[websocket.WebSocketApp] = None
-        self.order_ws: Optional[websocket.WebSocketApp] = None
-        self.public_ws: Optional[websocket.WebSocketApp] = None
 
-        self.user_ws_ready = False
-        self.order_ws_ready = False
-        self.ws_ready = False
+def refresh_funding_intervals(client):
+    global funding_intervals_map
+    try:
+        info_list = client.funding_info()
+        for item in info_list:
+            sym = item.get("symbol", "")
+            hrs = item.get("fundingIntervalHours")
+            if sym and hrs:
+                funding_intervals_map[sym] = f"{hrs}H"
+    except Exception:
+        pass
 
-        self.live_prices: dict[str, float] = {}
-        self.last_traded_prices: dict[str, float] = {}
-        self.current_subscribed_symbol: Optional[str] = None
 
-        self.pending_order_events: dict[str, threading.Event] = {}
-        self.pending_order_responses: dict[str, dict[str, Any]] = {}
+def get_synced_time_ms():
+    return (time.time() * 1000) + binance_offset_ms
 
-        self.filled_quantities: dict[str, float] = {}
-        self.buy_avg_prices: dict[str, float] = {}
-        self.sell_fill_prices: dict[str, float] = {}
-        self.last_fill_prices: dict[str, float] = {}
-        self.last_fill_times: dict[str, str] = {}
-        self.shallow_cancels_telemetry: dict[str, dict[str, Any]] = {}
-        self.filled_orders_set: set[str] = set()
 
-        self.ping_send_perf: float = 0.0
-        self.last_measured_rtt_ms: float = 2.4
+def precision_wait_until(target_time_ms):
+    while True:
+        now = get_synced_time_ms()
+        diff = target_time_ms - now
+        if diff <= 0:
+            break
+        elif diff > 10:
+            time.sleep(0.002)
+        elif diff > 2:
+            time.sleep(0.0005)
 
-    def reset_cycle_state(self, symbol: str) -> None:
-        with self.ws_lock:
-            self.last_fill_prices.pop(symbol, None)
-            self.buy_avg_prices.pop(symbol, None)
-            self.sell_fill_prices.pop(symbol, None)
-            self.last_fill_times.pop(symbol, None)
-            self.filled_quantities.pop(symbol, None)
-            self.last_traded_prices.pop(symbol, None)
-            self.pending_order_events.clear()
-            self.pending_order_responses.clear()
-            self.shallow_cancels_telemetry.clear()
-            self.filled_orders_set.clear()
 
-    def acquire_listen_key(self) -> bool:
-        if not self.api_key: return False
-        url = f"{self.rest_url}/fapi/v1/listenKey"
-        headers = {"X-MBX-APIKEY": self.api_key, "User-Agent": DEFAULT_UA, "Accept": "application/json"}
+def scan_market_and_sync_state(client, dashboard_data, data_lock, strategy1_active_coins: set[str]):
+    try:
+        premiums = client.mark_price()
+    except Exception:
+        return []
+
+    now_ms = int(get_synced_time_ms())
+    all_negative = []
+
+    with data_lock:
+        s2_data = dashboard_data.setdefault('strategy2', {})
+        m_armed = list(s2_data.get('manual_armed', []))
+        m_disarmed = list(s2_data.get('manual_disarmed', []))
+
+    ticker_map = {}
+    for item in premiums:
+        sym = item.get("symbol", "")
+        if not sym.endswith("USDT"):
+            continue
+
+        if sym in strategy1_active_coins:
+            continue
+
+        raw_rate = item.get("lastFundingRate", "")
+        raw_next = item.get("nextFundingTime", "")
+        if not raw_rate or not raw_next:
+            continue
         try:
-            res = requests.post(url, headers=headers, timeout=5)
-            if res.status_code == 200:
-                self.listen_key = res.json().get("listenKey", "")
-                return True
-        except Exception: pass
-        return False
+            rate = float(raw_rate)
+            next_time_ms = int(raw_next)
+            mark_price = float(item.get("markPrice", 0))
+        except ValueError:
+            continue
 
-    def keep_alive_listen_key(self) -> None:
-        url = f"{self.rest_url}/fapi/v1/listenKey"
-        headers = {"X-MBX-APIKEY": self.api_key, "User-Agent": DEFAULT_UA, "Accept": "application/json"}
-        while True:
-            time.sleep(20 * 60)
-            if self.listen_key:
-                try: requests.put(url, headers=headers, timeout=5)
-                except Exception: self.acquire_listen_key()
+        time_diff = next_time_ms - now_ms
+        if time_diff <= 1500:
+            continue
 
-    def on_user_message(self, ws: Any, message: str) -> None:
-        try:
-            data = json.loads(message)
-        except Exception: return
+        cycle_str = funding_intervals_map.get(sym)
+        if not cycle_str:
+            est_h = max(1, round(time_diff / 3600000))
+            cycle_str = f"{est_h}H"
 
-        if data.get("e") == "ORDER_TRADE_UPDATE":
-            order_data = data.get("o", {})
-            sym = order_data.get("s", "")
-            side = order_data.get("S", "").lower()
-            execution_type = order_data.get("x", "")
-            client_order_id = order_data.get("c", "")
-            last_filled_qty = float(order_data.get("l", 0.0))
-            last_filled_price = float(order_data.get("L", 0.0))
-            trade_ts_ms = int(order_data.get("T") or data.get("E") or int(time.time() * 1000))
-            exact_trade_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3]
-
-            if client_order_id and client_order_id in self.shallow_cancels_telemetry:
-                with self.ws_lock:
-                    if execution_type == "CANCELED":
-                        self.shallow_cancels_telemetry[client_order_id]["binance_canceled_ms"] = trade_ts_ms
-                        self.shallow_cancels_telemetry[client_order_id]["binance_canceled_str"] = exact_trade_time
-                    elif execution_type == "TRADE":
-                        self.filled_orders_set.add(client_order_id)
-
-            if execution_type == "TRADE" and last_filled_qty > 0:
-                with self.ws_lock:
-                    self.last_fill_times[sym] = exact_trade_time
-                    if side == "buy":
-                        old_qty = self.filled_quantities.get(sym, 0.0)
-                        new_qty = old_qty + last_filled_qty
-                        self.filled_quantities[sym] = new_qty
-                        self.buy_avg_prices[sym] = last_filled_price
-                    elif side == "sell":
-                        self.sell_fill_prices[sym] = last_filled_price
-                        self.filled_quantities[sym] = max(0.0, self.filled_quantities.get(sym, 0.0) - last_filled_qty)
-
-    def on_order_message(self, ws: Any, message: str) -> None:
-        try:
-            data = json.loads(message)
-            req_id = data.get("id", "")
-            if req_id and req_id in self.pending_order_events:
-                self.pending_order_responses[req_id] = data
-                self.pending_order_events[req_id].set()
-        except Exception: pass
-
-    def place_orders_burst_ws(self, symbol: str, orders_batch: list[tuple[str, str, str, float, str]], timeout: float = 0.09) -> None:
-        if not self.order_ws: return
-        timestamp_ms = int(time.time() * 1000)
-        prepared_frames = []
-        for cid, q_str, p_str, _, _ in orders_batch:
-            sign_dict = {
-                "apiKey": self.api_key, "symbol": symbol, "side": "BUY", "type": "LIMIT",
-                "quantity": q_str, "price": p_str, "timeInForce": "GTC", "newClientOrderId": cid, "timestamp": timestamp_ms
-            }
-            query_string = "&".join([f"{k}={sign_dict[k]}" for k in sorted(sign_dict.keys())])
-            sig = hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-            payload = {"id": cid, "method": "order.place", "params": {**sign_dict, "signature": sig}}
-            prepared_frames.append(json.dumps(payload))
-
-        with self.order_send_lock:
-            for raw_frame in prepared_frames:
-                try: self.order_ws.send(raw_frame)
-                except Exception: pass
-
-    def cancel_orders_batch_ws(self, symbol: str, client_order_ids: list[str], timeout: float = 0.08) -> None:
-        if not self.order_ws: return
-        timestamp_ms = int(time.time() * 1000)
-        fired_time_str = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-        fired_ts_ms = int(time.time() * 1000)
-
-        prepared_frames = []
-        for cid in client_order_ids:
-            with self.ws_lock:
-                self.shallow_cancels_telemetry[cid] = {
-                    "cancel_fired_str": fired_time_str,
-                    "cancel_fired_ms": fired_ts_ms,
-                    "binance_canceled_str": "--",
-                    "binance_canceled_ms": 0
-                }
-            sign_dict = {"apiKey": self.api_key, "symbol": symbol, "origClientOrderId": cid, "timestamp": timestamp_ms}
-            query_string = "&".join([f"{k}={sign_dict[k]}" for k in sorted(sign_dict.keys())])
-            sig = hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-            cancel_req_id = f"cancel-{cid}"
-            payload = {"id": cancel_req_id, "method": "order.cancel", "params": {**sign_dict, "signature": sig}}
-            prepared_frames.append(json.dumps(payload))
-
-        with self.order_send_lock:
-            for raw_frame in prepared_frames:
-                try: self.order_ws.send(raw_frame)
-                except Exception: pass
-
-    def place_order_ws(self, symbol: str, side: str, order_type: str, quantity: str, client_order_id: str, timeout: float = 0.5, reduce_only: bool = False) -> dict:
-        if not self.order_ws: return {"error": "WS disconnected"}
-        timestamp_ms = int(time.time() * 1000)
-        sign_dict = {
-            "apiKey": self.api_key, "symbol": symbol, "side": side, "type": order_type,
-            "quantity": quantity, "newClientOrderId": client_order_id, "timestamp": timestamp_ms
+        settle_dt = datetime.fromtimestamp(next_time_ms / 1000, tz=IST)
+        coin_obj = {
+            "symbol": sym,
+            "funding_rate": rate,
+            "rate_str": f"{rate*100:+.4f}%",
+            "next_funding_time": next_time_ms,
+            "settle_str": settle_dt.strftime('%H:%M:%S IST'),
+            "cycle": cycle_str,
+            "last_price": mark_price
         }
-        if reduce_only: sign_dict["reduceOnly"] = "true"
-        query_string = "&".join([f"{k}={sign_dict[k]}" for k in sorted(sign_dict.keys())])
-        sig = hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-        payload = {"id": client_order_id, "method": "order.place", "params": {**sign_dict, "signature": sig}}
-        event = threading.Event()
-        self.pending_order_events[client_order_id] = event
-        try:
-            with self.order_send_lock: self.order_ws.send(json.dumps(payload))
-        except Exception as e: return {"error": str(e)}
-        confirmed = event.wait(timeout=timeout)
-        res = self.pending_order_responses.pop(client_order_id, None)
-        self.pending_order_events.pop(client_order_id, None)
-        return res if (confirmed and res) else {"error": "Timeout"}
+        ticker_map[sym] = coin_obj
 
-    def cancel_all_orders_ws(self, symbol: str, timeout: float = 0.3) -> dict:
-        if not self.order_ws: return {"error": "WS disconnected"}
-        timestamp_ms = int(time.time() * 1000)
-        sign_dict = {"apiKey": self.api_key, "symbol": symbol, "timestamp": timestamp_ms}
-        query_string = "&".join([f"{k}={sign_dict[k]}" for k in sorted(sign_dict.keys())])
-        sig = hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-        req_id = f"cancel-all-{symbol[:4]}-{timestamp_ms % 100000}"
-        payload = {"id": req_id, "method": "order.cancelAll", "params": {**sign_dict, "signature": sig}}
-        try:
-            with self.order_send_lock: self.order_ws.send(json.dumps(payload))
-            return {"status": 200}
-        except Exception as e: return {"error": str(e)}
+        if rate < 0:
+            all_negative.append(coin_obj)
 
-    def on_public_message(self, ws: Any, message: str) -> None:
-        try:
-            data = json.loads(message)
-            payload = data.get("data", data)
-            sym = payload.get("s", "")
-            if payload.get("e") == "aggTrade":
-                price = float(payload.get("p", 0.0))
-                if sym and price > 0:
-                    with self.ws_lock:
-                        self.live_prices[sym] = price
-                        self.last_traded_prices[sym] = price
-        except Exception: pass
+    all_negative.sort(key=lambda x: x['funding_rate'])
 
-    def subscribe_ticker(self, symbol: str) -> None:
-        if symbol == self.current_subscribed_symbol: return
-        if self.public_ws:
-            try: self.public_ws.close()
-            except Exception: pass
-        with self.ws_lock:
-            self.live_prices.clear()
-            self.last_traded_prices.clear()
-            self.current_subscribed_symbol = symbol
+    valid_m_armed = [s for s in m_armed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
+    valid_m_disarmed = [s for s in m_disarmed if s in ticker_map and ticker_map[s]['funding_rate'] < 0]
 
-        def runner(target_sym: str):
-            stream_url = f"{self.ws_url}/stream?streams={target_sym.lower()}@aggTrade"
-            while self.current_subscribed_symbol == target_sym:
-                try:
-                    self.public_ws = websocket.WebSocketApp(stream_url, on_message=self.on_public_message)
-                    self.public_ws.run_forever(ping_interval=10, ping_timeout=5)
-                except Exception: pass
-                time.sleep(1)
-        threading.Thread(target=runner, args=(symbol,), daemon=True).start()
+    # Purely Manual Armed Selection (Auto-selection removed)
+    effective_armed = []
+    for sym in valid_m_armed:
+        if sym not in valid_m_disarmed:
+            c = dict(ticker_map[sym])
+            c['arm_mode'] = "MANUAL"
+            effective_armed.append(c)
 
-    def get_live_price(self, symbol: str) -> float:
-        with self.ws_lock: return self.live_prices.get(symbol) or self.last_traded_prices.get(symbol, 0.0)
-    def get_last_traded_price(self, symbol: str) -> float:
-        with self.ws_lock: return self.last_traded_prices.get(symbol, 0.0)
-    def get_filled_qty(self, symbol: str) -> float:
-        with self.ws_lock: return self.filled_quantities.get(symbol, 0.0)
-    def get_avg_fill_price(self, symbol: str) -> Optional[float]:
-        with self.ws_lock: return self.buy_avg_prices.get(symbol) or self.last_fill_prices.get(symbol)
-    def get_sell_fill_price(self, symbol: str) -> Optional[float]:
-        with self.ws_lock: return self.sell_fill_prices.get(symbol)
+    top20_list = []
+    for c in all_negative[:20]:
+        sym = c['symbol']
+        is_armed = sym in valid_m_armed and sym not in valid_m_disarmed
+        mode = "MANUAL" if is_armed else "DISARMED"
+        top20_list.append({
+            "symbol": sym, "rate": c['funding_rate'], "rate_str": c['rate_str'],
+            "next_funding_time": c['next_funding_time'], "settle_str": c['settle_str'],
+            "cycle": c['cycle'], "arm_mode": mode, "is_armed": is_armed
+        })
 
-    def connect(self) -> None:
-        while not self.acquire_listen_key(): time.sleep(5)
-        threading.Thread(target=self.keep_alive_listen_key, daemon=True).start()
-
-        def user_ws_runner():
-            while True:
-                try:
-                    self.user_ws = websocket.WebSocketApp(
-                        f"{self.ws_url}/ws/{self.listen_key}",
-                        on_message=self.on_user_message
-                    )
-                    self.user_ws.run_forever(ping_interval=10, ping_timeout=5)
-                except Exception: pass
-                time.sleep(2)
-
-        def order_ws_runner():
-            while True:
-                try:
-                    self.order_ws = websocket.WebSocketApp(
-                        self.ws_api_url,
-                        on_message=self.on_order_message
-                    )
-                    self.order_ws.run_forever(ping_interval=20, ping_timeout=10)
-                except Exception: pass
-                time.sleep(0.2)
-
-        threading.Thread(target=user_ws_runner, daemon=True).start()
-        threading.Thread(target=order_ws_runner, daemon=True).start()
-
-
-def execute_market_exit_3layer(ws_pipeline, symbol: str, qty_str: str, rest_url: str, api_key: str, api_secret: str, get_synced_time_ms_fn, sign_params_fn) -> tuple[bool, str]:
-    now_exit_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-    req_id_1 = f"exit-ws1-{uuid.uuid4().hex[:6]}"
-    res1 = ws_pipeline.place_order_ws(symbol=symbol, side="SELL", order_type="MARKET", quantity=qty_str, client_order_id=req_id_1, timeout=0.5, reduce_only=True)
-    if res1.get("status") == 200 or "orderId" in res1.get("result", {}):
-        return True, now_exit_dt
-
-    try:
-        p = {"symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": qty_str, "reduceOnly": "true", "timestamp": int(get_synced_time_ms_fn())}
-        requests.post(f"{rest_url}/fapi/v1/order?{sign_params_fn(p, api_secret)}", headers={"X-MBX-APIKEY": api_key}, timeout=2.5)
-        return True, now_exit_dt
-    except Exception: pass
-    return False, now_exit_dt
-
-
-def run_strategy1_cycle(ws_pipeline, client, target_symbol, rate, last_price, settle_epoch, config, state_callbacks):
-    add_ui_log = state_callbacks["add_ui_log"]
-    get_synced_time_ms = state_callbacks["get_synced_time_ms"]
-    precision_wait_until = state_callbacks["precision_wait_until"]
-    format_step = state_callbacks["format_step"]
-    format_tick = state_callbacks["format_tick"]
-    sign_params = state_callbacks["sign_params"]
-
-    t_limit_burst = settle_epoch - config["ENTRY_BEFORE_SETTLE_MS"]
-    t_cancel_shallow = settle_epoch + config["SHALLOW_CANCEL_AFTER_SETTLE_MS"]
-    t_cancel_all = settle_epoch + config["CANCEL_ORDERS_AFTER_SETTLE_MS"]  # T+6000ms (T+6 seconds)
-    t_hard_exit = settle_epoch + config["EXIT_AFTER_SETTLE_MS"]           # T+7000ms (T+7 seconds)
-
-    abs_r = abs(float(rate))
-    shallow_notional_usd = max(5.5, config["LIMIT_ORDER_MARGIN_USD"] * config["MAX_LEVERAGE_CAP"])
-
-    epoch_tag = f"{int(settle_epoch / 1000) % 100000}"
-    cid_shlw1 = f"shlw1-{target_symbol[:4]}-{epoch_tag}"
-    cid_shlw2 = f"shlw2-{target_symbol[:4]}-{epoch_tag}"
-    cid_shlw3 = f"shlw3-{target_symbol[:4]}-{epoch_tag}"
-    shallow_cids = [cid_shlw1, cid_shlw2, cid_shlw3]
-
-    try:
-        precision_wait_until(t_limit_burst)
-        entry_dispatch_time = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-
-        live_ws_p = ws_pipeline.get_live_price(target_symbol)
-        anchor_price = live_ws_p if (live_ws_p and live_ws_p > 0) else last_price
-
-        dec_anchor = Decimal(str(anchor_price))
-        abs_rate_dec = Decimal(str(abs_r))
-
-        min_qty, qty_step, tick_size = 1.0, 1.0, 0.001
-        try:
-            ex_info = client.exchange_info()
-            s_info = next((s for s in ex_info.get('symbols', []) if s['symbol'] == target_symbol), None)
-            if s_info:
-                for f in s_info.get('filters', []):
-                    if f.get('filterType') == 'LOT_SIZE':
-                        min_qty = float(f.get('minQty', 1.0))
-                        qty_step = float(f.get('stepSize', 1.0))
-                    elif f.get('filterType') == 'PRICE_FILTER':
-                        tick_size = float(f.get('tickSize', 0.001))
-        except Exception: pass
-
-        limit_orders_batch = []
-        shallow_order_info_list = []
-        shallow_specs = [
-            (cid_shlw1, config["SHALLOW_LIMIT_RATIOS"][0], "Shallow Limit #1 (30% FR)"),
-            (cid_shlw2, config["SHALLOW_LIMIT_RATIOS"][1], "Shallow Limit #2 (50% FR)"),
-            (cid_shlw3, config["SHALLOW_LIMIT_RATIOS"][2], "Shallow Limit #3 (70% FR)"),
-        ]
-
-        for cid_s, s_ratio, s_label in shallow_specs:
-            drop_dec = abs_rate_dec * Decimal(str(s_ratio))
-            p_dec = dec_anchor * (Decimal("1") - drop_dec)
-            p_str = format_tick(float(p_dec), tick_size)
-            q_val = max(min_qty, shallow_notional_usd / float(p_str))
-            q_str = format_step(q_val, qty_step)
-            limit_orders_batch.append((cid_s, q_str, p_str, float(drop_dec), s_label))
-            shallow_order_info_list.append({"cid": cid_s, "label": s_label, "price": p_str, "qty": q_str})
-
-        # Send Limit Burst
-        ws_pipeline.place_orders_burst_ws(target_symbol, limit_orders_batch, timeout=0.09)
-
-        # Shallow Cancel at T+230ms
-        precision_wait_until(t_cancel_shallow)
-        ws_pipeline.cancel_orders_batch_ws(target_symbol, shallow_cids, timeout=0.08)
-
-        # Cancel ALL remaining open orders at T+6 seconds
-        precision_wait_until(t_cancel_all)
-        ws_pipeline.cancel_all_orders_ws(target_symbol)
-
-        # Strict Hard Exit at T+7 seconds
-        precision_wait_until(t_hard_exit)
-        time.sleep(0.02)
-        ws_pos = ws_pipeline.get_filled_qty(target_symbol)
-        exit_price_detected = ws_pipeline.get_live_price(target_symbol) or last_price
-
-        if ws_pos > 0:
-            exit_qty = format_step(ws_pos, qty_step)
-            exit_status = "SETTLEMENT HARVEST EXECUTED"
-            execute_market_exit_3layer(ws_pipeline, target_symbol, exit_qty, config["BINANCE_REST_URL"], config["API_KEY"], config["API_SECRET"], get_synced_time_ms, sign_params)
+    with data_lock:
+        s2_data['manual_armed'] = valid_m_armed
+        s2_data['manual_disarmed'] = valid_m_disarmed
+        s2_data['top20'] = top20_list
+        if effective_armed:
+            s2_data['status'] = f"MANUAL ARMED ({len(effective_armed)} Coins)"
+            s2_data['symbols'] = ", ".join([c['symbol'] for c in effective_armed])
+            s2_data['rates'] = ", ".join([c['rate_str'] for c in effective_armed])
+            s2_data['settlement'] = effective_armed[0]['settle_str']
         else:
-            exit_status = "CLEAN PASS (NO FILL)"
+            s2_data['status'] = "MANUAL MODE (ARM COINS FROM RADAR)"
+            s2_data['symbols'] = "No coins armed..."
+            s2_data['rates'] = "--"
+            s2_data['settlement'] = "--"
 
-        # Prepare 3 Shallow Box Display Telemetry for Dashboard UI
-        shallow_boxes_ui = []
-        for info in shallow_order_info_list:
-            cid = info["cid"]
-            telemetry = ws_pipeline.shallow_cancels_telemetry.get(cid, {})
-            is_filled = cid in ws_pipeline.filled_orders_set
+    return effective_armed
 
-            fired_ms = telemetry.get("cancel_fired_ms", 0)
-            canceled_ms = telemetry.get("binance_canceled_ms", 0)
-            lat_ms = max(1, canceled_ms - fired_ms) if (canceled_ms > 0 and fired_ms > 0) else 1
 
-            shallow_boxes_ui.append({
-                "label": info["label"],
-                "price": info["price"],
-                "qty": info["qty"],
-                "status": "FILLED" if is_filled else "CANCELED",
-                "cancel_fired": telemetry.get("cancel_fired_str", "--"),
-                "binance_canceled": telemetry.get("binance_canceled_str", "--"),
-                "latency_ms": lat_ms
+def prepare_coin_parameters(client, symbol, price, exchange_info, margin_usd=1.0):
+    sym_info = next((s for s in exchange_info.get('symbols', []) if s['symbol'] == symbol), None)
+    qty_step, min_qty, tick_size, min_notional = 1.0, 1.0, 0.0001, 5.0
+
+    if sym_info:
+        for f in sym_info.get('filters', []):
+            if f['filterType'] == 'LOT_SIZE':
+                qty_step = float(f.get('stepSize', 1.0))
+                min_qty = float(f.get('minQty', 1.0))
+            elif f['filterType'] == 'PRICE_FILTER':
+                tick_size = float(f.get('tickSize', 0.0001))
+            elif f['filterType'] == 'MIN_NOTIONAL':
+                min_notional = float(f.get('notional', 5.0))
+
+    applied_leverage = MAX_ALLOWED_LEVERAGE
+    try: client.change_leverage(symbol=symbol, leverage=int(applied_leverage))
+    except Exception: pass
+
+    qty_str = f"{qty_step:.8f}".rstrip("0")
+    qty_decimals = len(qty_str.split(".")[1]) if "." in qty_str else 0
+    tick_str = f"{tick_size:.8f}".rstrip("0")
+    price_decimals = len(tick_str.split(".")[1]) if "." in tick_str else 2
+
+    notional = margin_usd * applied_leverage
+    calc_qty = math.floor((notional / price) / qty_step) * qty_step
+    if calc_qty < min_qty: calc_qty = min_qty
+    if (calc_qty * price) < min_notional: calc_qty = math.ceil((min_notional / price) / qty_step) * qty_step
+
+    formatted_qty = f"{calc_qty:.{qty_decimals}f}" if qty_decimals > 0 else str(int(calc_qty))
+    return {
+        "symbol": symbol, "qty": formatted_qty, "leverage": applied_leverage,
+        "qty_decimals": qty_decimals, "price_decimals": price_decimals,
+        "tick_size": tick_size, "last_price": price
+    }
+
+
+def parallel_coin_executor(client, coin_meta, dashboard_data, data_lock, add_ui_log, add_s2_ledger_entry):
+    symbol = coin_meta['symbol']
+    settle_epoch = coin_meta['next_funding_time']
+    arm_mode = coin_meta.get('arm_mode', 'MANUAL')
+    exec_key = (symbol, settle_epoch)
+
+    try:
+        precision_wait_until(settle_epoch - 1000)
+
+        with data_lock:
+            s2_data = dashboard_data.get('strategy2', {})
+            if symbol in s2_data.get('manual_disarmed', []):
+                add_ui_log(f"🛑 [Strategy 2] [{symbol}] Trade aborted before entry (Manually DISARMED).")
+                return
+
+        try: exchange_info = client.exchange_info()
+        except Exception: exchange_info = {'symbols': []}
+
+        try:
+            mp = client.mark_price(symbol=symbol)
+            live_price = float(mp.get("markPrice", coin_meta['last_price']))
+            rate = float(mp.get("lastFundingRate", coin_meta['funding_rate']))
+        except Exception:
+            live_price = coin_meta['last_price']
+            rate = coin_meta['funding_rate']
+
+        if rate >= 0:
+            add_ui_log(f"⚠️ [Strategy 2] [{symbol}] Funding turned non-negative ({rate*100:+.4f}%). Aborting entry.")
+            return
+
+        coin_plan = prepare_coin_parameters(client, symbol, live_price, exchange_info, INITIAL_ENTRY_MARGIN_USD)
+        qty = coin_plan['qty']
+        qty_decimals = coin_plan['qty_decimals']
+        price_decimals = coin_plan['price_decimals']
+        tick_size = coin_plan['tick_size']
+        leverage = coin_plan['leverage']
+        rate_str = f"{rate*100:+.4f}%"
+
+        t_entry = settle_epoch + 220
+        t_hard_exit = t_entry + (HARD_EXIT_SECONDS * 1000)
+
+        precision_wait_until(t_entry)
+        entry_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+        entry_success = False
+        entry_err = ""
+        actual_entry_price = live_price
+        filled_qty_float = float(qty)
+
+        try:
+            entry_resp = client.new_order(symbol=symbol, side="BUY", type="MARKET", quantity=qty)
+            entry_success = True
+            if float(entry_resp.get("avgPrice", 0)) > 0:
+                actual_entry_price = float(entry_resp["avgPrice"])
+            if float(entry_resp.get("executedQty", 0)) > 0:
+                filled_qty_float = float(entry_resp["executedQty"])
+        except Exception as e:
+            entry_err = str(e)
+
+        if not entry_success:
+            add_ui_log(f"❌ [Strategy 2] [{symbol}] Market Entry Failed @ T+220ms: {entry_err}")
+            add_s2_ledger_entry({
+                "coin": f"{symbol} [{arm_mode}]", "rate": rate_str,
+                "entry_time": entry_time_str, "exit_time": "--",
+                "detail": f"Margin: $1.0 | Qty: {qty} ({leverage}x) | Entry Failed @ T+220ms: {entry_err}",
+                "badge_text": "ENTRY FAILED", "badge_class": "tag-warn"
             })
+            return
 
-        final_avg_entry = ws_pipeline.get_avg_fill_price(target_symbol) or 0.0
-        final_exit_price = ws_pipeline.get_sell_fill_price(target_symbol) or exit_price_detected
+        filled_qty_str = f"{filled_qty_float:.{qty_decimals}f}" if qty_decimals > 0 else str(int(filled_qty_float))
+        entry_price_str = f"{actual_entry_price:.{price_decimals}f}"
 
-        return {
-            "symbol": target_symbol,
-            "funding_rate": f"{rate * 100:+.4f}%",
-            "tier": "STRATEGY 1 (TOKYO SNIPER)",
-            "entry_sent": entry_dispatch_time,
-            "entry_ack": entry_dispatch_time,
-            "entry_fill_time": ws_pipeline.last_fill_times.get(target_symbol, "No Fill"),
-            "entry_fill_price": str(final_avg_entry) if final_avg_entry > 0 else "0.0",
-            "exit_price": str(final_exit_price),
-            "status": exit_status,
-            "pnl": "$0.0000",
-            "shallow_orders": shallow_boxes_ui
-        }
+        # Stop-loss at 170% of funding rate
+        sl_discount = SL_FUNDING_MULTIPLIER * abs(rate)
+        raw_sl_price = actual_entry_price * (1.0 - sl_discount)
+        sl_price = max(tick_size, round(math.floor(raw_sl_price / tick_size) * tick_size, price_decimals))
+        sl_price_str = f"{sl_price:.{price_decimals}f}"
 
-    except Exception as e:
-        add_ui_log(f"🚨 [Strategy 1 Error]: {e}")
-        return None
+        try:
+            client.new_order(symbol=symbol, side="SELL", type="STOP_MARKET", stopPrice=sl_price_str, closePosition=True, workingType="CONTRACT_PRICE")
+        except Exception:
+            pass
+
+        raw_tp_price = actual_entry_price * (1.0 + TP_PROFIT_PCT)
+        tp_price = round(math.ceil(raw_tp_price / tick_size) * tick_size, price_decimals)
+        if tp_price <= actual_entry_price: tp_price = round(actual_entry_price + tick_size, price_decimals)
+        tp_price_str = f"{tp_price:.{price_decimals}f}"
+
+        tp_order_id = None
+        t_tp_sent_ms = time.time() * 1000
+        try:
+            tp_resp = client.new_order(symbol=symbol, side="SELL", type="LIMIT", quantity=filled_qty_str, price=tp_price_str, timeInForce="GTC", reduceOnly=True)
+            tp_order_id = tp_resp.get("orderId")
+        except Exception:
+            pass
+
+        add_ui_log(f"🚀 [Strategy 2] [{symbol}] T+220ms MKT BUY @ {entry_price_str} | SL (-170%): {sl_price_str} | TP: {tp_price_str}")
+
+        exit_outcome = "HARD EXIT (5m)"
+        exit_time_str = "--"
+        badge_class = "tag-warn"
+        position_closed = False
+
+        while get_synced_time_ms() < t_hard_exit:
+            try:
+                positions = client.get_position_risk(symbol=symbol)
+                pos_size = 0.0
+                for p in positions:
+                    if float(p.get("positionAmt", 0)) > 0:
+                        pos_size = float(p.get("positionAmt"))
+                        break
+
+                if pos_size <= 0:
+                    position_closed = True
+                    exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+                    tp_filled = False
+                    if tp_order_id:
+                        q_resp = client.query_order(symbol=symbol, orderId=tp_order_id)
+                        if q_resp.get("status") == "FILLED":
+                            tp_filled = True
+                            sec_taken = round((time.time() * 1000 - t_tp_sent_ms) / 1000.0, 2)
+                            exit_outcome = f"TP +0.10% FILLED ({sec_taken}s)"
+                            badge_class = "tag-success"
+                            add_ui_log(f"🎯 [Strategy 2] [{symbol}] +0.10% TP LIMIT HIT @ {tp_price_str} in {sec_taken}s!")
+                    if not tp_filled:
+                        exit_outcome = "SL HIT (-170% Fund)"
+                        badge_class = "tag-warn"
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        try: client.cancel_open_orders(symbol=symbol)
+        except Exception: pass
+
+        if not position_closed:
+            exit_time_str = datetime.now(IST).strftime('%H:%M:%S.%f')[:-3]
+            try:
+                positions = client.get_position_risk(symbol=symbol)
+                pos_size = sum(float(p.get("positionAmt", 0)) for p in positions if float(p.get("positionAmt", 0)) > 0)
+                if pos_size > 0:
+                    rem_q = f"{pos_size:.{qty_decimals}f}" if qty_decimals > 0 else str(int(pos_size))
+                    client.new_order(symbol=symbol, side="SELL", type="MARKET", quantity=rem_q, reduceOnly=True)
+                    exit_outcome = "HARD EXIT (5m Timeout)"
+                else:
+                    exit_outcome = "CLOSED"
+                    badge_class = "tag-success"
+            except Exception:
+                exit_outcome = "EXIT FAILED"
+
+        with data_lock:
+            s2_data = dashboard_data.get('strategy2', {})
+            if symbol in s2_data.get('manual_armed', []):
+                s2_data['manual_armed'].remove(symbol)
+
+        add_s2_ledger_entry({
+            "coin": f"{symbol} [{arm_mode}]",
+            "rate": rate_str,
+            "entry_time": f"{entry_time_str} (T+220ms @ {entry_price_str})",
+            "exit_time": exit_time_str,
+            "entry_price": entry_price_str,
+            "exit_price": tp_price_str if "TP" in exit_outcome else sl_price_str,
+            "detail": f"Margin: $1.0 | SL (-170%): {sl_price_str} | TP (+0.10%): {tp_price_str} | Outcome: {exit_outcome} | Qty: {filled_qty_str} ({leverage}x)",
+            "badge_text": exit_outcome,
+            "badge_class": badge_class
+        })
+
     finally:
-        gc.enable()
-        ws_pipeline.reset_cycle_state(target_symbol)
+        with executors_lock:
+            active_executors.discard(exec_key)
+
+
+def start_strategy2_loop(dashboard_data, data_lock, add_ui_log, add_s2_ledger_entry, get_s1_active_coins_fn):
+    client = UMFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
+    add_ui_log("🚀 Strategy 2 Active [Manual Mode | $1 Margin | 5m Hard Exit | 170% SL]")
+    refresh_funding_intervals(client)
+    last_clock_sync = 0.0
+    last_interval_sync = time.time()
+
+    while True:
+        try:
+            if time.time() - last_clock_sync >= 15.0:
+                sync_binance_clock(client, dashboard_data, data_lock)
+                last_clock_sync = time.time()
+
+            if time.time() - last_interval_sync >= 300.0:
+                refresh_funding_intervals(client)
+                last_interval_sync = time.time()
+
+            s1_coins = get_s1_active_coins_fn()
+            armed_coins = scan_market_and_sync_state(client, dashboard_data, data_lock, s1_coins)
+            now_ms = get_synced_time_ms()
+
+            for c in armed_coins:
+                sym = c['symbol']
+                settle_epoch = c['next_funding_time']
+                time_left = settle_epoch - now_ms
+
+                if 1500 < time_left <= 10000:
+                    exec_key = (sym, settle_epoch)
+                    with executors_lock:
+                        if exec_key not in active_executors:
+                            active_executors.add(exec_key)
+                            threading.Thread(
+                                target=parallel_coin_executor,
+                                args=(client, c, dashboard_data, data_lock, add_ui_log, add_s2_ledger_entry),
+                                daemon=True
+                            ).start()
+
+            time.sleep(1.0)
+        except Exception as e:
+            add_ui_log(f"⚠️ [Strategy 2] Loop Recovered: {e}")
+            time.sleep(2)
