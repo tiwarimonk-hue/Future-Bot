@@ -16,7 +16,6 @@ BLOCKED_COINS_FILE = Path(__file__).resolve().parent / "blocked_coins.json"
 
 
 def load_blocked_coins() -> dict[str, list[str]]:
-    """Disk se blocked_coins.json load karta hai (Persistent across server restarts)"""
     default_data = {"temporary": [], "permanent": []}
     if not BLOCKED_COINS_FILE.exists():
         try:
@@ -41,7 +40,6 @@ def load_blocked_coins() -> dict[str, list[str]]:
 
 
 def save_blocked_coins(data: dict[str, list[str]]) -> bool:
-    """Disk par blocked_coins.json atomically save karta hai"""
     try:
         with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -65,7 +63,7 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
                 data["permanent"].remove(symbol)
             if symbol not in data["temporary"]:
                 data["temporary"].append(symbol)
-        else:  # permanent
+        else:
             if symbol in data["temporary"]:
                 data["temporary"].remove(symbol)
             if symbol not in data["permanent"]:
@@ -75,8 +73,8 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
         dashboard_data["blocked_coins"] = data
         dashboard_data["force_rescan"] = True
 
-        if dashboard_data.get("manual_selected_symbol") == symbol:
-            dashboard_data["manual_selected_symbol"] = ""
+        if symbol in dashboard_data.get("manual_selected_symbols", []):
+            dashboard_data["manual_selected_symbols"].remove(symbol)
 
     add_ui_log(f"🚫 [COIN BLOCKED] {symbol} moved to {block_type.upper()} block list.")
     return True, f"{symbol} added to {block_type} block list"
@@ -119,7 +117,7 @@ dashboard_data = {
     "margin_usd": f"${config.TRADE_MARGIN_USD} USDT",
     "trades": trade_history,
     "trading_enabled": True,
-    "manual_selected_symbol": "",
+    "manual_selected_symbols": [],  # Multi-coin manual selections list
     "selection_locked": False,
     "force_rescan": False,
     "top_5_candidates": [],
@@ -182,10 +180,10 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
                         return
 
-                    dashboard_data["manual_selected_symbol"] = ""
+                    dashboard_data["manual_selected_symbols"] = []
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Resetting manual target...")
+                add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Cleared manual targets...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -219,21 +217,22 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "message": f"{selected_sym} is BLOCKED! Unblock it first to trade."}).encode("utf-8"))
                         return
 
-                    if dashboard_data.get("manual_selected_symbol") == selected_sym:
-                        dashboard_data["manual_selected_symbol"] = ""
-                        action_msg = f"Deselected {selected_sym}. Reverting to AUTOMATIC mode."
+                    manual_list = dashboard_data.setdefault("manual_selected_symbols", [])
+                    if selected_sym in manual_list:
+                        manual_list.remove(selected_sym)
+                        action_msg = f"Deselected {selected_sym} from manual list."
                     else:
-                        dashboard_data["manual_selected_symbol"] = selected_sym
-                        action_msg = f"Switched to MANUAL mode ({selected_sym})."
+                        manual_list.append(selected_sym)
+                        action_msg = f"Added {selected_sym} to manual list."
 
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg} Triggering instant real-time market audit...")
+                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg} Triggering instant market audit...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "selected": dashboard_data["manual_selected_symbol"]}).encode("utf-8"))
+                self.wfile.write(json.dumps({"success": True, "manual_selected_symbols": dashboard_data["manual_selected_symbols"]}).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(400)
