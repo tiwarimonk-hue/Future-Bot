@@ -1,16 +1,11 @@
 from __future__ import annotations
-import hmac
-import hashlib
 import time
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional, Tuple, List, Dict, Any
-from datetime import datetime, timezone, timedelta
 import requests
 import config
-from dashboard import dashboard_data, data_lock, add_ui_log, load_blocked_coins
+from datetime import datetime, timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
-clock_offset_ms = 0.0
+_server_time_offset_ms = 0
 
 session = requests.Session()
 session.headers.update({
@@ -18,368 +13,173 @@ session.headers.update({
     "Accept": "application/json"
 })
 
-BLACKLISTED_PATTERNS = (
-    "DEFIUSDT", "BTCDOMUSDT", "FOOTBALLUSDT", "BLUEBIRDUSDT",
-    "ZHONGJIUSDT", "BYDUSDT", "TENCENTUSDT", "BABAUSDT", "XIAOMIUSDT",
-    "MEITUANUSDT", "CATLUSDT", "MOUTAIUSDT", "BWETUSDT", "CRMLUSDT",
-    "ACNUSDT", "MPUSDT", "SECZUSDT", "UNHUSDT", "NKEUSDT", "NVDAUSDT",
-    "TSLAUSDT", "AAPLUSDT", "AMZNUSDT", "MSFTUSDT", "GOOGLUSDT", "METAUSDT",
-    "UNITREEUSDT", "JNJUSDT"
-)
 
-cached_exchange_rules: dict[str, dict] = {}
-cached_leverage_brackets: dict[str, int] = {}
-configured_symbols: set[str] = set()
-last_exchange_info_time: float = 0.0
-
-cached_24h_volumes: dict[str, float] = {}
-last_24h_volume_time: float = 0.0
-
-
-def format_duration(seconds: int) -> str:
-    mins, secs = divmod(seconds, 60)
-    hours, mins = divmod(mins, 60)
-    if hours:
-        return f"{hours}h {mins}m {secs}s"
-    elif mins > 0:
-        return f"{mins}m {secs}s"
-    return f"{secs}s"
-
-
-def refresh_exchange_rules_if_needed() -> None:
-    global cached_exchange_rules, last_exchange_info_time
-    now = time.time()
-    if cached_exchange_rules and (now - last_exchange_info_time) < 3600:
-        return
+def sync_binance_clock() -> int:
+    global _server_time_offset_ms
     try:
-        res = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=5).json()
-        if not isinstance(res, dict) or "symbols" not in res:
-            return
-        new_rules = {}
-        for s in res.get("symbols", []):
-            sym = s.get("symbol", "")
-            if s.get("status") != "TRADING" or s.get("contractType") != "PERPETUAL":
-                continue
-            min_qty = 1.0
-            qty_step = 1.0
-            tick_size = 0.001
-            for f in s.get("filters", []):
-                if f.get("filterType") == "LOT_SIZE":
-                    min_qty = float(f.get("minQty", 1.0))
-                    qty_step = float(f.get("stepSize", 1.0))
-                elif f.get("filterType") == "PRICE_FILTER":
-                    tick_size = float(f.get("tickSize", 0.001))
-            new_rules[sym] = {
-                "min_qty": min_qty,
-                "qty_step": qty_step,
-                "tick_size": tick_size,
-                "status": s.get("status", ""),
-                "contract_type": s.get("contractType", "")
-            }
-        if new_rules:
-            cached_exchange_rules = new_rules
-            last_exchange_info_time = now
+        r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/time", timeout=2)
+        if r.status_code == 200:
+            server_ms = int(r.json().get("serverTime", 0))
+            local_ms = int(time.time() * 1000)
+            _server_time_offset_ms = server_ms - local_ms
+            return _server_time_offset_ms
     except Exception:
         pass
+    return _server_time_offset_ms
 
 
-def refresh_24h_volumes_if_needed() -> None:
-    global cached_24h_volumes, last_24h_volume_time
-    now = time.time()
-    if cached_24h_volumes and (now - last_24h_volume_time) < 900:
-        return
-    try:
-        res = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/ticker/24hr", timeout=5).json()
-        if isinstance(res, list):
-            new_vols = {}
-            for item in res:
-                if isinstance(item, dict):
-                    sym = item.get("symbol", "")
-                    q_vol = float(item.get("quoteVolume", 0.0))
-                    new_vols[sym] = q_vol
-            cached_24h_volumes = new_vols
-            last_24h_volume_time = now
-    except Exception:
-        pass
+def get_synced_time_ms() -> int:
+    return int(time.time() * 1000) + _server_time_offset_ms
 
 
-def format_volume(vol: float) -> str:
-    if vol >= 1_000_000_000:
-        return f"${vol / 1_000_000_000:.2f}B"
-    elif vol >= 1_000_000:
-        return f"${vol / 1_000_000:.2f}M"
-    elif vol >= 1_000:
-        return f"${vol / 1_000:.2f}K"
-    return f"${vol:.2f}"
-
-
-def sync_binance_clock() -> None:
-    global clock_offset_ms
-    try:
-        t_send = time.time() * 1000
-        res = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/time", timeout=3)
-        t_recv = time.time() * 1000
-        data = res.json()
-        if isinstance(data, dict) and "serverTime" in data:
-            server_time = float(data["serverTime"])
-            rtt = t_recv - t_send
-            estimated_server_time = server_time + (rtt / 2.0)
-            clock_offset_ms = estimated_server_time - t_recv
-            with data_lock:
-                dashboard_data["clock_offset_ms"] = round(clock_offset_ms, 2)
-    except Exception:
-        pass
-
-
-def get_synced_time_ms() -> float:
-    return (time.time() * 1000) + clock_offset_ms
-
-
-def precision_wait_until(target_time_ms: float) -> None:
+def precision_wait_until(target_ms: int) -> None:
     while True:
         now = get_synced_time_ms()
-        diff = target_time_ms - now
-        if diff <= 0:
+        rem = target_ms - now
+        if rem <= 0:
             break
-        elif diff > 10:
+        if rem > 100:
+            time.sleep(0.05)
+        elif rem > 10:
             time.sleep(0.002)
-        elif diff > 2:
-            time.sleep(0.0005)
+        else:
+            pass
 
 
-def format_step(value: float, step: float) -> str:
-    d_step = Decimal(str(step))
-    d_val = Decimal(str(value))
-    precision = d_step.normalize().as_tuple().exponent
-    quantized = (d_val / d_step).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * d_step
-    if precision < 0:
-        places = -precision
-        return f"{quantized:.{places}f}"
-    return str(int(quantized))
+def format_duration(ms: int) -> str:
+    sec = max(0, int(ms / 1000))
+    m, s = divmod(sec, 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    if m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
-def format_tick(value: float, tick: float) -> str:
-    d_tick = Decimal(str(tick))
-    d_val = Decimal(str(value))
-    precision = d_tick.normalize().as_tuple().exponent
-    quantized = (d_val / d_tick).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * d_tick
-    if precision < 0:
-        places = -precision
-        return f"{quantized:.{places}f}"
-    return str(int(quantized))
+def format_step(val: float, step: float) -> str:
+    if step <= 0:
+        return str(val)
+    precision = 0
+    s_str = f"{step:.10f}".rstrip('0')
+    if '.' in s_str:
+        precision = len(s_str.split('.')[1])
+    val_rounded = round(round(val / step) * step, precision)
+    return f"{val_rounded:.{precision}f}"
 
 
-def sign_params(params: dict) -> str:
-    query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
-    sig = hmac.new(config.API_SECRET.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{query_string}&signature={sig}"
+def format_tick(price: float, tick_size: float) -> str:
+    return format_step(price, tick_size)
 
 
-def get_symbol_max_leverage(symbol: str) -> int:
-    if symbol in cached_leverage_brackets:
-        return cached_leverage_brackets[symbol]
+def calculate_order_specs(symbol: str, price: float) -> tuple[str, int, float, float, float]:
+    lev = getattr(config, "LEVERAGE", 20)
+    tick_size = 0.0001
+    qty_step = 1.0
+    min_qty = 1.0
+
     try:
-        time.sleep(0.1)
-        ts = int(get_synced_time_ms())
-        p_bracket = {"symbol": symbol, "timestamp": ts}
-        signed_bracket = sign_params(p_bracket)
-        res = session.get(
-            f"{config.BINANCE_REST_URL}/fapi/v1/leverageBracket?{signed_bracket}",
-            headers={"X-MBX-APIKEY": config.API_KEY},
-            timeout=3
-        ).json()
-        if isinstance(res, list) and len(res) > 0:
-            brackets = res[0].get("brackets", [])
-            if brackets:
-                max_lev = max(int(b.get("initialLeverage", 20)) for b in brackets)
-                cached_leverage_brackets[symbol] = max_lev
-                return max_lev
+        ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=2).json()
+        for s in ex_r.get("symbols", []):
+            if s.get("symbol") == symbol:
+                for f in s.get("filters", []):
+                    if f.get("filterType") == "PRICE_FILTER":
+                        tick_size = float(f.get("tickSize", 0.0001))
+                    elif f.get("filterType") == "LOT_SIZE":
+                        qty_step = float(f.get("stepSize", 1.0))
+                        min_qty = float(f.get("minQty", 1.0))
+                break
     except Exception:
         pass
-    return int(config.MAX_LEVERAGE_CAP)
 
-
-def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[bool, str]:
-    rules = cached_exchange_rules.get(symbol)
-    if not rules:
-        return False, "Rules not cached"
-
-    if rules.get("status") != "TRADING" or rules.get("contract_type") != "PERPETUAL":
-        return False, "Not trading perpetual"
-
-    coin_max_lev = get_symbol_max_leverage(symbol)
-    effective_lev = min(coin_max_lev, int(config.MAX_LEVERAGE_CAP))
-    purchasing_power = config.TRADE_MARGIN_USD * effective_lev
-
-    if purchasing_power < config.BINANCE_MIN_NOTIONAL:
-        return False, "Min Notional error"
-
-    if symbol in configured_symbols:
-        return True, "Verified (cached)"
-
-    try:
-        time.sleep(0.1)
-        ts = int(get_synced_time_ms())
-        p_margin = {"symbol": symbol, "marginType": "ISOLATED", "timestamp": ts}
-        signed_margin = sign_params(p_margin)
-        session.post(
-            f"{config.BINANCE_REST_URL}/fapi/v1/marginType?{signed_margin}",
-            headers={"X-MBX-APIKEY": config.API_KEY},
-            timeout=2.0
-        )
-
-        time.sleep(0.1)
-        ts = int(get_synced_time_ms())
-        p_lev = {"symbol": symbol, "leverage": int(effective_lev), "timestamp": ts}
-        signed_lev = sign_params(p_lev)
-        session.post(
-            f"{config.BINANCE_REST_URL}/fapi/v1/leverage?{signed_lev}",
-            headers={"X-MBX-APIKEY": config.API_KEY},
-            timeout=2.0
-        )
-        configured_symbols.add(symbol)
-    except Exception as e:
-        return False, str(e)
-
-    return True, "Pre-flight verified"
-
-
-def find_top_negative_funding_candidates(
-    target_settle_ms: Optional[int] = None,
-    preferred_symbols: Optional[List[str]] = None
-) -> Tuple[List[Dict[str, Any]], Optional[int], List[Dict[str, Any]], List[str], List[str]]:
-    """
-    Returns (chosen_candidates_list, target_settle_ms, top_10_radar_list, auto_armed_symbols, manual_armed_symbols)
-    """
-    try:
-        refresh_exchange_rules_if_needed()
-        refresh_24h_volumes_if_needed()
-
-        blocked_data = load_blocked_coins()
-        temp_blocked_set = set(blocked_data.get("temporary", []))
-        perm_blocked_set = set(blocked_data.get("permanent", []))
-
-        res = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=5)
-        tickers = res.json()
-
-        if not isinstance(tickers, list):
-            return [], None, [], [], []
-
-        current_time_ms = get_synced_time_ms()
-        eligible_candidates = []
-
-        for t in tickers:
-            if not isinstance(t, dict):
-                continue
-            symbol = t.get("symbol", "")
-            if not symbol.endswith("USDT") or symbol in BLACKLISTED_PATTERNS or symbol in perm_blocked_set:
-                continue
-
-            try:
-                rate = float(t.get("lastFundingRate", 0.0))
-                next_funding = int(t.get("nextFundingTime", 0))
-                mark_price = float(t.get("markPrice", 0.0))
-            except (ValueError, TypeError):
-                continue
-
-            if mark_price <= 0:
-                continue
-
-            settle_match = False
-            if target_settle_ms is not None:
-                if abs(next_funding - target_settle_ms) < 60000:
-                    settle_match = True
-            else:
-                if next_funding > (current_time_ms + config.RESCAN_BEFORE_SETTLE_MS + 5000):
-                    settle_match = True
-
-            if settle_match:
-                vol_24h = cached_24h_volumes.get(symbol, 0.0)
-                eligible_candidates.append({
-                    "symbol": symbol,
-                    "rate": rate,
-                    "price": mark_price,
-                    "settle_ms": next_funding,
-                    "settle_str": datetime.fromtimestamp(next_funding / 1000, tz=IST).strftime("%H:%M:%S IST"),
-                    "volume": vol_24h,
-                    "vol_str": format_volume(vol_24h),
-                    "is_temp_blocked": symbol in temp_blocked_set
-                })
-
-        if not eligible_candidates:
-            return [], None, [], [], []
-
-        soonest_settle_time = min(c["settle_ms"] for c in eligible_candidates)
-        soonest_batch = [c for c in eligible_candidates if abs(c["settle_ms"] - soonest_settle_time) < 60000]
-        soonest_batch.sort(key=lambda x: x["rate"])
-        top_10 = soonest_batch[:10]
-
-        safe_batch = [
-            c for c in soonest_batch
-            if config.MAX_DANGER_FUNDING_RATE <= c["rate"] <= config.MIN_FUNDING_RATE
-            and not c.get("is_temp_blocked", False)
-        ]
-
-        sweet_spot = [
-            c for c in safe_batch
-            if config.SWEET_SPOT_MIN <= c["rate"] <= config.SWEET_SPOT_MAX
-        ]
-
-        auto_armed_symbols = []
-        manual_armed_symbols = []
-        chosen_map = {}
-
-        # 1. Automatic Selection (Top N candidates meeting criteria)
-        candidates_to_filter = sweet_spot if sweet_spot else safe_batch
-        for c in candidates_to_filter:
-            if len(auto_armed_symbols) >= config.MAX_ARMED_COINS:
-                break
-            ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
-            if ok:
-                chosen_map[c["symbol"]] = c
-                auto_armed_symbols.append(c["symbol"])
-
-        # 2. Strict User Manual Selections (Only add what is explicitly in preferred_symbols)
-        preferred_symbols = preferred_symbols or []
-        valid_manual_list = []
-        for p_sym in preferred_symbols:
-            p_sym_clean = p_sym.strip().upper()
-            if p_sym_clean in temp_blocked_set or p_sym_clean in perm_blocked_set:
-                continue
-            match = next((c for c in soonest_batch if c["symbol"] == p_sym_clean), None)
-            if match and not match.get("is_temp_blocked", False):
-                ok, _ = verify_binance_symbol_preflight(match["symbol"], match["price"])
-                if ok:
-                    chosen_map[match["symbol"]] = match
-                    valid_manual_list.append(match["symbol"])
-                    if not any(c["symbol"] == match["symbol"] for c in top_10):
-                        top_10.insert(0, match)
-                        top_10 = top_10[:10]
-
-        manual_armed_symbols = valid_manual_list
-        chosen_list = list(chosen_map.values())
-        return chosen_list, soonest_settle_time, top_10, auto_armed_symbols, manual_armed_symbols
-
-    except Exception as e:
-        add_ui_log(f"Scanner error: {e}")
-        return [], None, [], [], []
-
-
-def calculate_order_specs(symbol: str, price: float):
-    max_leverage_cap = int(config.MAX_LEVERAGE_CAP)
-    coin_max_lev = get_symbol_max_leverage(symbol)
-    applied_leverage = min(max_leverage_cap, coin_max_lev)
-
-    refresh_exchange_rules_if_needed()
-    rules = cached_exchange_rules.get(symbol, {})
-    tick_size = rules.get("tick_size", 0.001)
-    qty_step = rules.get("qty_step", 1.0)
-    min_qty = rules.get("min_qty", 1.0)
-
-    total_notional_usd = max(config.BINANCE_MIN_NOTIONAL, config.TRADE_MARGIN_USD * applied_leverage)
-    raw_qty = max(min_qty, (total_notional_usd / price)) if price > 0 else min_qty
+    notional = max(5.5, float(getattr(config, "TRADE_MARGIN_USD", 3.0)) * lev)
+    raw_qty = notional / price if price > 0 else min_qty
     qty_str = format_step(raw_qty, qty_step)
+    
+    if float(qty_str) * price < 5.2:
+        qty_str = format_step(float(qty_str) + qty_step, qty_step)
     if float(qty_str) < min_qty:
         qty_str = format_step(min_qty, qty_step)
 
-    return qty_str, applied_leverage, tick_size, qty_step, min_qty
+    return qty_str, lev, tick_size, qty_step, min_qty
+
+
+def find_top_negative_funding_candidates(
+    target_settle_ms: int = 0, 
+    preferred_symbols: list[str] = None,
+    explicitly_disarmed: list[str] = None
+) -> tuple[list[dict], int, list[dict], list[str], list[str]]:
+    if preferred_symbols is None:
+        preferred_symbols = []
+    if explicitly_disarmed is None:
+        explicitly_disarmed = []
+
+    try:
+        ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=3).json()
+        valid_symbols = {
+            s["symbol"] for s in ex_r.get("symbols", [])
+            if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
+        }
+    except Exception:
+        valid_symbols = set()
+
+    try:
+        prem_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=3).json()
+    except Exception:
+        prem_r = []
+
+    candidates = []
+    next_funding_ms = 0
+
+    for item in prem_r:
+        sym = item.get("symbol")
+        if valid_symbols and sym not in valid_symbols:
+            continue
+        try:
+            rate = float(item.get("lastFundingRate", 0))
+            nxt_time = int(item.get("nextFundingTime", 0))
+            mark_p = float(item.get("markPrice", 0))
+        except Exception:
+            continue
+
+        if nxt_time > 0:
+            if next_funding_ms == 0 or nxt_time < next_funding_ms:
+                next_funding_ms = nxt_time
+
+        if rate < 0:
+            candidates.append({
+                "symbol": sym,
+                "rate": rate,
+                "price": mark_p,
+                "nextFundingTime": nxt_time
+            })
+
+    candidates.sort(key=lambda x: x["rate"])
+    top_10 = candidates[:10]
+
+    qualified = [c for c in candidates if c["rate"] <= -config.FR_THRESHOLD_RATIO]
+
+    auto_armed = []
+    manual_armed = []
+
+    for sym in preferred_symbols:
+        if sym in explicitly_disarmed:
+            continue
+        match = next((c for c in candidates if c["symbol"] == sym), None)
+        if match:
+            manual_armed.append(sym)
+
+    for c in qualified:
+        sym = c["symbol"]
+        if sym in manual_armed or sym in explicitly_disarmed:
+            continue
+        if len(auto_armed) < 2:  # AUTO TOP 2 CAPPING
+            auto_armed.append(sym)
+
+    final_selected_symbols = list(set(manual_armed + auto_armed))
+    final_selected_symbols = final_selected_symbols[:2]
+
+    chosen_candidates = [c for c in candidates if c["symbol"] in final_selected_symbols]
+    chosen_candidates.sort(key=lambda x: x["rate"])
+
+    return chosen_candidates, next_funding_ms, top_10, auto_armed, manual_armed
