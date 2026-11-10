@@ -10,7 +10,7 @@ from binance_ws import BinanceFastLaneWS
 from dashboard import (
     IST, data_lock, dashboard_data, add_ui_log,
     set_dashboard_status, record_completed_trade, run_web_server,
-    load_blocked_coins
+    load_blocked_coins, explicitly_disarmed_symbols
 )
 from scanner import (
     sync_binance_clock, get_synced_time_ms, precision_wait_until,
@@ -24,6 +24,19 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json"
 })
+
+
+def get_seconds_until_next_scheduled_scan() -> tuple[int, str]:
+    now = datetime.now(IST)
+    for m in config.SCHEDULED_SCAN_MINUTES:
+        if now.minute < m:
+            target_dt = now.replace(minute=m, second=0, microsecond=0)
+            sec = max(1, int((target_dt - now).total_seconds()))
+            return sec, target_dt.strftime("%H:%M:%S IST")
+    next_hour = now + timedelta(hours=1)
+    target_dt = next_hour.replace(minute=config.SCHEDULED_SCAN_MINUTES[0], second=0, microsecond=0)
+    sec = max(1, int((target_dt - now).total_seconds()))
+    return sec, target_dt.strftime("%H:%M:%S IST")
 
 
 def get_strategy_label(rate_val: float) -> str:
@@ -86,8 +99,8 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
             dashboard_data["selection_locked"] = (current_sec_left <= 60)
 
         blocked_now = load_blocked_coins()
-        if target_symbol in blocked_now.get("temporary", []) or target_symbol in blocked_now.get("permanent", []):
-            add_ui_log(f"🚫 [ARMED COIN BLOCKED] {target_symbol} was blocked! Aborting thread...")
+        if target_symbol in blocked_now.get("temporary", []) or target_symbol in blocked_now.get("permanent", []) or target_symbol in explicitly_disarmed_symbols:
+            add_ui_log(f"🚫 [ARMED COIN BLOCKED/DISARMED] {target_symbol} was blocked or disarmed! Aborting thread...")
             ws_pipeline.reset_cycle_state(target_symbol)
             abort_cycle = True
             break
@@ -118,12 +131,12 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
     sync_binance_clock()
 
     fresh_candidates, _, _, _, _ = find_top_negative_funding_candidates(
-        target_settle_ms=settle_epoch, preferred_symbols=[target_symbol]
+        target_settle_ms=settle_epoch, preferred_symbols=[target_symbol], explicitly_disarmed=list(explicitly_disarmed_symbols)
     )
     match_c = next((c for c in fresh_candidates if c["symbol"] == target_symbol), None)
 
-    if not match_c or match_c["rate"] >= 0.0 or match_c["rate"] < config.MAX_DANGER_FUNDING_RATE:
-        add_ui_log(f"[T-20s SCAN ABORT] {target_symbol} rate became invalid. Aborting thread.")
+    if not match_c or match_c["rate"] >= 0.0 or match_c["rate"] < config.MAX_DANGER_FUNDING_RATE or target_symbol in explicitly_disarmed_symbols:
+        add_ui_log(f"[T-20s SCAN ABORT] {target_symbol} rate became invalid or disarmed. Aborting thread.")
         ws_pipeline.reset_cycle_state(target_symbol)
         return
 
@@ -417,7 +430,7 @@ def run_dump_dip_engine() -> None:
             manual_prefs = list(dashboard_data.get("manual_selected_symbols", []))
 
         chosen_candidates, next_funding_ms, top_10, auto_armed, manual_armed = find_top_negative_funding_candidates(
-            preferred_symbols=manual_prefs
+            preferred_symbols=manual_prefs, explicitly_disarmed=list(explicitly_disarmed_symbols)
         )
 
         with data_lock:
@@ -425,23 +438,23 @@ def run_dump_dip_engine() -> None:
             dashboard_data["auto_armed_symbols"] = auto_armed
             dashboard_data["manual_selected_symbols"] = manual_armed
 
-        # Idle state handling: Rescan funding rates every 30 seconds
         if not chosen_candidates or next_funding_ms is None or next_funding_ms == 0:
+            idle_wait_sec, next_scan_time_str = get_seconds_until_next_scheduled_scan()
             with data_lock:
                 dashboard_data["target_symbol"] = "Scanning 1h/2h/4h/8h..."
                 dashboard_data["funding_rate"] = "0.00%"
                 dashboard_data["active_tier"] = "IDLE"
-                dashboard_data["status"] = "IDLE: Scanning fresh funding rates every 30s..."
+                dashboard_data["status"] = f"IDLE: Next scheduled scan at {next_scan_time_str}..."
                 dashboard_data["target_settlement_ms"] = 0
                 dashboard_data["target_settlement_time"] = "--:--:-- IST"
                 dashboard_data["selection_locked"] = False
 
-            add_ui_log("[IDLE SYNC] No qualified coins found. Re-scanning market in 30 seconds...")
-            
-            for _ in range(30):
+            add_ui_log(f"[IDLE SYNC] No qualified coins found. Next scan at {next_scan_time_str}...")
+            for _ in range(idle_wait_sec):
                 with data_lock:
                     if dashboard_data.get("force_rescan", False):
                         dashboard_data["force_rescan"] = False
+                        explicitly_disarmed_symbols.clear()
                         time.sleep(1.0)
                         break
                 time.sleep(1.0)
@@ -451,7 +464,6 @@ def run_dump_dip_engine() -> None:
         sym_names = ", ".join(all_armed_symbols)
         settle_dt = datetime.fromtimestamp(next_funding_ms / 1000, tz=IST)
 
-        # Synchronize funding rates for top card with table list
         rates_str_list = [f"{c['symbol']}: {c['rate'] * 100:+.4f}%" for c in chosen_candidates]
         combined_rates_str = " | ".join(rates_str_list) if rates_str_list else "0.00%"
 
@@ -473,7 +485,6 @@ def run_dump_dip_engine() -> None:
             threads.append(t)
             t.start()
 
-        # Continuous 30-sec Market Scan even when Armed/Selected (Syncing table list & top card rates)
         last_scan_time = time.time()
         while any(t.is_alive() for t in threads):
             now_t = time.time()
@@ -485,11 +496,10 @@ def run_dump_dip_engine() -> None:
                 
                 if not is_locked:
                     add_ui_log("🔄 [BACKGROUND SCAN] Refreshing market radar and funding rates (30s interval)...")
-                    updated_chosen, _, updated_top10, updated_auto, updated_manual = find_top_negative_funding_candidates(
-                        target_settle_ms=next_funding_ms, preferred_symbols=current_manual
+                    updated_chosen, _, updated_top10, _, _ = find_top_negative_funding_candidates(
+                        target_settle_ms=next_funding_ms, preferred_symbols=current_manual, explicitly_disarmed=list(explicitly_disarmed_symbols)
                     )
                     
-                    # Compute synchronized rates for the top card
                     synced_rates_list = [f"{c['symbol']}: {c['rate'] * 100:+.4f}%" for c in updated_chosen]
                     synced_rates_str = " | ".join(synced_rates_list) if synced_rates_list else "0.00%"
 
@@ -512,6 +522,7 @@ def run_dump_dip_engine() -> None:
         with data_lock:
             dashboard_data["selection_locked"] = False
             dashboard_data["force_rescan"] = False
+            explicitly_disarmed_symbols.clear()
 
         time.sleep(1.0)
 
