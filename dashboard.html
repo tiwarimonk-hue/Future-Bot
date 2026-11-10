@@ -15,6 +15,7 @@
             --green: #10b981;
             --red: #f43f5e;
             --blue: #38bdf8;
+            --yellow: #f59e0b;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 12px; font-size: 0.85rem; }
@@ -40,15 +41,32 @@
         .radar-table th, .ledger-table th { background-color: rgba(255,255,255,0.02); color: var(--text-muted); font-weight: 600; }
         .radar-table tr:hover, .ledger-table tr:hover { background-color: rgba(255,255,255,0.01); }
 
-        .ledger-card { background: rgba(0,0,0,0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; font-size: 0.78rem; }
-        .ledger-header { display: flex; justify-content: space-between; color: var(--accent-cyan); font-weight: bold; border-bottom: 1px dashed var(--card-border); padding-bottom: 5px; margin-bottom: 6px; }
-        .shallow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
-        .shallow-box { background: rgba(56, 189, 248, 0.08); border: 1px solid var(--blue); border-radius: 5px; padding: 6px; font-size: 0.72rem; }
-        .shallow-box.cancelled { border-color: var(--red); background: rgba(244, 63, 94, 0.08); }
+        .ledger-card { background: rgba(10, 15, 26, 0.8); border: 1px solid var(--card-border); border-left: 3px solid var(--yellow); border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 0.78rem; }
+        .ledger-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed var(--card-border); padding-bottom: 6px; margin-bottom: 8px; }
+        .ledger-coin { font-size: 1.05rem; font-weight: bold; color: #ffffff; }
+        .ledger-rate { color: var(--green); font-size: 0.82rem; margin-left: 6px; }
+
+        .shallow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 8px; }
+        
+        /* Exact Match Styling from Image */
+        .shallow-box { 
+            background: #0d1322; 
+            border: 1px dashed var(--blue); 
+            border-radius: 6px; 
+            padding: 8px 10px; 
+            font-size: 0.73rem; 
+            line-height: 1.4;
+            color: #d1d5db;
+        }
+        .shallow-box-header { display: flex; justify-content: space-between; font-weight: 600; color: var(--blue); border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px; margin-bottom: 6px; }
+        .shallow-status-canceled { color: var(--red); font-weight: bold; font-size: 0.7rem; }
+        .shallow-status-filled { color: var(--green); font-weight: bold; font-size: 0.7rem; }
+        .shallow-row { display: flex; justify-content: space-between; margin-bottom: 3px; }
+        .shallow-val { color: #ffffff; font-weight: 600; }
+        .telemetry-row { font-size: 0.7rem; margin-top: 3px; color: #9ca3af; }
         
         .empty-state { text-align: center; color: var(--text-muted); padding: 15px; font-style: italic; }
 
-        /* Action Buttons */
         .action-btn { padding: 4px 10px; border-radius: 5px; font-size: 0.75rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
         .arm-btn { background: rgba(16, 185, 129, 0.2); color: var(--green); border: 1px solid var(--green); }
         .arm-btn:hover { background: rgba(16, 185, 129, 0.35); }
@@ -70,7 +88,7 @@
                 <span>STRATEGY 1: TOKYO EXTREME SNIPER (T-100ms Limit Burst)</span>
             </div>
             <div class="strategy-features">
-                Features: Tokyo Fast-Lane WebSocket | Single-Shot Limit Burst | 3 Shallow Limits (30/50/70%) | DCA Grid Layers | Dynamic SL & Fast Shallow Cancel Burst.
+                Features: Tokyo Fast-Lane WebSocket | Single-Shot Limit Burst | 3 Shallow Limits (30/50/70%) | Dynamic SL & Fast Shallow Cancel Burst.
             </div>
         </div>
 
@@ -205,40 +223,55 @@
                 document.getElementById('s1-radar-body').innerHTML = s1RadarHtml;
                 document.getElementById('s1-armed-chips').innerHTML = s1ArmedChipsHtml || `<div class="empty-state" style="padding:6px;">No coins currently armed.</div>`;
 
-                // Strategy 1 Ledger
+                // Strategy 1 Ledger Render (Matches exact Layout in Image)
                 let s1LedgerContainer = document.getElementById('s1-ledger-container');
                 if(data.trades && data.trades.length > 0) {
                     let html = "";
                     data.trades.forEach((t, i) => {
                         let shallowHtml = "";
-                        if(t.dca_hits && t.dca_hits.length > 0) {
-                            t.dca_hits.forEach(d => {
+                        if(t.shallow_orders && t.shallow_orders.length > 0) {
+                            t.shallow_orders.forEach(d => {
+                                let statusTag = d.status === "FILLED" 
+                                    ? `<span class="shallow-status-filled">FILLED</span>` 
+                                    : `<span class="shallow-status-canceled">CANCELED</span>`;
+
                                 shallowHtml += `
-                                    <div class="shallow-box cancelled">
-                                        <strong>${d.level}</strong><br>
-                                        Price: ${d.price}<br>
-                                        Qty: ${d.qty}<br>
-                                        <span style="color:var(--red);">⚡ Cancel Fired</span><br>
-                                        <span style="color:var(--green);">${d.time}</span>
+                                    <div class="shallow-box">
+                                        <div class="shallow-box-header">
+                                            <span>${d.label}</span>
+                                            ${statusTag}
+                                        </div>
+                                        <div class="shallow-row">
+                                            <span>Target Price:</span> <span class="shallow-val">${d.price}</span>
+                                            <span>Target Qty:</span> <span class="shallow-val">${d.qty}</span>
+                                        </div>
+                                        <div class="telemetry-row">🚀 Cancel Fired: ${d.cancel_fired || '--'}</div>
+                                        <div class="telemetry-row">🔴 Binance Canceled: ${d.binance_canceled || '--'}</div>
+                                        <div class="telemetry-row" style="color:var(--yellow);">⚡ Cancel Latency: ${d.latency_ms} ms</div>
                                     </div>
                                 `;
                             });
                         } else {
-                            shallowHtml = `<div class="empty-state" style="grid-column: span 3; padding:4px;">No shallow fills recorded in this cycle.</div>`;
+                            shallowHtml = `<div class="empty-state" style="grid-column: span 3; padding:4px;">No shallow fills or telemetry recorded.</div>`;
                         }
 
                         html += `
                             <div class="ledger-card">
                                 <div class="ledger-header">
-                                    <span>#${i+1} ${t.symbol} | ${t.funding_rate}</span>
-                                    <span style="color:var(--green);">${t.status}</span>
+                                    <div>
+                                        <span class="ledger-coin">${t.symbol}</span>
+                                        <span class="ledger-rate">Rate: ${t.funding_rate}</span>
+                                    </div>
+                                    <div style="text-align:right;">
+                                        <span style="color:var(--green); font-weight:bold;">${t.status}</span>
+                                    </div>
                                 </div>
                                 <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px; line-height:1.4;">
                                     <strong>STRATEGY MODE:</strong> ${t.tier}<br>
-                                    <strong>ENTRY TIMELINE:</strong> Sent: ${t.entry_sent} | Ack: ${t.entry_ack} | First Fill: ${t.entry_fill_time}<br>
+                                    <strong>ENTRY TIMELINE:</strong> Sent: ${t.entry_sent} | ACK: ${t.entry_ack} | First Fill: ${t.entry_fill_time}<br>
                                     <strong>EXECUTION SUMMARY:</strong> Avg Entry: ${t.entry_fill_price} | Exit: ${t.exit_price} | PnL: ${t.pnl}
                                 </div>
-                                <div class="sub-section-title" style="margin:4px 0;"><span>LIMIT ORDER FILLS & SHALLOW CANCELS (30/50/70% FR)</span></div>
+                                <div class="sub-section-title" style="margin:6px 0 4px 0;"><span>LIMIT ORDER FILLS (3 LEVELS HIT — ROW 1: BLUE SHALLOW)</span></div>
                                 <div class="shallow-grid">${shallowHtml}</div>
                             </div>
                         `;
