@@ -425,7 +425,7 @@ def run_dump_dip_engine() -> None:
             dashboard_data["auto_armed_symbols"] = auto_armed
             dashboard_data["manual_selected_symbols"] = manual_armed
 
-        # Agar koi candidates nahi mile toh 30 sec idle scan
+        # Idle state handling: Rescan funding rates every 30 seconds
         if not chosen_candidates or next_funding_ms is None or next_funding_ms == 0:
             with data_lock:
                 dashboard_data["target_symbol"] = "Scanning 1h/2h/4h/8h..."
@@ -451,9 +451,13 @@ def run_dump_dip_engine() -> None:
         sym_names = ", ".join(all_armed_symbols)
         settle_dt = datetime.fromtimestamp(next_funding_ms / 1000, tz=IST)
 
+        # Synchronize funding rates for top card with table list
+        rates_str_list = [f"{c['symbol']}: {c['rate'] * 100:+.4f}%" for c in chosen_candidates]
+        combined_rates_str = " | ".join(rates_str_list) if rates_str_list else "0.00%"
+
         with data_lock:
             dashboard_data["target_symbol"] = sym_names
-            dashboard_data["funding_rate"] = f"{chosen_candidates[0]['rate'] * 100:+.4f}% (Top)"
+            dashboard_data["funding_rate"] = combined_rates_str
             dashboard_data["active_tier"] = f"MULTI-ARMED ({len(chosen_candidates)} coins)"
             dashboard_data["target_settlement_time"] = settle_dt.strftime("%H:%M:%S IST")
             dashboard_data["target_settlement_ms"] = next_funding_ms
@@ -469,14 +473,10 @@ def run_dump_dip_engine() -> None:
             threads.append(t)
             t.start()
 
-        # =========================================================================
-        # CONTINUOUS 30-SEC MARKET SCAN EVEN WHEN ARMED (Until selection lock at 60s)
-        # =========================================================================
+        # Continuous 30-sec Market Scan even when Armed/Selected (Syncing table list & top card rates)
         last_scan_time = time.time()
         while any(t.is_alive() for t in threads):
             now_t = time.time()
-            
-            # Har 30 seconds mein background mein market scanner run karega agar selection locked nahi hai
             if (now_t - last_scan_time) >= 30.0:
                 last_scan_time = now_t
                 with data_lock:
@@ -485,12 +485,19 @@ def run_dump_dip_engine() -> None:
                 
                 if not is_locked:
                     add_ui_log("🔄 [BACKGROUND SCAN] Refreshing market radar and funding rates (30s interval)...")
-                    _, _, updated_top10, _, _ = find_top_negative_funding_candidates(
+                    updated_chosen, _, updated_top10, updated_auto, updated_manual = find_top_negative_funding_candidates(
                         target_settle_ms=next_funding_ms, preferred_symbols=current_manual
                     )
+                    
+                    # Compute synchronized rates for the top card
+                    synced_rates_list = [f"{c['symbol']}: {c['rate'] * 100:+.4f}%" for c in updated_chosen]
+                    synced_rates_str = " | ".join(synced_rates_list) if synced_rates_list else "0.00%"
+
                     with data_lock:
                         if updated_top10:
                             dashboard_data["top_5_candidates"] = updated_top10
+                        if updated_chosen:
+                            dashboard_data["funding_rate"] = synced_rates_str
 
             with data_lock:
                 if dashboard_data.get("force_rescan", False) and not dashboard_data.get("selection_locked", False):
