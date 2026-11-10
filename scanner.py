@@ -259,24 +259,26 @@ def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[boo
 
 def find_top_negative_funding_candidates(
     target_settle_ms: Optional[int] = None,
-    preferred_symbol: Optional[str] = None
-) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[int], List[Dict[str, Any]]]:
+    preferred_symbols: Optional[List[str]] = None
+) -> Tuple[List[Dict[str, Any]], Optional[int], List[Dict[str, Any]]]:
+    """
+    Returns a tuple of (chosen_candidates_list, target_settle_ms, top_10_radar_list).
+    Supports multiple automatic candidates up to MAX_ARMED_COINS and any valid user-selected manual symbols.
+    """
     try:
         refresh_exchange_rules_if_needed()
         refresh_24h_volumes_if_needed()
 
-        # Load dynamic blocked coins (JSON persistence)
         blocked_data = load_blocked_coins()
         temp_blocked_set = set(blocked_data.get("temporary", []))
         perm_blocked_set = set(blocked_data.get("permanent", []))
 
-        # Sirf 1 single public request exchange par jayegi
         res = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=5)
         tickers = res.json()
 
         if not isinstance(tickers, list):
             add_ui_log(f"⚠️ [SCANNER BACKOFF] Binance returned non-list response: {tickers}")
-            return None, None, None, None, []
+            return [], None, []
 
         current_time_ms = get_synced_time_ms()
         eligible_candidates = []
@@ -286,7 +288,6 @@ def find_top_negative_funding_candidates(
                 continue
 
             symbol = t.get("symbol", "")
-            # Permanently blocked coins scan list se bahar filter honge
             if not symbol.endswith("USDT") or symbol in BLACKLISTED_PATTERNS or symbol in perm_blocked_set:
                 continue
 
@@ -330,16 +331,14 @@ def find_top_negative_funding_candidates(
                 })
 
         if not eligible_candidates:
-            return None, None, None, None, []
+            return [], None, []
 
         soonest_settle_time = min(c["settle_ms"] for c in eligible_candidates)
         soonest_batch = [c for c in eligible_candidates if abs(c["settle_ms"] - soonest_settle_time) < 60000]
 
-        # Top 10 Radar: Sorted ascending (Temp blocked coins radar me visible rahenge)
         soonest_batch.sort(key=lambda x: x["rate"])
         top_10 = soonest_batch[:10]
 
-        # In-Memory Safe Filtering (Temporary blocked coins auto-trade se bahar)
         safe_batch = [
             c for c in soonest_batch
             if config.MAX_DANGER_FUNDING_RATE <= c["rate"] <= config.MIN_FUNDING_RATE
@@ -351,51 +350,57 @@ def find_top_negative_funding_candidates(
             if config.SWEET_SPOT_MIN <= c["rate"] <= config.SWEET_SPOT_MAX
         ]
 
-        chosen = None
+        chosen_list = []
+        preferred_symbols = preferred_symbols or []
 
-        # Manual Override Priority (User ka selected coin agar unblocked hai)
-        if preferred_symbol:
-            if preferred_symbol in temp_blocked_set or preferred_symbol in perm_blocked_set:
-                add_ui_log(f"⚠️ [PREFERRED SYMBOL IGNORED] {preferred_symbol} is in block list. Falling back to default.")
-            else:
-                match = next((c for c in soonest_batch if c["symbol"] == preferred_symbol), None)
-                if match and match["rate"] < 0.0 and not match.get("is_temp_blocked", False):
-                    ok, _ = verify_binance_symbol_preflight(match["symbol"], match["price"])
-                    if ok:
-                        chosen = match
-                        if not any(c["symbol"] == preferred_symbol for c in top_10):
+        # 1. First, process user-selected manual symbols if they pass pre-flight and aren't blocked
+        for p_sym in preferred_symbols:
+            p_sym_clean = p_sym.strip().upper()
+            if p_sym_clean in temp_blocked_set or p_sym_clean in perm_blocked_set:
+                add_ui_log(f"⚠️ [MANUAL SYMBOL IGNORED] {p_sym_clean} is in block list.")
+                continue
+            match = next((c for c in soonest_batch if c["symbol"] == p_sym_clean), None)
+            if match and match["rate"] < 0.0 and not match.get("is_temp_blocked", False):
+                ok, _ = verify_binance_symbol_preflight(match["symbol"], match["price"])
+                if ok:
+                    if not any(item["symbol"] == match["symbol"] for item in chosen_list):
+                        chosen_list.append(match)
+                        if not any(c["symbol"] == match["symbol"] for c in top_10):
                             top_10.insert(0, match)
                             top_10 = top_10[:10]
 
-        # Auto Mode: Sirf Top-1 valid coin par preflight chalega, pehla pass hote hi loop break
-        if not chosen:
-            candidates_to_filter = sweet_spot if sweet_spot else safe_batch
-            for c in candidates_to_filter:
+        # 2. Next, fill remaining slots up to MAX_ARMED_COINS automatically from sweet spot / safe batch
+        candidates_to_filter = sweet_spot if sweet_spot else safe_batch
+        for c in candidates_to_filter:
+            if len(chosen_list) >= config.MAX_ARMED_COINS:
+                break
+            if any(item["symbol"] == c["symbol"] for item in chosen_list):
+                continue
+            ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
+            if ok:
+                chosen_list.append(c)
+            time.sleep(0.15)
+
+        # Fallback if slots still remain
+        if len(chosen_list) < config.MAX_ARMED_COINS:
+            for c in safe_batch:
+                if len(chosen_list) >= config.MAX_ARMED_COINS:
+                    break
+                if any(item["symbol"] == c["symbol"] for item in chosen_list):
+                    continue
                 ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
                 if ok:
-                    chosen = c
-                    break
+                    chosen_list.append(c)
                 time.sleep(0.15)
 
-            # Agar sweet spot ka pehla coin fail hua to bache hue safe coins me se pehla check hoga
-            if not chosen and sweet_spot and safe_batch:
-                for c in safe_batch:
-                    if c in candidates_to_filter:
-                        continue
-                    ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
-                    if ok:
-                        chosen = c
-                        break
-                    time.sleep(0.15)
+        if not chosen_list:
+            return [], None, top_10
 
-        if not chosen:
-            return None, None, None, None, top_10
-
-        return chosen["symbol"], chosen["rate"], chosen["price"], chosen["settle_ms"], top_10
+        return chosen_list, soonest_settle_time, top_10
 
     except Exception as e:
         add_ui_log(f"Scanner error: {e}")
-        return None, None, None, None, []
+        return [], None, []
 
 
 def calculate_order_specs(symbol: str, price: float):
