@@ -131,7 +131,7 @@ def find_top_negative_funding_candidates(
         ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=3).json()
         valid_symbols = {
             s["symbol"] for s in ex_r.get("symbols", [])
-            if s.get("contractType") == "PERPETUAL" and s.get("status"] == "TRADING"
+            if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
         }
     except Exception:
         valid_symbols = set()
@@ -141,7 +141,6 @@ def find_top_negative_funding_candidates(
     except Exception:
         prem_r = []
 
-    # Fetch 24h ticker volume map
     volume_map = {}
     try:
         ticker_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/ticker/24hr", timeout=3).json()
@@ -191,11 +190,9 @@ def find_top_negative_funding_candidates(
     candidates.sort(key=lambda x: x["rate"])
     top_10 = candidates[:10]
 
-    # Qualified threshold filter (using config threshold, e.g. 0.35% or 0.9%)
     qualified = [c for c in candidates if c["rate"] <= -config.FR_THRESHOLD_RATIO]
 
     auto_armed = []
-    manual_manual_armed = []
     manual_armed = []
 
     for sym in preferred_symbols:
@@ -209,7 +206,7 @@ def find_top_negative_funding_candidates(
         sym = c["symbol"]
         if sym in manual_armed or sym in explicitly_disarmed:
             continue
-        if len(auto_armed) < 2:  # AUTO TOP 2 CAPPING
+        if len(auto_armed) < 2:
             auto_armed.append(sym)
 
     final_selected_symbols = list(set(manual_armed + auto_armed))
