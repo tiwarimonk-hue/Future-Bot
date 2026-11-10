@@ -1,5 +1,7 @@
 from __future__ import annotations
 import time
+import hmac
+import hashlib
 import requests
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
@@ -56,6 +58,13 @@ def precision_wait_until(target_time_ms: float) -> None:
             time.sleep(0.001)
 
 
+def sign_params(params: dict) -> str:
+    """Binance API HMAC SHA256 signature generator helper"""
+    query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+    sig = hmac.new(config.API_SECRET.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{query_string}&signature={sig}"
+
+
 def format_duration(sec: int) -> str:
     """Seconds ko Human Readable HH:MM:SS format me translate karta hai"""
     if sec <= 0:
@@ -106,7 +115,6 @@ def find_top_negative_funding_candidates(
         temp_blocked = set(blocked.get("temporary", []))
         perm_blocked = set(blocked.get("permanent", []))
 
-        # 24h Ticker Volumes load karna taaki liquidity threshold audit ho sake
         vol_map = {}
         try:
             v_data = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/ticker/24hr", timeout=3.0).json()
@@ -133,7 +141,6 @@ def find_top_negative_funding_candidates(
             if settle_ms <= now_ms:
                 continue
 
-            # Filtering based on target settlement time if specified
             if target_settle_ms > 0 and abs(settle_ms - target_settle_ms) > 300000:
                 continue
 
@@ -152,12 +159,9 @@ def find_top_negative_funding_candidates(
                 "vol_str": vol_str
             })
 
-        # Sort candidates by Funding Rate (Most negative first)
         candidates.sort(key=lambda x: x["rate"])
-
         top_10 = candidates[:10]
 
-        # Manual Selected Symbol Check
         if preferred_symbol:
             pref_sym = preferred_symbol.strip().upper()
             if pref_sym not in temp_blocked and pref_sym not in perm_blocked:
@@ -166,7 +170,6 @@ def find_top_negative_funding_candidates(
                         add_ui_log(f"🎯 [RADAR PREFERRED LOCK] User manual coin armed: {pref_sym} ({c['rate'] * 100:+.4f}%)")
                         return c["symbol"], c["rate"], c["price"], c["settle_ms"], top_10
 
-        # Automatic Selection Filter Loop
         for c in candidates:
             sym = c["symbol"]
             r = c["rate"]
@@ -174,7 +177,6 @@ def find_top_negative_funding_candidates(
             if sym in temp_blocked or sym in perm_blocked:
                 continue
 
-            # Apply Funding Rate threshold constraints
             if r <= config.MIN_FUNDING_RATE and r >= config.MAX_DANGER_FUNDING_RATE:
                 return c["symbol"], c["rate"], c["price"], c["settle_ms"], top_10
 
@@ -211,17 +213,16 @@ def calculate_order_specs(symbol: str, price: float) -> tuple[str, int, float, f
                         min_qty = float(f.get("minQty", 0.001))
                 break
 
-        applied_leverage = config.MAX_LEVERAGE
+        applied_leverage = config.MAX_LEVERAGE_CAP
         notional_usd = config.TRADE_MARGIN_USD * applied_leverage
         raw_qty = max(min_qty, notional_usd / price) if price > 0 else min_qty
         qty_str = format_step(raw_qty, qty_step)
 
-        # Minimum notional safety check ($5.2 USDT buffer)
         if float(qty_str) * price < 5.2:
             qty_str = format_step(float(qty_str) + qty_step, qty_step)
 
-        return qty_str, applied_leverage, tick_size, qty_step, min_qty
+        return qty_str, int(applied_leverage), tick_size, qty_step, min_qty
 
     except Exception as e:
         add_ui_log(f"⚠️ [CALCULATE SPECS WARNING]: {e}")
-        return "1", config.MAX_LEVERAGE, 0.0001, 0.001, 0.001
+        return "1", int(config.MAX_LEVERAGE_CAP), 0.0001, 0.001, 0.001
