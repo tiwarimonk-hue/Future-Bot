@@ -34,7 +34,7 @@ def load_blocked_coins() -> dict[str, list[str]]:
             if "permanent" not in data or not isinstance(data["permanent"], list):
                 data["permanent"] = []
             return data
-    except Exception as e:
+    except Exception:
         return default_data
 
 
@@ -43,7 +43,7 @@ def save_blocked_coins(data: dict[str, list[str]]) -> bool:
         with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 
