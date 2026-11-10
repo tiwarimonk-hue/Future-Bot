@@ -11,6 +11,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 data_lock = threading.Lock()
 trade_history: list[dict] = []
+explicitly_disarmed_symbols: set[str] = set()
 
 BLOCKED_COINS_FILE = Path(__file__).resolve().parent / "blocked_coins.json"
 
@@ -133,7 +134,6 @@ def set_dashboard_status(status_msg: str) -> None:
 
 def record_completed_trade(trade_record: dict) -> None:
     with data_lock:
-        # Prevent duplicate entries for the same trade/symbol and entry timestamp
         exists = any(
             t.get("symbol") == trade_record.get("symbol") and 
             t.get("entry_sent") == trade_record.get("entry_sent") 
@@ -182,6 +182,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "message": "Selection locked."}).encode("utf-8"))
                         return
                     dashboard_data["manual_selected_symbols"] = []
+                    explicitly_disarmed_symbols.clear()
                     dashboard_data["force_rescan"] = True
 
                 self.send_response(200)
@@ -211,9 +212,12 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                     manual_list = dashboard_data.setdefault("manual_selected_symbols", [])
                     if selected_sym in manual_list:
                         manual_list.remove(selected_sym)
-                        action_msg = f"Removed {selected_sym} from manual list."
+                        explicitly_disarmed_symbols.add(selected_sym)  # STRICT DISARM
+                        action_msg = f"Removed {selected_sym} from manual list & added to disarm blacklist."
                     else:
                         manual_list.append(selected_sym)
+                        if selected_sym in explicitly_disarmed_symbols:
+                            explicitly_disarmed_symbols.remove(selected_sym)
                         action_msg = f"Added {selected_sym} to manual list."
 
                     dashboard_data["force_rescan"] = True
