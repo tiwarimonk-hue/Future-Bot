@@ -1,5 +1,8 @@
 from __future__ import annotations
 import time
+import hmac
+import hashlib
+import urllib.parse
 import requests
 import config
 from datetime import datetime, timezone, timedelta
@@ -70,6 +73,16 @@ def format_step(val: float, step: float) -> str:
 
 def format_tick(price: float, tick_size: float) -> str:
     return format_step(price, tick_size)
+
+
+def sign_params(params: dict, secret: str) -> str:
+    query_string = urllib.parse.urlencode(params)
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    return signature
 
 
 def calculate_order_specs(symbol: str, price: float) -> tuple[str, int, float, float, float]:
