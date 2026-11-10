@@ -137,7 +137,7 @@ def find_top_negative_funding_candidates(
         valid_symbols = set()
 
     try:
-        prem_r = session.get(f"{config.BIANCE_REST_URL if hasattr(config, 'BIANCE_REST_URL') else config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=3).json()
+        prem_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=3).json()
     except Exception:
         prem_r = []
 
@@ -152,6 +152,7 @@ def find_top_negative_funding_candidates(
             rate = float(item.get("lastFundingRate", 0))
             nxt_time = int(item.get("nextFundingTime", 0))
             mark_p = float(item.get("markPrice", 0))
+            vol_val = float(item.get("quoteVolume", 0))
         except Exception:
             continue
 
@@ -159,24 +160,27 @@ def find_top_negative_funding_candidates(
             if next_funding_ms == 0 or nxt_time < next_funding_ms:
                 next_funding_ms = nxt_time
 
-        # Format settlement time string for frontend compatibility
-        settle_time_str = "--:--"
+        # Format settlement string for dashboard_template.py compatibility
+        settle_time_str = "--:--:-- IST"
         if nxt_time > 0:
             settle_dt = datetime.fromtimestamp(nxt_time / 1000, tz=IST)
             settle_time_str = settle_dt.strftime("%H:%M:%S IST")
+
+        vol_str = f"${vol_val:,.0f}" if vol_val > 0 else "--"
 
         candidates.append({
             "symbol": sym,
             "rate": rate,
             "price": mark_p,
             "nextFundingTime": nxt_time,
-            "next_settlement": settle_time_str
+            "settle_str": settle_time_str,
+            "vol_str": vol_str
         })
 
     candidates.sort(key=lambda x: x["rate"])
     top_10 = candidates[:10]
 
-    # Qualified threshold filter (<= -0.35%)
+    # Qualified threshold filter (matching your -0.35% threshold)
     qualified = [c for c in candidates if c["rate"] <= -config.FR_THRESHOLD_RATIO]
 
     auto_armed = []
