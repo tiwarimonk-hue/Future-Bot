@@ -159,27 +159,24 @@ def find_top_negative_funding_candidates(
             if next_funding_ms == 0 or nxt_time < next_funding_ms:
                 next_funding_ms = nxt_time
 
-        settle_time_str = "--:--"
-        if nxt_time > 0:
-            settle_dt = datetime.fromtimestamp(nxt_time / 1000, tz=IST)
-            settle_time_str = settle_dt.strftime("%H:%M:%S IST")
-
         candidates.append({
             "symbol": sym,
             "rate": rate,
             "price": mark_p,
-            "nextFundingTime": nxt_time,
-            "next_settlement": settle_time_str
+            "nextFundingTime": nxt_time
         })
 
+    # Sort by most negative funding rate first
     candidates.sort(key=lambda x: x["rate"])
     top_10 = candidates[:10]
 
-    qualified = [c for c in candidates if c["rate"] < 0 and c["rate"] <= -config.FR_THRESHOLD_RATIO]
+    # Qualified threshold filter (<= -0.35%)
+    qualified = [c for c in candidates if c["rate"] <= -config.FR_THRESHOLD_RATIO]
 
     auto_armed = []
     manual_armed = []
 
+    # Process manual user preferences (Skipping if explicitly disarmed)
     for sym in preferred_symbols:
         if sym in explicitly_disarmed:
             continue
@@ -187,11 +184,12 @@ def find_top_negative_funding_candidates(
         if match:
             manual_armed.append(sym)
 
+    # Process auto candidates (Max Top 2, excluding explicitly disarmed coins)
     for c in qualified:
         sym = c["symbol"]
         if sym in manual_armed or sym in explicitly_disarmed:
             continue
-        if len(auto_armed) < 2:
+        if len(auto_armed) < 2:  # AUTO TOP 2 CAPPING
             auto_armed.append(sym)
 
     final_selected_symbols = list(set(manual_armed + auto_armed))
