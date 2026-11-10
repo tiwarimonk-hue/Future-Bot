@@ -474,7 +474,7 @@ def execute_limit_burst_ws(
     limit_orders_batch: list[tuple[str, str, str, float, str]]
 ) -> None:
     """
-    T-100ms par saare 4 ya 5 limit orders ko exact sequence (30% -> 50% -> 70% -> DCA#1 -> DCA#2)
+    T-50ms par saare 4 ya 5 limit orders ko exact sequence (30% -> 50% -> 70% -> DCA#1 -> DCA#2)
     me ek hi millisecond ke andar socket par flush karta hai aur unka confirmation log karta hai.
     """
     burst_results = ws_pipeline.place_orders_burst_ws(symbol, limit_orders_batch, timeout=0.09)
