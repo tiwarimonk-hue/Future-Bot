@@ -36,6 +36,17 @@ cached_24h_volumes: dict[str, float] = {}
 last_24h_volume_time: float = 0.0
 
 
+def format_duration(seconds: int) -> str:
+    """Helper function to format duration in seconds into h/m/s string."""
+    mins, secs = divmod(seconds, 60)
+    hours, mins = divmod(mins, 60)
+    if hours:
+        return f"{hours}h {mins}m {secs}s"
+    elif mins > 0:
+        return f"{mins}m {secs}s"
+    return f"{secs}s"
+
+
 def refresh_exchange_rules_if_needed() -> None:
     global cached_exchange_rules, last_exchange_info_time
     now = time.time()
@@ -69,7 +80,7 @@ def refresh_exchange_rules_if_needed() -> None:
         if new_rules:
             cached_exchange_rules = new_rules
             last_exchange_info_time = now
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -89,7 +100,7 @@ def refresh_24h_volumes_if_needed() -> None:
                     new_vols[sym] = q_vol
             cached_24h_volumes = new_vols
             last_24h_volume_time = now
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -117,7 +128,7 @@ def sync_binance_clock() -> None:
             clock_offset_ms = estimated_server_time - t_recv
             with data_lock:
                 dashboard_data["clock_offset_ms"] = round(clock_offset_ms, 2)
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -329,7 +340,7 @@ def find_top_negative_funding_candidates(
                 chosen_map[c["symbol"]] = c
                 auto_armed_symbols.append(c["symbol"])
 
-        # 2. Add User Manual Selections ON TOP OF Auto Selections (Clean validation)
+        # 2. Add User Manual Selections ON TOP OF Auto Selections
         preferred_symbols = preferred_symbols or []
         for p_sym in preferred_symbols:
             p_sym_clean = p_sym.strip().upper()
