@@ -51,20 +51,13 @@ def evaluate_dca_condition_specs(current_rate: float) -> tuple[float, float, flo
         g1 = round(abs_r * config.GRID_RATIO_DCA_HIGH, 5)
         g2 = 0.0
         sl_r = config.SL_BELOW_LIMIT_RATIO_COND_1
-        lbl = (
-            f"COND 1 (|FR| >= 0.90%): 3 Shallow (30/50/70% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) + "
-            f"DCA #1 (-{g1 * 100:.3f}% @ ${config.LIMIT_ORDER_MARGIN_USD}), SL (-{sl_r * 100:.2f}%)"
-        )
+        lbl = f"COND 1 (|FR| >= 0.90%)"
         return g1, g2, sl_r, lbl, True
     else:
         g1 = max(config.MIN_GRID_GAP_DCA_1_LOW, round(abs_r * config.GRID_RATIO_DCA_LOW, 5))
         g2 = 0.0
         sl_r = config.SL_BELOW_LIMIT_RATIO_COND_2
-        lbl = (
-            f"COND 2 (|FR| < 0.90%): 3 Shallow (30/50/70% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) + "
-            f"L1 (-{g1 * 100:.3f}% @ ${config.DCA_SPLIT_MARGIN_USD}) + "
-            f"L2 (L1 - 0.50% @ ${config.DCA_SPLIT_MARGIN_USD}), SL (-{sl_r * 100:.2f}%)"
-        )
+        lbl = f"COND 2 (|FR| < 0.90%)"
         return g1, g2, sl_r, lbl, False
 
 
@@ -80,10 +73,6 @@ def format_limit_qty(notional_usd: float, limit_price_str: str, min_qty: float, 
 
 
 def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: dict, global_settle_ms: int) -> None:
-    """
-    Ek individual coin ke liye poora sniper lifecycle (T-20s scan, T-50ms burst, exit, reconciliation) run karta hai.
-    Multi-threading ke madhyam se multiple coins par concurrent execution provide karta hai.
-    """
     target_symbol = initial_candidate["symbol"]
     rate = initial_candidate["rate"]
     last_price = initial_candidate["price"]
@@ -106,12 +95,10 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
         now_ms = get_synced_time_ms()
         remaining_ms = t_rescan_20s - now_ms
         current_sec_left = max(0, int((settle_epoch - now_ms) / 1000))
-        is_locked = (current_sec_left <= 60)
 
-        # Check if coin got blocked in real-time
         blocked_now = load_blocked_coins()
         if target_symbol in blocked_now.get("temporary", []) or target_symbol in blocked_now.get("permanent", []):
-            add_ui_log(f"🚫 [ARMED COIN BLOCKED] {target_symbol} was blocked! Aborting this coin thread...")
+            add_ui_log(f"🚫 [ARMED COIN BLOCKED] {target_symbol} was blocked! Aborting thread...")
             ws_pipeline.reset_cycle_state(target_symbol)
             abort_cycle = True
             break
@@ -132,22 +119,17 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
     if abort_cycle:
         return
 
-    # PHASE 1: T-20s Fresh Scan for this coin
+    # PHASE 1: T-20s Fresh Scan
     precision_wait_until(t_rescan_20s)
     sync_binance_clock()
 
-    blocked_now = load_blocked_coins()
-    if target_symbol in blocked_now.get("temporary", []) or target_symbol in blocked_now.get("permanent", []):
-        add_ui_log(f"[T-20s SCAN ABORT] {target_symbol} is in block list. Aborting thread.")
-        return
-
-    fresh_candidates, _, _ = find_top_negative_funding_candidates(
+    fresh_candidates, _, _, _, _ = find_top_negative_funding_candidates(
         target_settle_ms=settle_epoch, preferred_symbols=[target_symbol]
     )
     match_c = next((c for c in fresh_candidates if c["symbol"] == target_symbol), None)
 
     if not match_c or match_c["rate"] >= 0.0 or match_c["rate"] < config.MAX_DANGER_FUNDING_RATE:
-        add_ui_log(f"[T-20s SCAN ABORT] {target_symbol} rate became invalid ({match_c['rate'] if match_c else 'None'}). Aborting thread.")
+        add_ui_log(f"[T-20s SCAN ABORT] {target_symbol} rate became invalid. Aborting thread.")
         ws_pipeline.reset_cycle_state(target_symbol)
         return
 
@@ -161,7 +143,7 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
     t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS
     t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS
     t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS
-    t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS  # T-50ms
+    t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS
 
     t_cancel_shallow = settle_epoch + config.SHALLOW_CANCEL_FLOOR_MS
     t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS
@@ -178,7 +160,6 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
     dca_cond2_notional_usd = max(5.5, config.DCA_SPLIT_MARGIN_USD * applied_leverage)
 
     sl_target_price = 0.0
-    sl_target_str = "--"
     epoch_tag = f"{int(settle_epoch / 1000) % 100000}"
 
     cid_shlw1 = f"shlw1-{target_symbol[:4]}-{epoch_tag}"
@@ -219,7 +200,7 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
                 last_price = fresh_p
                 t2_snapshot_price = fresh_p
             if fresh_r >= 0.0:
-                add_ui_log(f"[PRE-ENTRY HARD ABORT] {target_symbol} rate turned positive ({fresh_r}). Aborting thread.")
+                add_ui_log(f"[PRE-ENTRY HARD ABORT] {target_symbol} rate turned positive. Aborting thread.")
                 return
         except Exception:
             pass
@@ -230,14 +211,13 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
         floor_trigger = settle_epoch + config.SHALLOW_CANCEL_FLOOR_MS
         t_cancel_shallow = max(floor_trigger, computed_trigger)
 
-        # Phase 4 (T-50ms): SINGLE-SHOT ORDERED LIMIT BURST
+        # Phase 4 (T-50ms Limit Burst)
         precision_wait_until(t_limit_burst)
         cycle_order_start_ms = int(get_synced_time_ms()) - 1000
         entry_dispatch_time = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
 
         live_ws_p = ws_pipeline.get_live_price(target_symbol)
         anchor_price = live_ws_p if (live_ws_p and live_ws_p > 0) else t2_snapshot_price
-        anchor_src = "LIVE WS" if (live_ws_p and live_ws_p > 0) else "SNAPSHOT"
 
         dec_anchor = Decimal(str(anchor_price))
         abs_rate_dec = Decimal(str(abs(float(rate))))
@@ -267,7 +247,6 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
 
             sl_dec = Decimal(dca1_price_str) * (Decimal("1") - Decimal(str(sl_ratio)))
             sl_target_price = float(sl_dec)
-            sl_target_str = format_tick(sl_target_price, tick_size)
         else:
             dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(gap_dca_1)))
             dca1_price_str = format_tick(float(dca1_p_dec), tick_size)
@@ -282,7 +261,6 @@ def run_single_coin_sniper(ws_pipeline: BinanceFastLaneWS, initial_candidate: di
 
             sl_dec = Decimal(dca2_price_str) * (Decimal("1") - Decimal(str(sl_ratio)))
             sl_target_price = float(sl_dec)
-            sl_target_str = format_tick(sl_target_price, tick_size)
 
         add_ui_log(f"⚡ [T-50ms BURST ({entry_dispatch_time})] Firing limit orders for {target_symbol} @ {applied_leverage}x")
         executor.execute_limit_burst_ws(ws_pipeline, target_symbol, limit_orders_batch)
@@ -443,12 +421,14 @@ def run_dump_dip_engine() -> None:
         with data_lock:
             manual_prefs = list(dashboard_data.get("manual_selected_symbols", []))
 
-        chosen_candidates, next_funding_ms, top_10 = find_top_negative_funding_candidates(
+        chosen_candidates, next_funding_ms, top_10, auto_armed, manual_armed = find_top_negative_funding_candidates(
             preferred_symbols=manual_prefs
         )
 
         with data_lock:
             dashboard_data["top_5_candidates"] = top_10
+            dashboard_data["auto_armed_symbols"] = auto_armed
+            dashboard_data["manual_selected_symbols"] = manual_armed
 
         if not chosen_candidates or next_funding_ms is None or next_funding_ms == 0:
             idle_wait_sec, next_scan_time_str = get_seconds_until_next_scheduled_scan()
@@ -461,30 +441,30 @@ def run_dump_dip_engine() -> None:
                 dashboard_data["target_settlement_time"] = "--:--:-- IST"
                 dashboard_data["selection_locked"] = False
 
-            add_ui_log(f"[IDLE SYNC] No qualified coins found. Next scan at {next_scan_time_str} (in {idle_wait_sec}s)...")
+            add_ui_log(f"[IDLE SYNC] No qualified coins found. Next scan at {next_scan_time_str}...")
             for _ in range(idle_wait_sec):
                 with data_lock:
                     if dashboard_data.get("force_rescan", False):
                         dashboard_data["force_rescan"] = False
-                        add_ui_log("⚡ [IDLE BREAK] User triggered action. Applying 2s grace period...")
                         time.sleep(2.0)
                         break
                 time.sleep(1.0)
             continue
 
-        sym_names = ", ".join([c["symbol"] for c in chosen_candidates])
+        all_armed_symbols = [c["symbol"] for c in chosen_candidates]
+        sym_names = ", ".join(all_armed_symbols)
         settle_dt = datetime.fromtimestamp(next_funding_ms / 1000, tz=IST)
 
         with data_lock:
             dashboard_data["target_symbol"] = sym_names
             dashboard_data["funding_rate"] = f"{chosen_candidates[0]['rate'] * 100:+.4f}% (Top)"
-            dashboard_data["active_tier"] = f"MULTI-COIN ARMED ({len(chosen_candidates)} coins)"
+            dashboard_data["active_tier"] = f"MULTI-ARMED ({len(chosen_candidates)} coins)"
             dashboard_data["target_settlement_time"] = settle_dt.strftime("%H:%M:%S IST")
             dashboard_data["target_settlement_ms"] = next_funding_ms
             dashboard_data["status"] = f"ARMED: [{sym_names}] | Settle: {settle_dt.strftime('%H:%M:%S')}"
 
         print("\n" + "=" * 70, flush=True)
-        print(f"🎯 MULTI-TARGET LOCKED: [{sym_names}] | Settle: {settle_dt.strftime('%H:%M:%S IST')}", flush=True)
+        print(f"🎯 MULTI-TARGET ARMED & LOCKED: [{sym_names}]", flush=True)
         print("=" * 70, flush=True)
 
         threads = []
@@ -498,6 +478,7 @@ def run_dump_dip_engine() -> None:
 
         with data_lock:
             dashboard_data["manual_selected_symbols"] = []
+            dashboard_data["auto_armed_symbols"] = []
             dashboard_data["selection_locked"] = False
             dashboard_data["force_rescan"] = False
 
