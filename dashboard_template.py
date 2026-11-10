@@ -5,7 +5,7 @@ import config
 def get_dashboard_html() -> str:
     """
     Binance Tokyo Funding Sniper ka complete responsive dark-mode HTML,
-    CSS aur JavaScript template return karta hai (Multi-Coin Auto + Manual Checkbox UI).
+    CSS aur JavaScript template return karta hai (Fixed Settlement Header & Multi-Coin Tags).
     """
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -247,6 +247,16 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 <script>
 let isLocked = false;
 
+function formatDurationJs(sec) {{
+    if (sec <= 0) return '0s (Settling...)';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return `${{h}}h ${{m}}m ${{s}}s`;
+    if (m > 0) return `${{m}}m ${{s}}s`;
+    return `${{s}}s`;
+}}
+
 function renderLimitBoxHtml(d, boxColorClass) {{
     if (d.status === "CANCELED") {{
         const cancelFired = d.cancel_fired || '--';
@@ -369,6 +379,18 @@ async function updateUI() {{
         document.getElementById('rate').innerText = data.funding_rate;
         document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
         updateToggleBtn(data.trading_enabled);
+
+        // Header Settlement Card calculation fix
+        if (data.target_settlement_ms && data.target_settlement_ms > 0) {{
+            const nowMs = Date.now() + (data.clock_offset_ms || 0);
+            const diffSec = Math.max(0, Math.floor((data.target_settlement_ms - nowMs) / 1000));
+            const timeStr = data.target_settlement_time || '--:--:-- IST';
+            document.getElementById('settle').innerText = `${{timeStr}} (${{formatDurationJs(diffSec)}})`;
+        }} else if (data.top_5_candidates && data.top_5_candidates.length > 0) {{
+            document.getElementById('settle').innerText = data.top_5_candidates[0].settle_str || '--:--:-- IST';
+        }} else {{
+            document.getElementById('settle').innerText = data.target_settlement || '--:--:-- IST';
+        }}
 
         const autoList = data.auto_armed_symbols || [];
         const manualList = data.manual_selected_symbols || [];
