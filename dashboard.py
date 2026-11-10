@@ -34,7 +34,7 @@ def load_blocked_coins() -> dict[str, list[str]]:
             if "permanent" not in data or not isinstance(data["permanent"], list):
                 data["permanent"] = []
             return data
-    except Exception:
+    except Exception as e:
         return default_data
 
 
@@ -43,7 +43,7 @@ def save_blocked_coins(data: dict[str, list[str]]) -> bool:
         with open(BLOCKED_COINS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return True
-    except Exception:
+    except Exception as e:
         return False
 
 
@@ -133,10 +133,17 @@ def set_dashboard_status(status_msg: str) -> None:
 
 def record_completed_trade(trade_record: dict) -> None:
     with data_lock:
-        trade_history.insert(0, trade_record)
-        if len(trade_history) > 20:
-            trade_history.pop()
-        dashboard_data["trades"] = list(trade_history)
+        # Prevent duplicate entries for the same trade/symbol and entry timestamp
+        exists = any(
+            t.get("symbol") == trade_record.get("symbol") and 
+            t.get("entry_sent") == trade_record.get("entry_sent") 
+            for t in trade_history
+        )
+        if not exists:
+            trade_history.insert(0, trade_record)
+            if len(trade_history) > 20:
+                trade_history.pop()
+            dashboard_data["trades"] = list(trade_history)
 
 
 class FundingDashboardHandler(BaseHTTPRequestHandler):
