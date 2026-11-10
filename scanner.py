@@ -1,218 +1,84 @@
 from __future__ import annotations
-import time
-import hmac
-import hashlib
-import urllib.parse
-import requests
-import config
-from datetime import datetime, timezone, timedelta
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-IST = timezone(timedelta(hours=5, minutes=30))
-_server_time_offset_ms = 0
+# Absolute path se .env load karein taaki systemd execution me API key miss na ho
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-})
+# Binance Futures API Credentials
+API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
+API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
 
+# Endpoints (Tokyo Gateway Direct Routing)
+BINANCE_REST_URL = "https://fapi.binance.com"
+BINANCE_WS_URL = "wss://fstream.binance.com"
+BINANCE_WS_API_URL = "wss://ws-fapi.binance.com/ws-fapi/v1"
 
-def sync_binance_clock() -> int:
-    global _server_time_offset_ms
-    try:
-        r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/time", timeout=2)
-        if r.status_code == 200:
-            server_ms = int(r.json().get("serverTime", 0))
-            local_ms = int(time.time() * 1000)
-            _server_time_offset_ms = server_ms - local_ms
-            return _server_time_offset_ms
-    except Exception:
-        pass
-    return _server_time_offset_ms
+# Margin & Dynamic Leverage Configuration ($3.00 USDT Base Margin @ 20x)
+TRADE_MARGIN_USD = 3.00                # Scanner preflight & UI base margin reference ($3.00 USDT)
+LIMIT_ORDER_MARGIN_USD = 3.00          # Shallow limits (aur Cond 1 DCA) ke liye fixed $3.00 USDT margin
+DCA_SPLIT_MARGIN_USD = 1.50            # Cond 2 (<0.90% FR) ke 2 DCA orders ke liye 50-50 split ($1.50 USDT each)
+MAX_LEVERAGE_CAP = 20.0                # 20x hard cap ceiling ($1.50 * 20 = $30.0 USDT > $5.0 min notional)
+BINANCE_MIN_NOTIONAL = 5.0             # Binance Futures minimum notional safety threshold
 
+# Multi-Coin Auto-Arm Configuration (Max 2 Coins)
+MAX_AUTO_ARM_COINS = 2                 # Maximum 2 coins threshold criteria pura hone par auto-arm honge
 
-def get_synced_time_ms() -> int:
-    return int(time.time() * 1000) + _server_time_offset_ms
+# Scanner Base Eligibility & Danger Ceiling
+MIN_FUNDING_RATE = -0.0035             # Minimum -0.35% base threshold
+MAX_DANGER_FUNDING_RATE = -0.0250      # Maximum -2.50% hard risk ceiling
 
+# Smart Selection Sweet Spot Range
+SWEET_SPOT_MIN = -0.0130               # -1.30%
+SWEET_SPOT_MAX = -0.0080               # -0.80%
 
-def precision_wait_until(target_ms: int) -> None:
-    while True:
-        now = get_synced_time_ms()
-        rem = target_ms - now
-        if rem <= 0:
-            break
-        if rem > 100:
-            time.sleep(0.05)
-        elif rem > 10:
-            time.sleep(0.002)
-        else:
-            pass
+# Funding Rate Threshold for Condition 1 vs Condition 2
+FR_THRESHOLD_RATIO = 0.0090            # 0.90% boundary (|FR| >= 0.90% = Cond 1, < 0.90% = Cond 2)
 
+# 3 Shallow Limit Orders (30%, 50%, 70% of |FR| @ $3.00 USDT each)
+SHALLOW_LIMIT_RATIOS = (0.30, 0.50, 0.70)
 
-def format_duration(ms: int) -> str:
-    sec = max(0, int(ms / 1000))
-    m, s = divmod(sec, 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}h {m}m {s}s"
-    if m > 0:
-        return f"{m}m {s}s"
-    return f"{s}s"
+# Condition 1: High Negative Funding Rate (|FR| >= 0.90%)
+# 3 Shallow Limits ($3.00 each) + 1 DCA Limit Order at 130% of FR ($3.00), SL 0.50% below DCA Limit #1
+GRID_RATIO_DCA_HIGH = 1.30             # DCA Limit #1: 130% of funding rate
+SL_BELOW_LIMIT_RATIO_COND_1 = 0.0050   # SL: Exactly 0.50% below DCA Limit #1 Price
 
+# Condition 2: Low/Normal Negative Funding Rate (|FR| < 0.90%)
+# 3 Shallow Limits ($3.00 each) + 2 DCA Limit Orders ($1.50 each: L1 at 130% FR with 0.50% floor, L2 = L1 - 0.50%), SL 0.50% below L2
+MIN_GRID_GAP_DCA_1_LOW = 0.0050        # DCA Limit #1: Minimum 0.50% fixed floor drop (agar 130% of FR < 0.50%)
+GRID_RATIO_DCA_LOW = 1.30              # DCA Limit #1: 130% of funding rate
+L2_BELOW_L1_GAP = 0.0050               # DCA Limit #2: Exactly 0.50% below DCA Limit #1 Price
+SL_BELOW_LIMIT_RATIO_COND_2 = 0.0050   # SL: Exactly 0.50% below DCA Limit #2 Price
 
-def format_step(val: float, step: float) -> str:
-    if step <= 0:
-        return str(val)
-    precision = 0
-    s_str = f"{step:.10f}".rstrip('0')
-    if '.' in s_str:
-        precision = len(s_str.split('.')[1])
-    val_rounded = round(round(val / step) * step, precision)
-    return f"{val_rounded:.{precision}f}"
+# Scheduled Periodic Scan Pillars (Ghadi ke har ghante ke 4 fixed minutes)
+SCHEDULED_SCAN_MINUTES = (5, 20, 35, 50)
 
+# Timeline Offsets (Milliseconds before Settlement T)
+RESCAN_BEFORE_SETTLE_MS = 20000        # T-20s: Fresh market coin lock
+GC_PURGE_BEFORE_SETTLE_MS = 10000      # T-10s: Purge and pause GC (Dedicated CPU)
+WS_WARMUP_BEFORE_SETTLE_MS = 8000      # T-8s: Fresh TLS Handshake for Order WebSocket
+TCP_WARMUP_BEFORE_SETTLE_MS = 4000     # T-4s: Order WebSocket TCP Buffer Ping Warm-Up
+RECHECK_BEFORE_SETTLE_MS = 2500        # T-2.5s (2500ms): Live rate recheck & Backup Snapshot Anchor
 
-def format_tick(price: float, tick_size: float) -> str:
-    return format_step(price, tick_size)
+# Single-Shot Limit Execution Timeline Offset (Updated to T-50ms)
+ENTRY_BEFORE_SETTLE_MS = 50            # T-50ms: Single-shot burst of all 4 or 5 Limit Orders (No retries)
 
+# Post-Settlement Timeline Offsets & Strict Hard Floor Settings
+SHALLOW_CANCEL_FLOOR_MS = 228.0        # STRICT HARD FLOOR: Kisi bhi haal me T+228.0ms se pehle nahi fire hoga
+SHALLOW_CANCEL_AFTER_SETTLE_MS = 230.0 # Target cancellation strike time on Binance matching engine
+SHALLOW_CANCEL_LEAD_MIN_MS = 0.8       # Minimum clamped 1-way network lead
+SHALLOW_CANCEL_LEAD_MAX_MS = 2.0       # Maximum clamped 1-way network lead
+SHALLOW_CANCEL_LEAD_DEFAULT_MS = 1.2   # Safe fallback lead if ping not yet measured
 
-def sign_params(params: dict, secret: str) -> str:
-    query_string = urllib.parse.urlencode(params)
-    signature = hmac.new(
-        secret.encode("utf-8"),
-        query_string.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-    return signature
+CANCEL_ORDERS_AFTER_SETTLE_MS = 6000   # T+6s: Cancel remaining unfilled limit orders (DCA)
+EXIT_AFTER_SETTLE_MS = 7000            # T+7s: Scheduled 100% Market Exit
+EMERGENCY_SWEEP_AFTER_SETTLE_MS = 9000 # T+9s: Hard Emergency Sweep & Safety Net
 
+# Long-term Watchdog Delays (in seconds)
+WATCHDOG_CHECK_1_SEC = 60              # Settlement ke 1 min baad audit
+WATCHDOG_CHECK_2_SEC = 120             # Settlement ke 2 min baad audit
 
-def calculate_order_specs(symbol: str, price: float) -> tuple[str, int, float, float, float]:
-    lev = getattr(config, "LEVERAGE", 20)
-    tick_size = 0.0001
-    qty_step = 1.0
-    min_qty = 1.0
-
-    try:
-        ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=2).json()
-        for s in ex_r.get("symbols", []):
-            if s.get("symbol") == symbol:
-                for f in s.get("filters", []):
-                    if f.get("filterType") == "PRICE_FILTER":
-                        tick_size = float(f.get("tickSize", 0.0001))
-                    elif f.get("filterType") == "LOT_SIZE":
-                        qty_step = float(f.get("stepSize", 1.0))
-                        min_qty = float(f.get("minQty", 1.0))
-                break
-    except Exception:
-        pass
-
-    notional = max(5.5, float(getattr(config, "TRADE_MARGIN_USD", 3.0)) * lev)
-    raw_qty = notional / price if price > 0 else min_qty
-    qty_str = format_step(raw_qty, qty_step)
-    
-    if float(qty_str) * price < 5.2:
-        qty_str = format_step(float(qty_str) + qty_step, qty_step)
-    if float(qty_str) < min_qty:
-        qty_str = format_step(min_qty, qty_step)
-
-    return qty_str, lev, tick_size, qty_step, min_qty
-
-
-def find_top_negative_funding_candidates(
-    target_settle_ms: int = 0, 
-    preferred_symbols: list[str] = None,
-    explicitly_disarmed: list[str] = None
-) -> tuple[list[dict], int, list[dict], list[str], list[str]]:
-    if preferred_symbols is None:
-        preferred_symbols = []
-    if explicitly_disarmed is None:
-        explicitly_disarmed = []
-
-    try:
-        ex_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=3).json()
-        valid_symbols = {
-            s["symbol"] for s in ex_r.get("symbols", [])
-            if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
-        }
-    except Exception:
-        valid_symbols = set()
-
-    try:
-        prem_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex", timeout=3).json()
-    except Exception:
-        prem_r = []
-
-    volume_map = {}
-    try:
-        ticker_r = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/ticker/24hr", timeout=3).json()
-        if isinstance(ticker_r, list):
-            for t in ticker_r:
-                s_name = t.get("symbol")
-                q_vol = float(t.get("quoteVolume", 0))
-                volume_map[s_name] = q_vol
-    except Exception:
-        pass
-
-    candidates = []
-    next_funding_ms = 0
-
-    for item in prem_r:
-        sym = item.get("symbol")
-        if valid_symbols and sym not in valid_symbols:
-            continue
-        try:
-            rate = float(item.get("lastFundingRate", 0))
-            nxt_time = int(item.get("nextFundingTime", 0))
-            mark_p = float(item.get("markPrice", 0))
-        except Exception:
-            continue
-
-        if nxt_time > 0:
-            if next_funding_ms == 0 or nxt_time < next_funding_ms:
-                next_funding_ms = nxt_time
-
-        settle_time_str = "--:--:-- IST"
-        if nxt_time > 0:
-            settle_dt = datetime.fromtimestamp(nxt_time / 1000, tz=IST)
-            settle_time_str = settle_dt.strftime("%H:%M:%S IST")
-
-        vol_val = volume_map.get(sym, 0.0)
-        vol_str = f"${vol_val:,.0f}" if vol_val > 0 else "--"
-
-        candidates.append({
-            "symbol": sym,
-            "rate": rate,
-            "price": mark_p,
-            "nextFundingTime": nxt_time,
-            "settle_str": settle_time_str,
-            "vol_str": vol_str
-        })
-
-    candidates.sort(key=lambda x: x["rate"])
-    top_10 = candidates[:10]
-
-    qualified = [c for c in candidates if c["rate"] <= -config.FR_THRESHOLD_RATIO]
-
-    auto_armed = []
-    manual_armed = []
-
-    for sym in preferred_symbols:
-        if sym in explicitly_disarmed:
-            continue
-        match = next((c for c in candidates if c["symbol"] == sym), None)
-        if match:
-            manual_armed.append(sym)
-
-    for c in qualified:
-        sym = c["symbol"]
-        if sym in manual_armed or sym in explicitly_disarmed:
-            continue
-        if len(auto_armed) < 2:
-            auto_armed.append(sym)
-
-    final_selected_symbols = list(set(manual_armed + auto_armed))
-    final_selected_symbols = final_selected_symbols[:2]
-
-    chosen_candidates = [c for c in candidates if c["symbol"] in final_selected_symbols]
-    chosen_candidates.sort(key=lambda x: x["rate"])
-
-    return chosen_candidates, next_funding_ms, top_10, auto_armed, manual_armed
+# Web Server Port
+DASHBOARD_PORT = int(os.getenv("PORT", 10000))
