@@ -22,7 +22,7 @@ body {{ background-color: #0b0e11; color: #eaecef; padding: 14px; display: flex;
 .header h1 {{ font-size: 16px; color: #f0b90b; font-weight: 700; }}
 .badge {{ background: rgba(240, 185, 11, 0.15); color: #f0b90b; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }}
 .badge-mode {{ background: rgba(37, 99, 235, 0.2); color: #60a5fa; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1px solid rgba(96, 165, 250, 0.4); }}
-.badge-locked {{ background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1px solid rgba(239, 68, 68, 0.4); }}
+.badge-locked {{ background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1px solid rgba(248, 113, 113, 0.4); }}
 
 .btn-toggle {{ padding: 7px 16px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; border: none; transition: 0.2s; }}
 .btn-on {{ background: #0ecb81; color: #ffffff; }}
@@ -57,12 +57,10 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .mono {{ font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; }}
 .sub-text {{ font-size: 11px; color: #848e9c; margin-top: 2px; }}
 
-/* PnL and Funding Fee Specific Styling */
 .pnl-positive {{ color: #0ecb81 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(14, 203, 129, 0.25); }}
 .pnl-negative {{ color: #f87171 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }}
 .pnl-neutral {{ color: #848e9c !important; font-size: 13px; }}
 
-/* 2-Row Limit Order Boxes Layout (Row 1: Blue Shallow Limits, Row 2: Yellow DCA Limits) */
 .limit-rows-wrapper {{
     display: flex;
     flex-direction: column;
@@ -152,7 +150,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     display: inline-block;
 }}
 
-/* Temporary Blocked Row Styling */
 .candidate-row.row-temp-blocked {{
     background: rgba(240, 185, 11, 0.15) !important;
     border-left: 5px solid #f0b90b !important;
@@ -172,7 +169,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     display: inline-block;
 }}
 
-/* Dot Action Buttons */
 .dot-group {{
     display: flex;
     gap: 10px;
@@ -200,7 +196,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
 }}
 
-/* Blocked Coin Chips */
 .chip-blocked {{
     display: inline-flex;
     align-items: center;
@@ -317,7 +312,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 
 <!-- 2. BLOCKED COINS MANAGEMENT CARDS -->
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px;">
-    <!-- Box 1: Temporary Blocked Coins -->
     <div class="table-card">
         <div class="table-header">
             <span style="color: #f0b90b; display: flex; align-items: center; gap: 8px;">
@@ -334,7 +328,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
         </div>
     </div>
 
-    <!-- Box 2: Permanently Blocked Coins -->
     <div class="table-card">
         <div class="table-header">
             <span style="color: #f87171; display: flex; align-items: center; gap: 8px;">
@@ -352,7 +345,7 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     </div>
 </div>
 
-<!-- 3. TRADE HISTORY TABLE WITH FUNDING FEE & NET PNL COLUMNS -->
+<!-- 3. TRADE HISTORY TABLE -->
 <div class="table-card">
     <div class="table-header">
         <span>Last 20 Trades Precision Ledger</span>
@@ -400,7 +393,6 @@ function formatDurationJs(sec) {{
 }}
 
 function renderLimitBoxHtml(d, boxColorClass) {{
-    // Canceled Shallow Limit Order Box (T+230ms Telemetry)
     if (d.status === "CANCELED") {{
         const cancelFired = d.cancel_fired || '--';
         const binanceCanceled = d.binance_canceled || '--';
@@ -424,7 +416,6 @@ function renderLimitBoxHtml(d, boxColorClass) {{
         `;
     }}
 
-    // Normal Filled Limit Order Box
     const firstTime = d.first_time || d.time || '--';
     const lastTime = d.last_time || d.time || '--';
     const spanMs = (d.span_ms !== undefined && d.span_ms !== null) ? d.span_ms : 0;
@@ -571,7 +562,6 @@ async function updateUI() {{
         document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
         updateToggleBtn(data.trading_enabled);
 
-        // Update Automatic / Manual Mode Buttons
         const isManual = !!(data.manual_selected_symbol && data.manual_selected_symbol.trim().length > 0);
         const btnAuto = document.getElementById('btn-mode-auto');
         const btnManual = document.getElementById('btn-mode-manual');
@@ -615,7 +605,6 @@ async function updateUI() {{
         const tempList = blockedData.temporary || [];
         const permList = blockedData.permanent || [];
 
-        // Render Top-10 Radar Candidates Table
         const cBody = document.getElementById('candidates-body');
         if (data.top_5_candidates && data.top_5_candidates.length > 0) {{
             const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--"));
@@ -660,7 +649,6 @@ async function updateUI() {{
             }}).join('');
         }}
 
-        // Render Blocked Coins Management Cards
         document.getElementById('temp-count').innerText = tempList.length;
         document.getElementById('perm-count').innerText = permList.length;
 
@@ -708,7 +696,6 @@ async function updateUI() {{
             }}
         }}
 
-        // Render Trades History with Funding Fee & Net PnL Columns
         const tbody = document.getElementById('trades-body');
         if (!data.trades || data.trades.length === 0) {{
             tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for trades to execute...</td></tr>';
