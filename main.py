@@ -46,7 +46,6 @@ def get_strategy_label(rate_val: float) -> str:
 
 
 def evaluate_dca_condition_specs(current_rate: float) -> tuple[float, float, float, str, bool]:
-    """Funding rate ke aadhar par Condition 1 ya Condition 2 ke fixed deep DCA ratios aur SL return karta hai"""
     abs_r = abs(float(current_rate))
     if abs_r >= config.FR_THRESHOLD_RATIO:
         g1 = round(abs_r * config.GRID_RATIO_DCA_HIGH, 5)
@@ -107,7 +106,6 @@ def run_dump_dip_engine() -> None:
         with data_lock:
             dashboard_data["top_5_candidates"] = top_10
 
-        # Clock-Aligned IDLE Mode: Fixed scheduled minutes (5, 20, 35, 50) tak wait karein
         if not target_symbol or next_funding_ms == 0:
             idle_wait_sec, next_scan_time_str = get_seconds_until_next_scheduled_scan()
             with data_lock:
@@ -171,7 +169,6 @@ def run_dump_dip_engine() -> None:
                     dashboard_data["force_rescan"] = False
                 user_selected = dashboard_data.get("manual_selected_symbol")
 
-            # Check if currently armed coin got blocked in real-time
             blocked_now = load_blocked_coins()
             if target_symbol in blocked_now.get("temporary", []) or target_symbol in blocked_now.get("permanent", []):
                 add_ui_log(f"🚫 [ARMED COIN BLOCKED] {target_symbol} was blocked! Gracefully unarming, waiting 2s for clean re-scan...")
@@ -181,7 +178,6 @@ def run_dump_dip_engine() -> None:
                 abort_cycle = True
                 break
 
-            # A. T-2 MINUTE (120s) PRE-LOCK AUDIT (Accurate Rest API Refresh)
             if current_sec_left <= 120 and current_sec_left > 65 and not t120_scan_done:
                 t120_scan_done = True
                 add_ui_log("🔍 [T-2m PRE-LOCK AUDIT SCAN] Pulling fresh market data via REST API before 1-min lock window...")
@@ -282,7 +278,6 @@ def run_dump_dip_engine() -> None:
 
                     add_ui_log("✅ [T-2m PRE-LOCK AUDIT COMPLETE] Radar refreshed. 60 seconds left for manual selection!")
 
-            # B. INSTANT EVENT-DRIVEN RE-SCAN
             if need_instant_scan:
                 add_ui_log("⚡ [INSTANT EVENT SCAN TRIGGERED] Waiting 2s grace period before fresh market audit...")
                 time.sleep(2.0)
@@ -331,7 +326,6 @@ def run_dump_dip_engine() -> None:
                         abort_cycle = True
                         break
 
-            # C. PERIODIC SCAN
             current_dt = datetime.now(IST)
             current_minute = current_dt.minute
             if current_minute in config.SCHEDULED_SCAN_MINUTES and current_minute != last_clock_scan_min and remaining_ms > 120000:
@@ -467,7 +461,6 @@ def run_dump_dip_engine() -> None:
                 time.sleep(1.0)
             continue
 
-        # PHASE 1: T-20s Fresh Scan
         precision_wait_until(t_rescan_20s)
         add_ui_log("[T-20s FRESH SCAN] Re-evaluating selected coin & rates...")
         sync_binance_clock()
@@ -476,7 +469,6 @@ def run_dump_dip_engine() -> None:
             active_target = manual_coin or target_symbol
             dashboard_data["selection_locked"] = True
 
-        # Safety Check: if target coin got blocked, abort immediately
         blocked_now = load_blocked_coins()
         if active_target in blocked_now.get("temporary", []) or active_target in blocked_now.get("permanent", []):
             add_ui_log(f"[T-20s SCAN ABORT] Target coin ({active_target}) is in block list. Aborting cycle safely!")
@@ -520,25 +512,22 @@ def run_dump_dip_engine() -> None:
             dashboard_data["active_tier"] = strategy_label
             dashboard_data["status"] = f"LOCKED: {target_symbol} | {strategy_label}"
 
-        # Timeline markers
-        t_gc_purge = settle_epoch - config.GC_PURGE_BEFORE_SETTLE_MS             # T-10s
-        t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS           # T-8s TLS Handshake
-        t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS         # T-4s Ping Buffer Warmup & RTT measurement
-        t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS               # T-2.5s (2500ms)
-        t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS             # T-50ms Single-Shot Limit Burst
+        t_gc_purge = settle_epoch - config.GC_PURGE_BEFORE_SETTLE_MS
+        t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS
+        t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS
+        t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS
+        t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS
 
-        # Default placeholder before T-4s ping measurement
         t_cancel_shallow = settle_epoch + config.SHALLOW_CANCEL_FLOOR_MS
 
-        t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS    # T+6s
-        t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS            # T+7s
-        t_emergency_sweep = settle_epoch + config.EMERGENCY_SWEEP_AFTER_SETTLE_MS # T+9s
+        t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS
+        t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS
+        t_emergency_sweep = settle_epoch + config.EMERGENCY_SWEEP_AFTER_SETTLE_MS
 
         entry_dispatch_time = ""
         t2_snapshot_price = last_price
         cycle_order_start_ms = 0
 
-        # Ratios & Notionals Locked at T-20s (Dynamic Condition 1 vs 2)
         gap_dca_1, _, sl_ratio, condition_label, is_cond_1 = evaluate_dca_condition_specs(rate)
         shallow_notional_usd = max(5.5, config.LIMIT_ORDER_MARGIN_USD * applied_leverage)
         dca_cond1_notional_usd = max(5.5, config.LIMIT_ORDER_MARGIN_USD * applied_leverage)
@@ -565,13 +554,11 @@ def run_dump_dip_engine() -> None:
                 precision_wait_until(t_scheduled_exit)
                 continue
 
-            # Phase 2A (T-10s): GC Purge & Pause
             precision_wait_until(t_gc_purge)
             gc.collect()
             gc.disable()
             add_ui_log("[PRE-ENTRY T-10s] GC cleaned and paused. Dedicated CPU locked.")
 
-            # Phase 2B (T-8s): Zero-Clash Order WebSocket Re-Arm & Fresh TLS Handshake
             precision_wait_until(t_ws_warmup)
             add_ui_log("🔌 [PRE-WARM T-8s] Refreshing Order WebSocket TLS session to eliminate dormant disconnects...")
             ws_pipeline.reconnect_order_ws()
@@ -583,14 +570,12 @@ def run_dump_dip_engine() -> None:
             else:
                 add_ui_log("⚠️ [PRE-WARM T-8s WARNING] Order WebSocket re-arming in progress...")
 
-            # Phase 2C (T-4s): Order WebSocket Ping Buffer Warm-Up & Dynamic Latency Measurement
             precision_wait_until(t_tcp_warmup)
             if ws_pipeline.ping_order_ws():
                 add_ui_log("🔥 [PRE-WARM at T-4s] Order WebSocket ping frame sent. Measuring live RTT...")
             else:
                 add_ui_log("⚠️ [PRE-WARM at T-4s WARNING] Ping warm-up frame skipped (socket not ready).")
 
-            # Phase 3 (T-2.5s / 2500ms): Pure Price Snapshot Anchor Lock (Backup)
             precision_wait_until(t_recheck)
             try:
                 r_check = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex?symbol={target_symbol}", timeout=1.2).json()
@@ -616,13 +601,11 @@ def run_dump_dip_engine() -> None:
             except Exception as t_err:
                 add_ui_log(f"⚠️ [T-2.5s RECHECK WARNING] REST glitch ({t_err}). Using verified snapshot.")
 
-            # Compute Dynamic 1-way Network Lead Time with STRICT 228.0ms HARD FLOOR GUARD
             dynamic_lead = ws_pipeline.get_measured_lead_latency_ms()
             target_strike_ms = settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS
             computed_trigger = target_strike_ms - dynamic_lead
             floor_trigger = settle_epoch + config.SHALLOW_CANCEL_FLOOR_MS
 
-            # Kisi bhi haal me 228ms se pehle nahi fire hoga (Strict Hard Floor)
             t_cancel_shallow = max(floor_trigger, computed_trigger)
 
             add_ui_log(
@@ -632,12 +615,10 @@ def run_dump_dip_engine() -> None:
                 f"Effective Dispatch: T+{t_cancel_shallow - settle_epoch:.2f}ms"
             )
 
-            # Phase 4 (T-50ms): SINGLE-SHOT ORDERED LIMIT BURST (NO RETRIES)
             precision_wait_until(t_limit_burst)
             cycle_order_start_ms = int(get_synced_time_ms()) - 1000
             entry_dispatch_time = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
 
-            # Anchor Price: Priority 1 = Latest Live WS Ticker (T-50ms / T-150ms buffer), Priority 2 = T-2.5s Snapshot
             live_ws_p = ws_pipeline.get_live_price(target_symbol)
             if live_ws_p and live_ws_p > 0:
                 anchor_price = live_ws_p
@@ -649,7 +630,6 @@ def run_dump_dip_engine() -> None:
             dec_anchor = Decimal(str(anchor_price))
             abs_rate_dec = Decimal(str(abs(float(rate))))
 
-            # Build Batch of Limit Orders (3 Shallow Limits @ 30%, 50%, 70% + 1 or 2 DCA Limits)
             limit_orders_batch: list[tuple[str, str, str, float, str]] = []
             planned_shallow_map: dict[str, dict] = {}
 
@@ -674,7 +654,6 @@ def run_dump_dip_engine() -> None:
                 }
 
             if is_cond_1:
-                # Condition 1: 1 DCA Limit Order at 130% of |FR| ($1.50 USDT Margin), SL 0.50% below DCA Limit #1
                 dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(gap_dca_1)))
                 dca1_price_str = format_tick(float(dca1_p_dec), tick_size)
                 dca1_qty = format_limit_qty(dca_cond1_notional_usd, dca1_price_str, min_qty, qty_step)
@@ -684,7 +663,6 @@ def run_dump_dip_engine() -> None:
                 sl_target_price = float(sl_dec)
                 sl_target_str = format_tick(sl_target_price, tick_size)
             else:
-                # Condition 2: 2 DCA Limit Orders ($0.75 USDT Margin each: L1 >= 0.50% floor, L2 = L1 - 0.50%), SL 0.50% below DCA Limit #2
                 dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(gap_dca_1)))
                 dca1_price_str = format_tick(float(dca1_p_dec), tick_size)
                 dca1_qty = format_limit_qty(dca_cond2_notional_usd, dca1_price_str, min_qty, qty_step)
@@ -705,12 +683,10 @@ def run_dump_dip_engine() -> None:
                 f"(${config.LIMIT_ORDER_MARGIN_USD} Base @ {applied_leverage}x) | Anchor ({anchor_src}): {anchor_price:.6f} | {condition_label}"
             )
 
-            # Flush all 4 or 5 Limit Orders in strict sequential queue (#1 -> #2 -> #3 -> #4 -> #5) within 1ms
             executor.execute_limit_burst_ws(ws_pipeline, target_symbol, limit_orders_batch)
 
             add_ui_log(f"🛡️ [STOP LOSS ARMED] Floor: {sl_target_str} USDT (Pure Trade LTP Trigger)")
 
-            # Phase 5: Real-Trade (LTP) Stop Loss Watchdog Loop + T+230ms Shallow Cancel Burst
             exit_triggered = False
             shallow_cancel_fired = False
             exit_reason = ""
@@ -721,7 +697,6 @@ def run_dump_dip_engine() -> None:
             while get_synced_time_ms() < t_cancel_orders:
                 now_loop_ms = get_synced_time_ms()
 
-                # T+230ms (Strict Floor >= 228ms): Simultaneous WS cancel burst for 3 Shallow orders ONLY
                 if not shallow_cancel_fired and now_loop_ms >= t_cancel_shallow:
                     shallow_cancel_fired = True
                     threading.Thread(
@@ -740,7 +715,6 @@ def run_dump_dip_engine() -> None:
                     exit_status = "STOP LOSS EXECUTED (MAX LOSS SHIELD)"
                     add_ui_log(f"🚨 [{exit_reason}] Triggering Emergency Stop Loss Priority...")
 
-                    # STEP 1: CLOSE POSITION FIRST VIA ZERO-DELAY WEBSOCKET COUNTER (2-4ms)
                     ws_pos = ws_pipeline.get_filled_qty(target_symbol)
                     exit_qty = format_step(ws_pos, qty_step) if ws_pos > 0 else qty_str
 
@@ -752,11 +726,9 @@ def run_dump_dip_engine() -> None:
                     else:
                         add_ui_log("🛡️ [SL PRIORITY #1] Verified: 0 open WS position to close.")
 
-                    # STEP 2: CANCEL ALL REMAINING LIMIT ORDERS SECOND (Ultra-Fast WS)
                     add_ui_log("🧹 [SL PRIORITY #2] Position closed! Purging all open limit orders via Fast-Lane WS...")
                     executor.fast_cancel_all_orders(ws_pipeline, target_symbol, all_cycle_cids)
 
-                    # STEP 3: FINAL REMNANT SWEEP (REST API Cross-Check)
                     rem_pos = executor.fetch_live_position_size(target_symbol)
                     if rem_pos > 0:
                         rem_qty = format_step(rem_pos, qty_step)
@@ -768,7 +740,6 @@ def run_dump_dip_engine() -> None:
 
                 time.sleep(0.001)
 
-            # Phase 6: Normal Settlement Exit (T+6s Cancel Unfilled Limits -> T+7s Market Exit)
             if not exit_triggered:
                 precision_wait_until(t_cancel_orders)
                 add_ui_log(f"⚡ [T+{(config.CANCEL_ORDERS_AFTER_SETTLE_MS // 1000)}s SETTLEMENT FEE CAPTURED] Purging remaining unfilled limit orders via Fast WS...")
@@ -794,7 +765,6 @@ def run_dump_dip_engine() -> None:
                     exit_status = "CLEAN PASS (NO LIMIT FILLED)"
                     add_ui_log("🛡️ [CLEAN PASS] 0 limit orders filled during dip window. Skipping exit sell.")
 
-            # Phase 7: Post-Trade Official Millisecond Reconciliation & PnL Audit via Binance REST API
             add_ui_log("📊 [POST-TRADE AUDIT] Reconciling official millisecond timestamps and PnL from Binance...")
             rec_entry_p, rec_exit_p, rec_entry_t, rec_exit_t, rec_dca_hits, rec_pnl = executor.fetch_post_trade_reconciliation(
                 target_symbol, cycle_order_start_ms or (settle_epoch - 5000)
@@ -806,7 +776,6 @@ def run_dump_dip_engine() -> None:
             exit_fill_time = rec_exit_t or ws_pipeline.get_last_fill_time(target_symbol) or datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
             dca_hits_list = rec_dca_hits or ws_pipeline.get_dca_hits(target_symbol)
 
-            # Ensure all 3 Shallow Order boxes ALWAYS appear in Row 1 (Filled vs Canceled Telemetry)
             filled_shallow_indices = {h.get("sort_idx") for h in dca_hits_list if h.get("group") == "shallow"}
             for cid_s, p_info in planned_shallow_map.items():
                 s_idx = p_info["sort_idx"]
@@ -832,7 +801,6 @@ def run_dump_dip_engine() -> None:
                         "cancel_latency_ms": lat
                     })
 
-            # Re-sort dca_hits_list so Shallow #1 -> #2 -> #3 -> DCA #1 -> DCA #2 are in strict order
             dca_hits_list.sort(key=lambda x: (x.get("sort_idx", 99), x.get("first_ms", 0)))
 
             if final_avg_entry > 0:
