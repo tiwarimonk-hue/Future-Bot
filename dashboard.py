@@ -75,8 +75,8 @@ def block_coin(symbol: str, block_type: str) -> tuple[bool, str]:
         dashboard_data["blocked_coins"] = data
         dashboard_data["force_rescan"] = True
 
-        if symbol in dashboard_data.get("manual_selected_symbols", []):
-            dashboard_data["manual_selected_symbols"].remove(symbol)
+        if dashboard_data.get("manual_selected_symbol") == symbol:
+            dashboard_data["manual_selected_symbol"] = ""
 
     add_ui_log(f"🚫 [COIN BLOCKED] {symbol} moved to {block_type.upper()} block list.")
     return True, f"{symbol} added to {block_type} block list"
@@ -108,9 +108,7 @@ def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
 
 
 dashboard_data = {
-    "target_symbols": ["Scanning..."],
     "target_symbol": "Scanning...",
-    "funding_rates": ["0.00%"],
     "funding_rate": "0.00%",
     "active_tier": "IDLE",
     "status": f"Initializing Binance Funding Sniper (T-{config.ENTRY_BEFORE_SETTLE_MS}ms)...",
@@ -121,8 +119,7 @@ dashboard_data = {
     "margin_usd": f"${config.TRADE_MARGIN_USD} USDT",
     "trades": trade_history,
     "trading_enabled": True,
-    "manual_selected_symbols": [],
-    "disarmed_symbols": [],
+    "manual_selected_symbol": "",
     "selection_locked": False,
     "force_rescan": False,
     "top_5_candidates": [],
@@ -185,11 +182,10 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
                         return
 
-                    dashboard_data["manual_selected_symbols"] = []
-                    dashboard_data["disarmed_symbols"] = []
+                    dashboard_data["manual_selected_symbol"] = ""
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Resetting manual targets & disarms...")
+                add_ui_log("🔄 [MODE SWITCH] Switched back to AUTOMATIC mode. Resetting manual target...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -223,30 +219,21 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "message": f"{selected_sym} is BLOCKED! Unblock it first to trade."}).encode("utf-8"))
                         return
 
-                    manual_list = dashboard_data.setdefault("manual_selected_symbols", [])
-                    disarmed_list = dashboard_data.setdefault("disarmed_symbols", [])
-
-                    # If already manually armed, toggle to disarm/remove
-                    if selected_sym in manual_list:
-                        manual_list.remove(selected_sym)
-                        if selected_sym not in disarmed_list:
-                            disarmed_list.append(selected_sym)
-                        action_msg = f"Manually disarmed {selected_sym}. Trade safety lock applied."
+                    if dashboard_data.get("manual_selected_symbol") == selected_sym:
+                        dashboard_data["manual_selected_symbol"] = ""
+                        action_msg = f"Deselected {selected_sym}. Reverting to AUTOMATIC mode."
                     else:
-                        if selected_sym in disarmed_list:
-                            disarmed_list.remove(selected_sym)
-                        if selected_sym not in manual_list:
-                            manual_list.append(selected_sym)
-                        action_msg = f"Manually armed {selected_sym} (Max 2)."
+                        dashboard_data["manual_selected_symbol"] = selected_sym
+                        action_msg = f"Switched to MANUAL mode ({selected_sym})."
 
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg}")
+                add_ui_log(f"🎯 [RADAR SELECTION] {action_msg} Triggering instant real-time market audit...")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "manual_selected_symbols": dashboard_data["manual_selected_symbols"], "disarmed_symbols": dashboard_data["disarmed_symbols"]}).encode("utf-8"))
+                self.wfile.write(json.dumps({"success": True, "selected": dashboard_data["manual_selected_symbol"]}).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(400)
