@@ -5,7 +5,7 @@ import json
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 import requests
 import websocket
 import config
@@ -19,15 +19,15 @@ def resolve_limit_level_meta(client_order_id: str, fallback_id: Any = "") -> tup
     clientOrderId ke aadhar par (Level Name, Group ['shallow' | 'dca'], Sort Index [1..5]) return karta hai.
     """
     cid = (client_order_id or "").lower()
-    if "shlw1" in cid:
+    if "shlw1" in cid or "s1-" in cid:
         return "Shallow Limit #1 (30% FR)", "shallow", 1
-    if "shlw2" in cid:
+    if "shlw2" in cid or "s2-" in cid:
         return "Shallow Limit #2 (50% FR)", "shallow", 2
-    if "shlw3" in cid:
+    if "shlw3" in cid or "s3-" in cid:
         return "Shallow Limit #3 (70% FR)", "shallow", 3
-    if "dca-dip1" in cid:
+    if "dca-dip1" in cid or "d1-" in cid:
         return "DCA Limit #1", "dca", 4
-    if "dca-dip2" in cid:
+    if "dca-dip2" in cid or "d2-" in cid:
         return "DCA Limit #2", "dca", 5
     lbl = f"Limit Order #{fallback_id}" if fallback_id else "Limit Order Fill"
     return lbl, "shallow", 99
@@ -60,7 +60,7 @@ class BinanceFastLaneWS:
         self.order_registry: dict[str, dict[str, Any]] = {}
         self.live_prices: dict[str, float] = {}
         self.last_traded_prices: dict[str, float] = {}
-        self.current_subscribed_symbol: Optional[str] = None
+        self.current_subscribed_symbols: list[str] = []
 
         self.pending_order_events: dict[str, threading.Event] = {}
         self.pending_order_responses: dict[str, dict[str, Any]] = {}
@@ -81,9 +81,12 @@ class BinanceFastLaneWS:
         self.active_limit_orders: set[str] = set()
         self.shallow_cancels_telemetry: dict[str, dict[str, Any]] = {}
 
-        # Live Dynamic Latency Measurement (T-4s Ping RTT)
+        # Live Dynamic Latency Measurement (T-4s Backup Ping + T-500ms 3-Ping Burst)
         self.ping_send_perf: float = 0.0
         self.last_measured_rtt_ms: float = 2.4
+        self.ping_burst_send_perfs: dict[str, float] = {}
+        self.ping_burst_rtts: dict[str, float] = {}
+        self.ping_burst_events: dict[str, threading.Event] = {}
 
     def reset_cycle_state(self, symbol: str) -> None:
         with self.ws_lock:
@@ -98,14 +101,19 @@ class BinanceFastLaneWS:
             self.dca_hits.pop(symbol, None)
             self.long_filled_symbols.discard(symbol)
             self.position_closed_symbols.discard(symbol)
+
+    def clear_global_cycle_telemetry(self) -> None:
+        """Har settlement cycle ke ant me RAM ke saare global buffers aur telemetry 100% purge karta hai"""
+        with self.ws_lock:
             self.rejected_orders.clear()
             self.pending_order_events.clear()
             self.pending_order_responses.clear()
             self.active_limit_orders.clear()
             self.shallow_cancels_telemetry.clear()
             self.ping_send_perf = 0.0
-
-            # Instant memory clean slate har cycle ke baad
+            self.ping_burst_send_perfs.clear()
+            self.ping_burst_rtts.clear()
+            self.ping_burst_events.clear()
             self.order_registry.clear()
 
     def acquire_listen_key(self) -> bool:
@@ -184,7 +192,6 @@ class BinanceFastLaneWS:
                     elif is_closed_state:
                         self.active_limit_orders.discard(client_order_id)
                     if execution_type == "CANCELED" and client_order_id in self.shallow_cancels_telemetry:
-                        # Binance matching engine exact cancel timestamp
                         self.shallow_cancels_telemetry[client_order_id]["binance_engine_ms"] = trade_ts_ms
 
             if execution_type == "TRADE" and last_filled_qty > 0:
@@ -211,7 +218,7 @@ class BinanceFastLaneWS:
                             self.dca_hits[sym] = []
 
                         # Group partial fills per limit order level (1 box per limit order)
-                        existing_hit = next((h for h in self.dca_hits[sym] if h.get("level") == lvl_name), None)
+                        existing_hit = next((h for h in self.dca_hits[sym] if h.get("level") == lvl_name or h.get("sort_idx") == s_idx), None)
                         if existing_hit is None:
                             clean_q = int(last_filled_qty) if float(last_filled_qty).is_integer() else round(last_filled_qty, 6)
                             hit_record = {
@@ -295,11 +302,11 @@ class BinanceFastLaneWS:
     def on_order_message(self, ws: Any, message: str) -> None:
         try:
             data = json.loads(message)
-            req_id = data.get("id", "")
+            req_id = str(data.get("id", ""))
             status_code = data.get("status")
             res_obj = data.get("result", {})
 
-            # Measure Live WebSocket RTT when warmup-ping response arrives
+            # 1. Measure Backup WebSocket RTT when T-4s warmup-ping response arrives
             if req_id == "warmup-ping":
                 if self.ping_send_perf > 0:
                     measured_rtt = (time.perf_counter() - self.ping_send_perf) * 1000.0
@@ -307,9 +314,23 @@ class BinanceFastLaneWS:
                         self.last_measured_rtt_ms = measured_rtt
                     one_way_lead = measured_rtt / 2.0
                     self.log_fn(
-                        f"🔥 [WS RTT MEASURED] Warm-up ping RTT: {measured_rtt:.2f}ms "
-                        f"(Dynamic 1-way Lead: {one_way_lead:.2f}ms)"
+                        f"🔥 [BACKUP WS RTT (T-4s)] Warm-up ping RTT: {measured_rtt:.2f}ms "
+                        f"(Backup 1-way Lead: {one_way_lead:.2f}ms)"
                     )
+                return
+
+            # 2. Measure Fresh Multi-Ping Burst RTTs at T-500ms
+            if req_id.startswith("burst-ping-"):
+                t_recv_perf = time.perf_counter()
+                with self.ws_lock:
+                    t_send_perf = self.ping_burst_send_perfs.get(req_id, 0.0)
+                    if t_send_perf > 0:
+                        rtt_ms = (t_recv_perf - t_send_perf) * 1000.0
+                        if rtt_ms > 0:
+                            self.ping_burst_rtts[req_id] = rtt_ms
+                    ev = self.ping_burst_events.get(req_id)
+                if ev is not None:
+                    ev.set()
                 return
 
             if req_id and (status_code == 200 or res_obj.get("status") in ("NEW", "FILLED", "PARTIALLY_FILLED")):
@@ -336,7 +357,6 @@ class BinanceFastLaneWS:
             self.status_fn("BINANCE TOKYO WS (READY)")
 
     def reconnect_order_ws(self) -> None:
-        """T-8s par purane dormant TLS session ko close karke fresh handshake trigger karta hai"""
         with self.ws_lock:
             self.order_ws_ready = False
         if self.order_ws:
@@ -346,7 +366,6 @@ class BinanceFastLaneWS:
                 pass
 
     def ping_order_ws(self) -> bool:
-        """T-4s par raw JSON RPC ping frame bhejkar TCP/TLS buffers ko awake karta hai aur RTT measure karta hai"""
         if self.order_ws and self.order_ws_ready:
             try:
                 self.ping_send_perf = time.perf_counter()
@@ -358,15 +377,67 @@ class BinanceFastLaneWS:
                 return False
         return False
 
+    def ping_order_ws_burst(self, count: int = 3, interval_sec: float = 0.025, timeout_per_ping: float = 0.075) -> float:
+        if not self.order_ws or not self.order_ws_ready:
+            self.log_fn("⚠️ [T-500ms MULTI-PING SKIPPED] Order WS not ready; using T-4s backup RTT.")
+            return self.last_measured_rtt_ms
+
+        with self.ws_lock:
+            self.ping_burst_send_perfs.clear()
+            self.ping_burst_rtts.clear()
+            self.ping_burst_events.clear()
+
+        measured_list: list[float] = []
+
+        for idx in range(1, count + 1):
+            req_id = f"burst-ping-{idx}"
+            ev = threading.Event()
+            with self.ws_lock:
+                self.ping_burst_events[req_id] = ev
+                self.ping_burst_send_perfs[req_id] = time.perf_counter()
+
+            try:
+                with self.order_send_lock:
+                    self.order_ws.send(json.dumps({"id": req_id, "method": "ping"}))
+            except Exception:
+                with self.ws_lock:
+                    self.ping_burst_events.pop(req_id, None)
+                    self.ping_burst_send_perfs.pop(req_id, None)
+                continue
+
+            ev.wait(timeout=timeout_per_ping)
+            with self.ws_lock:
+                rtt_val = self.ping_burst_rtts.get(req_id)
+                self.ping_burst_events.pop(req_id, None)
+                if rtt_val is not None and rtt_val > 0:
+                    measured_list.append(rtt_val)
+
+            if idx < count and interval_sec > 0:
+                time.sleep(interval_sec)
+
+        if measured_list:
+            best_min_rtt = min(measured_list)
+            with self.ws_lock:
+                self.last_measured_rtt_ms = best_min_rtt
+            samples_str = ", ".join(f"{x:.2f}ms" for x in measured_list)
+            self.log_fn(
+                f"🎯 [T-500ms 3-PING BURST LOCKED] Samples: [{samples_str}] | "
+                f"Min RTT: {best_min_rtt:.2f}ms -> Fresh 1-Way Lead: {best_min_rtt / 2.0:.2f}ms"
+            )
+            return best_min_rtt
+        else:
+            self.log_fn(
+                f"⚠️ [T-500ms MULTI-PING TIMEOUT] Retaining T-4s Backup RTT: {self.last_measured_rtt_ms:.2f}ms "
+                f"(1-Way Lead: {self.last_measured_rtt_ms / 2.0:.2f}ms)"
+            )
+            return self.last_measured_rtt_ms
+
     def get_measured_lead_latency_ms(
         self,
         min_lead: float = config.SHALLOW_CANCEL_LEAD_MIN_MS,
         max_lead: float = config.SHALLOW_CANCEL_LEAD_MAX_MS,
         default_lead: float = config.SHALLOW_CANCEL_LEAD_DEFAULT_MS
     ) -> float:
-        """
-        T-4s par naape gaye live RTT se dynamic 1-way flight latency nikalta hai (clamped between safe bounds).
-        """
         with self.ws_lock:
             if self.last_measured_rtt_ms > 0:
                 raw_lead = self.last_measured_rtt_ms / 2.0
@@ -427,22 +498,24 @@ class BinanceFastLaneWS:
             return {"error": "Timeout waiting for WebSocket order confirmation"}
         return res
 
-    def place_orders_burst_ws(self, symbol: str, orders_batch: list[tuple[str, str, str, float, str]],
-                              timeout: float = 0.09) -> list[tuple[str, str, str, float, str, dict]]:
-        """
-        T-50ms par saare 4 ya 5 limit orders ko exact sequence (30% -> 50% -> 70% -> DCA#1 -> DCA#2)
-        me ek hi millisecond ke andar socket pipeline me flush karta hai, bina thread lock race ke.
-        """
+    def place_multi_symbol_burst_ws(
+        self,
+        multi_orders_batch: list[tuple[str, str, str, str, float, str]],
+        timeout: float = 0.09
+    ) -> list[tuple[str, str, str, str, float, str, dict]]:
         if not self.order_ws or not self.order_ws_ready:
-            return [(cid, q, p, r, lbl, {"error": "Order WebSocket not connected"}) for cid, q, p, r, lbl in orders_batch]
+            return [
+                (sym, cid, q, p, r, lbl, {"error": "Order WebSocket not connected"})
+                for sym, cid, q, p, r, lbl in multi_orders_batch
+            ]
 
         timestamp_ms = int(time.time() * 1000)
         prepared_frames: list[tuple[str, str]] = []
 
-        for cid, q_str, p_str, _, _ in orders_batch:
+        for sym, cid, q_str, p_str, _, _ in multi_orders_batch:
             sign_dict = {
                 "apiKey": self.api_key,
-                "symbol": symbol,
+                "symbol": sym,
                 "side": "BUY",
                 "type": "LIMIT",
                 "quantity": q_str,
@@ -466,7 +539,6 @@ class BinanceFastLaneWS:
             self.pending_order_events[cid] = event
             prepared_frames.append((cid, json.dumps(payload)))
 
-        # Single locked sequential flush: 30% -> 50% -> 70% -> DCA #1 -> DCA #2
         send_errors: dict[str, str] = {}
         with self.order_send_lock:
             for cid, raw_frame in prepared_frames:
@@ -476,12 +548,11 @@ class BinanceFastLaneWS:
                     send_errors[cid] = f"WS send error: {e}"
                     self.pending_order_events.pop(cid, None)
 
-        # Wait for all confirmations within shared deadline
         deadline = time.time() + timeout
-        results: list[tuple[str, str, str, float, str, dict]] = []
-        for cid, q_str, p_str, r_val, lbl in orders_batch:
+        results: list[tuple[str, str, str, str, float, str, dict]] = []
+        for sym, cid, q_str, p_str, r_val, lbl in multi_orders_batch:
             if cid in send_errors:
-                results.append((cid, q_str, p_str, r_val, lbl, {"error": send_errors[cid]}))
+                results.append((sym, cid, q_str, p_str, r_val, lbl, {"error": send_errors[cid]}))
                 continue
 
             ev = self.pending_order_events.get(cid)
@@ -494,12 +565,17 @@ class BinanceFastLaneWS:
             self.pending_order_events.pop(cid, None)
             if not confirmed or res is None:
                 res = {"error": "Timeout waiting for WebSocket order confirmation"}
-            results.append((cid, q_str, p_str, r_val, lbl, res))
+            results.append((sym, cid, q_str, p_str, r_val, lbl, res))
 
         return results
 
+    def place_orders_burst_ws(self, symbol: str, orders_batch: list[tuple[str, str, str, float, str]],
+                              timeout: float = 0.09) -> list[tuple[str, str, str, float, str, dict]]:
+        multi_input = [(symbol, cid, q, p, r, lbl) for cid, q, p, r, lbl in orders_batch]
+        multi_res = self.place_multi_symbol_burst_ws(multi_input, timeout=timeout)
+        return [(cid, q, p, r, lbl, res) for _, cid, q, p, r, lbl, res in multi_res]
+
     def cancel_order_ws(self, symbol: str, client_order_id: str, timeout: float = 0.25) -> dict:
-        """Fast-Lane WebSocket se single clientOrderId ko 2-4ms me cancel karta hai"""
         if not self.order_ws or not self.order_ws_ready:
             return {"error": "Order WebSocket not connected"}
 
@@ -541,11 +617,7 @@ class BinanceFastLaneWS:
             return {"error": "Timeout waiting for WS order.cancel"}
         return res
 
-    def cancel_orders_batch_ws(self, symbol: str, client_order_ids: list[str], timeout: float = 0.08) -> list[tuple[str, dict]]:
-        """
-        T+230ms par teeno shallow limit orders ke liye simultaneous order.cancel frames flush karta hai.
-        Local hardware clock ka exact fired timestamp (fired_local_ms) aur Binance engine updateTime alag-alag record karta hai.
-        """
+    def cancel_orders_batch_ws(self, symbol: str, client_order_ids: Sequence[str], timeout: float = 0.08) -> list[tuple[str, dict]]:
         valid_cids = [c for c in client_order_ids if c]
         if not self.order_ws or not self.order_ws_ready:
             return [(cid, {"error": "Order WebSocket not connected"}) for cid in valid_cids]
@@ -577,7 +649,6 @@ class BinanceFastLaneWS:
             prepared_frames.append((cid, cancel_req_id, json.dumps(payload)))
 
         send_errors: dict[str, str] = {}
-        # Pure local VPS hardware time when frame is pushed to network
         fired_local_exact_ts_ms = int(time.time() * 1000)
 
         with self.order_send_lock:
@@ -626,7 +697,6 @@ class BinanceFastLaneWS:
             return dict(self.shallow_cancels_telemetry.get(cid, {}))
 
     def cancel_all_orders_ws(self, symbol: str, timeout: float = 0.3) -> dict:
-        """Fast-Lane WebSocket se symbol ke saare open orders ko 2-4ms me cancelAll karta hai"""
         if not self.order_ws or not self.order_ws_ready:
             return {"error": "Order WebSocket not connected"}
 
@@ -639,7 +709,7 @@ class BinanceFastLaneWS:
         query_string = "&".join([f"{k}={sign_dict[k]}" for k in sorted(sign_dict.keys())])
         sig = hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
 
-        req_id = f"cancel-all-{symbol[:4]}-{int(time.time() * 1000) % 100000}"
+        req_id = f"cancel-all-{symbol[:6]}-{int(time.time() * 1000) % 100000}"
         payload = {
             "id": req_id,
             "method": "order.cancelAll",
@@ -688,8 +758,9 @@ class BinanceFastLaneWS:
         except Exception:
             pass
 
-    def subscribe_ticker(self, symbol: str) -> None:
-        if symbol == self.current_subscribed_symbol:
+    def subscribe_tickers(self, symbols: Sequence[str]) -> None:
+        clean_symbols = sorted(list({s.strip().upper() for s in symbols if s.strip()}))
+        if clean_symbols == self.current_subscribed_symbols:
             return
 
         if self.public_ws:
@@ -701,11 +772,20 @@ class BinanceFastLaneWS:
         with self.ws_lock:
             self.live_prices.clear()
             self.last_traded_prices.clear()
-            self.current_subscribed_symbol = symbol
+            self.current_subscribed_symbols = clean_symbols
 
-        def runner(target_sym: str):
-            stream_url = f"{config.BINANCE_WS_URL}/stream?streams={target_sym.lower()}@aggTrade/{target_sym.lower()}@bookTicker"
-            while self.current_subscribed_symbol == target_sym:
+        if not clean_symbols:
+            return
+
+        def runner(target_list: list[str]):
+            stream_parts = []
+            for sym in target_list:
+                low = sym.lower()
+                stream_parts.append(f"{low}@aggTrade")
+                stream_parts.append(f"{low}@bookTicker")
+            stream_url = f"{config.BINANCE_WS_URL}/stream?streams={'/'.join(stream_parts)}"
+
+            while self.current_subscribed_symbols == target_list:
                 try:
                     self.public_ws = websocket.WebSocketApp(
                         stream_url,
@@ -716,7 +796,10 @@ class BinanceFastLaneWS:
                     pass
                 time.sleep(1)
 
-        threading.Thread(target=runner, args=(symbol,), daemon=True).start()
+        threading.Thread(target=runner, args=(clean_symbols,), daemon=True).start()
+
+    def subscribe_ticker(self, symbol: str) -> None:
+        self.subscribe_tickers([symbol])
 
     def get_live_price(self, symbol: str) -> float:
         with self.ws_lock:
