@@ -41,16 +41,8 @@ def binance_rest_delete(endpoint: str, params: dict) -> dict:
 
 
 def fast_cancel_shallow_orders(ws_pipeline, symbol: str, shallow_cids: Sequence[str]) -> None:
-    """
-    T+230ms par keval upar ke 3 Shallow Limit Orders (30%, 50%, 70%) ko ek hi millisecond
-    me simultaneous WS cancel frames bhejkar cancel karta hai.
-    Local VPS hardware time aur Binance Engine updateTime alag-alag report karta hai.
-    """
     now_cancel_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-    add_ui_log(
-        f"⚡ [SHALLOW CANCEL BURST at {now_cancel_dt}] "
-        f"Firing simultaneous WS cancel for 3 shallow orders on {symbol}..."
-    )
+    add_ui_log(f"⚡ [SHALLOW CANCEL BURST at {now_cancel_dt}] Firing WS cancel for 3 shallow orders on {symbol}...")
     results = ws_pipeline.cancel_orders_batch_ws(symbol, list(shallow_cids), timeout=0.08)
     for cid, res in results:
         telem = ws_pipeline.get_shallow_cancel_telemetry(cid)
@@ -63,27 +55,21 @@ def fast_cancel_shallow_orders(ws_pipeline, symbol: str, shallow_cids: Sequence[
         err_obj = res.get("error", {}) if isinstance(res, dict) else {}
         err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
         if isinstance(res, dict) and res.get("status") == 200 and not res.get("error"):
-            add_ui_log(f"✅ [SHALLOW CANCEL CONFIRMED] {cid} | Fired (Local): {f_str} | Binance (Engine): {b_str} (RTT: {lat}ms)")
+            add_ui_log(f"✅ [SHALLOW CANCEL CONFIRMED] {cid} | Fired: {f_str} | Engine: {b_str} (RTT: {lat}ms)")
         elif err_code == -2011:
-            add_ui_log(f"ℹ️ [SHALLOW ALREADY FILLED/CLOSED] {cid} ignored safely by exchange.")
+            add_ui_log(f"ℹ️ [SHALLOW ALREADY FILLED/CLOSED] {cid} ignored safely.")
         else:
             add_ui_log(f"⚠️ [SHALLOW CANCEL RESPONSE] {cid}: {res}")
 
 
 def fast_cancel_all_orders(ws_pipeline, symbol: str, cids: Sequence[str] = ()) -> bool:
-    """
-    Ultra-Fast WebSocket API se sabhi open limit orders ko 2-4ms me cancel karta hai.
-    Pehle cancelAll aur specific CIDs par WS bhejta hai; agar WS fail ho to REST fallback leta hai.
-    """
     now_cancel_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-    add_ui_log(f"⚡ [FAST WS CANCEL TRIGGERED at {now_cancel_dt}] Purging open limit orders on {symbol} via Fast-Lane WS API...")
+    add_ui_log(f"⚡ [FAST WS CANCEL] Purging open limits on {symbol} via Fast WS...")
 
     ws_success = False
     res_all = ws_pipeline.cancel_all_orders_ws(symbol, timeout=0.15)
-
     if isinstance(res_all, dict) and res_all.get("status") == 200 and not res_all.get("error"):
         ws_success = True
-        add_ui_log("✅ [FAST WS CANCEL ALL CONFIRMED] Purged via WebSocket API in 2-4ms!")
 
     for cid in cids:
         if cid:
@@ -94,7 +80,6 @@ def fast_cancel_all_orders(ws_pipeline, symbol: str, cids: Sequence[str] = ()) -
     if ws_success:
         return True
 
-    add_ui_log(f"⚠️ [WS CANCEL TIMEOUT / FALLBACK] WS unconfirmed ({res_all}). Purging via REST API...")
     r = binance_rest_delete("/fapi/v1/allOpenOrders", {"symbol": symbol})
     return "code" not in r
 
@@ -116,12 +101,12 @@ def fetch_live_position_size(symbol: str) -> float:
 
 def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[float, float, str, str, list[dict], dict]:
     """
-    Trade khatm hone ke baad Binance REST API (/allOrders, /userTrades, /income) se official
+    Trade khatm hone ke baad (T+15s par) Binance REST API (/allOrders, /userTrades, /income) se official
     millisecond-precision timestamps, First/Last fill times, aggregated limit boxes,
     dedicated Funding Fee with exact credit timestamp aur Net PnL fetch karta hai.
+    Agar Binance cache lag se realizedPnl 0.0 aaye to mathematical fallback calculate karta hai.
     """
     try:
-        time.sleep(0.5)
         ts = int(get_synced_time_ms())
 
         # 1. Fetch Orders to map orderId -> clientOrderId
@@ -204,6 +189,9 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
         avg_entry_price = 0.0
         entry_fill_time = ""
         dca_hits = []
+        total_buy_qty = 0.0
+        total_sell_qty = 0.0
+
         if buy_trades:
             total_buy_qty = sum(float(t.get("qty", 0.0)) for t in buy_trades)
             total_buy_cost = sum(float(t.get("price", 0.0)) * float(t.get("qty", 0.0)) for t in buy_trades)
@@ -212,7 +200,6 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
             earliest_buy_ts = min(int(t.get("time", 0)) for t in buy_trades)
             entry_fill_time = datetime.fromtimestamp(earliest_buy_ts / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3]
 
-            # Har Limit Order ke saare partial fills ko level ke hisaab se group karein
             grouped_by_level: dict[str, dict] = {}
             for t in buy_trades:
                 p = float(t.get("price", 0.0))
@@ -243,7 +230,6 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
                     item["last_ms"] = t_ms
                 item["fills_count"] += 1
 
-            # Fixed sequence: Shallow #1 -> #2 -> #3 -> DCA #1 -> DCA #2
             sorted_groups = sorted(
                 grouped_by_level.values(),
                 key=lambda x: (x["sort_idx"], x["first_ms"])
@@ -288,12 +274,18 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
         if isinstance(res_trades, list):
             trades_commission = sum(float(t.get("commission", 0.0)) for t in res_trades)
 
-        # Final Calculations
         realized_trade_pnl = income_realized_pnl if abs(income_realized_pnl) > 1e-8 else trades_realized_pnl
         total_comm = commission_paid if commission_paid > 0 else trades_commission
+
+        # MATHEMATICAL PNL FALLBACK (Eliminates 0.0000 PnL bug when Binance API cache delays)
+        matched_qty = min(total_buy_qty, total_sell_qty) if (total_buy_qty > 0 and total_sell_qty > 0) else 0.0
+        if abs(realized_trade_pnl) < 1e-6 and matched_qty > 0 and avg_entry_price > 0 and avg_exit_price > 0:
+            math_pnl = (avg_exit_price - avg_entry_price) * matched_qty
+            if abs(math_pnl) > 1e-6:
+                realized_trade_pnl = math_pnl
+
         net_pnl = (realized_trade_pnl + funding_fee) - total_comm
 
-        # Dedicated Funding Fee formatting
         if funding_fee > 0.00001:
             funding_fee_class = "pnl-positive"
             funding_fee_str = f"+${funding_fee:.4f} USDT"
@@ -304,13 +296,8 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
             funding_fee_class = "pnl-neutral"
             funding_fee_str = "$0.0000 USDT"
 
-        # Dedicated Funding Credit Millisecond Timestamp
-        if funding_fee_time_ms > 0:
-            funding_fee_time_str = datetime.fromtimestamp(funding_fee_time_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3]
-        else:
-            funding_fee_time_str = "--:--:--"
+        funding_fee_time_str = datetime.fromtimestamp(funding_fee_time_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if funding_fee_time_ms > 0 else "--:--:--"
 
-        # Net PnL formatting
         if net_pnl > 0.00001:
             pnl_class = "pnl-positive"
             pnl_str = f"+${net_pnl:.4f} USDT"
@@ -444,9 +431,6 @@ def execute_limit_order_ws(
     ratio: float,
     label: str = "LIMIT ORDER"
 ) -> bool:
-    """
-    Single-Shot Limit Order placement via Tokyo Fast-Lane WebSocket (No Retry).
-    """
     res = ws_pipeline.place_order_ws(
         symbol=symbol,
         side="BUY",
@@ -473,10 +457,6 @@ def execute_limit_burst_ws(
     symbol: str,
     limit_orders_batch: list[tuple[str, str, str, float, str]]
 ) -> None:
-    """
-    T-50ms par saare 4 ya 5 limit orders ko exact sequence (30% -> 50% -> 70% -> DCA#1 -> DCA#2)
-    me ek hi millisecond ke andar socket par flush karta hai aur unka confirmation log karta hai.
-    """
     burst_results = ws_pipeline.place_orders_burst_ws(symbol, limit_orders_batch, timeout=0.09)
     for _, q_str, p_str, ratio, label, res in burst_results:
         err_code = res.get("error", {}).get("code") if isinstance(res.get("error"), dict) else None
@@ -485,6 +465,20 @@ def execute_limit_burst_ws(
             add_ui_log(f"🎯 [{label} (WS CONFIRMED)] Set @ {p_str} USDT (-{ratio * 100:.3f}%) | Qty: {q_str}")
         else:
             add_ui_log(f"⚠️ [{label} WS REJECT/UNCONFIRMED]: {res}")
+
+
+def execute_multi_symbol_limit_burst_ws(
+    ws_pipeline,
+    multi_orders_batch: list[tuple[str, str, str, str, float, str]]
+) -> None:
+    burst_results = ws_pipeline.place_multi_symbol_burst_ws(multi_orders_batch, timeout=0.09)
+    for sym, cid, q_str, p_str, ratio, label, res in burst_results:
+        err_code = res.get("error", {}).get("code") if isinstance(res.get("error"), dict) else None
+        is_active = res.get("status") == 200 or "orderId" in res.get("result", {}) or err_code == -4116
+        if is_active:
+            add_ui_log(f"🎯 [{sym} | {label} (WS CONFIRMED)] Set @ {p_str} USDT (-{ratio * 100:.3f}%) | Qty: {q_str}")
+        else:
+            add_ui_log(f"⚠️ [{sym} | {label} WS REJECT/UNCONFIRMED]: {res}")
 
 
 def execute_market_exit_3layer(
@@ -507,11 +501,11 @@ def execute_market_exit_3layer(
         reduce_only=True
     )
     if res1.get("status") == 200 or "orderId" in res1.get("result", {}):
-        add_ui_log(f"[{reason_label} | ATTEMPT #1 CONFIRMED] Position closed via WS API!")
+        add_ui_log(f"[{reason_label} | ATTEMPT #1 CONFIRMED] Position closed on {symbol} via WS API!")
         return True, now_exit_dt, "WS_ATTEMPT_1"
 
     req_id_2 = f"exit-ws2-{uuid.uuid4().hex[:6]}"
-    add_ui_log(f"[{reason_label} | ATTEMPT #2 (WS RETRY)] Retrying via WS API...")
+    add_ui_log(f"[{reason_label} | ATTEMPT #2 (WS RETRY)] Retrying on {symbol} via WS API...")
     res2 = ws_pipeline.place_order_ws(
         symbol=symbol,
         side="SELL",
@@ -522,10 +516,10 @@ def execute_market_exit_3layer(
         reduce_only=True
     )
     if res2.get("status") == 200 or "orderId" in res2.get("result", {}):
-        add_ui_log(f"[{reason_label} | ATTEMPT #2 CONFIRMED] Position closed on 2nd WS attempt!")
+        add_ui_log(f"[{reason_label} | ATTEMPT #2 CONFIRMED] Position closed on {symbol} on 2nd WS attempt!")
         return True, now_exit_dt, "WS_ATTEMPT_2"
 
-    add_ui_log(f"[{reason_label} | ATTEMPT #3 (REST API)] Both WS attempts rejected! Firing instant REST Market Sell...")
+    add_ui_log(f"[{reason_label} | ATTEMPT #3 (REST API)] Both WS attempts rejected on {symbol}! Firing instant REST Market Sell...")
     try:
         r = binance_rest_post("/fapi/v1/order", {
             "symbol": symbol,
@@ -535,8 +529,8 @@ def execute_market_exit_3layer(
             "reduceOnly": "true"
         })
         if "orderId" in r:
-            add_ui_log(f"[{reason_label} | REST CONFIRMED] Position 100% closed via REST API!")
+            add_ui_log(f"[{reason_label} | REST CONFIRMED] Position on {symbol} 100% closed via REST API!")
             return True, now_exit_dt, "REST_FALLBACK"
     except Exception as e:
-        add_ui_log(f"REST Market Sell Exception: {e}")
+        add_ui_log(f"REST Market Sell Exception on {symbol}: {e}")
     return False, now_exit_dt, "FAILED"
