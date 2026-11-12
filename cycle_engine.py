@@ -364,7 +364,7 @@ def run_settlement_cycle(
                 }
 
             if meta["is_cond_1"]:
-                # Condition 1: 1 DCA Limit Order at 130% of |FR| ($7.00 USDT Margin), SL 0.50% below DCA Limit #1
+                # Condition 1: 1 DCA Limit Order at 130% of |FR| ($1.50 USDT Margin), SL 0.50% below DCA Limit #1
                 dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(meta["gap_dca_1"])))
                 dca1_price_str = format_tick(float(dca1_p_dec), meta["tick_size"])
                 dca1_qty = format_limit_qty(meta["dca1_notional"], dca1_price_str, meta["min_qty"], meta["qty_step"])
@@ -382,7 +382,7 @@ def run_settlement_cycle(
                 meta["sl_price"] = float(sl_dec)
                 meta["sl_target_str"] = format_tick(meta["sl_price"], meta["tick_size"])
             else:
-                # Condition 2: 2 DCA Limit Orders ($3.50 USDT Margin each), SL 0.50% below DCA Limit #2
+                # Condition 2: 2 DCA Limit Orders ($0.75 USDT Margin each), SL 0.50% below DCA Limit #2
                 dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(meta["gap_dca_1"])))
                 dca1_price_str = format_tick(float(dca1_p_dec), meta["tick_size"])
                 dca1_qty = format_limit_qty(meta["dca2_notional"], dca1_price_str, meta["min_qty"], meta["qty_step"])
