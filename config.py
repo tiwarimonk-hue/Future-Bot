@@ -68,7 +68,7 @@ MULTI_PING_BEFORE_SETTLE_MS = 500      # T-500ms: 3-Ping Rapid WS Burst for Fres
 ENTRY_BEFORE_SETTLE_MS = 50            # T-50ms target arrival on Binance (compensated by 1-way lead)
 
 # Post-Settlement Timeline Offsets & Dynamic Lead Bounds (228ms Floor Lock Removed)
-SHALLOW_CANCEL_AFTER_SETTLE_MS = 230.0 # Target cancellation strike time (T+230ms) on Binance matching engine
+SHALLOW_CANCEL_AFTER_SETTLE_MS = 265.0 # Target cancellation strike time (T+265ms) on Binance matching engine
 SHALLOW_CANCEL_LEAD_MIN_MS = 0.5       # Minimum clamped 1-way network lead
 SHALLOW_CANCEL_LEAD_MAX_MS = 25.0      # Maximum clamped 1-way network lead (supports full compensation)
 SHALLOW_CANCEL_LEAD_DEFAULT_MS = 1.2   # Safe fallback lead if ping not yet measured
