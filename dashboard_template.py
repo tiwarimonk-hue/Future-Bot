@@ -3,10 +3,6 @@ import config
 
 
 def get_dashboard_html() -> str:
-    """
-    Binance Tokyo Funding Sniper ka complete responsive dark-mode HTML,
-    CSS aur JavaScript template return karta hai.
-    """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -57,208 +53,49 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .mono {{ font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; }}
 .sub-text {{ font-size: 11px; color: #848e9c; margin-top: 2px; }}
 
-/* PnL and Funding Fee Specific Styling */
 .pnl-positive {{ color: #0ecb81 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(14, 203, 129, 0.25); }}
 .pnl-negative {{ color: #f87171 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }}
 .pnl-neutral {{ color: #848e9c !important; font-size: 13px; }}
 
-/* 2-Row Limit Order Boxes Layout (Row 1: Blue Shallow Limits, Row 2: Yellow DCA Limits) */
-.limit-rows-wrapper {{
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-    margin-top: 4px;
-}}
-.limit-row {{
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    width: 100%;
-    align-items: stretch;
-}}
-.limit-box {{
-    flex: 1 1 260px;
-    max-width: 350px;
-    padding: 10px 12px;
-    border-radius: 8px;
-    font-family: 'SFMono-Regular', Consolas, monospace;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}}
-.limit-box-blue {{
-    background: rgba(59, 130, 246, 0.10);
-    border: 1px solid rgba(59, 130, 246, 0.55);
-    border-left: 4px solid #3b82f6;
-    color: #93c5fd;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08);
-}}
-.limit-box-yellow {{
-    background: rgba(240, 185, 11, 0.10);
-    border: 1px solid rgba(240, 185, 11, 0.55);
-    border-left: 4px solid #f0b90b;
-    color: #fcd34d;
-    box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08);
-}}
-.limit-box-header {{
-    font-size: 12px;
-    font-weight: 800;
-    padding-bottom: 5px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}}
+.limit-rows-wrapper {{ display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 4px; }}
+.limit-row {{ display: flex; flex-wrap: wrap; gap: 10px; width: 100%; align-items: stretch; }}
+.limit-box {{ flex: 1 1 260px; max-width: 350px; padding: 10px 12px; border-radius: 8px; font-family: 'SFMono-Regular', Consolas, monospace; display: flex; flex-direction: column; gap: 6px; }}
+.limit-box-blue {{ background: rgba(59, 130, 246, 0.10); border: 1px solid rgba(59, 130, 246, 0.55); border-left: 4px solid #3b82f6; color: #93c5fd; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08); }}
+.limit-box-yellow {{ background: rgba(240, 185, 11, 0.10); border: 1px solid rgba(240, 185, 11, 0.55); border-left: 4px solid #f0b90b; color: #fcd34d; box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08); }}
+.limit-box-header {{ font-size: 12px; font-weight: 800; padding-bottom: 5px; border-bottom: 1px solid rgba(255, 255, 255, 0.10); display: flex; justify-content: space-between; align-items: center; }}
 .limit-box-blue .limit-box-header {{ color: #60a5fa; }}
 .limit-box-yellow .limit-box-header {{ color: #f0b90b; }}
-.limit-box-metrics {{
-    font-size: 11px;
-    color: #eaecef;
-    font-weight: 700;
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-}}
-.limit-box-timings {{
-    font-size: 11px;
-    line-height: 1.45;
-    color: #cbd5e1;
-    background: rgba(0, 0, 0, 0.25);
-    padding: 6px 8px;
-    border-radius: 5px;
-}}
+.limit-box-metrics {{ font-size: 11px; color: #eaecef; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; }}
+.limit-box-timings {{ font-size: 11px; line-height: 1.45; color: #cbd5e1; background: rgba(0, 0, 0, 0.25); padding: 6px 8px; border-radius: 5px; }}
 
 .candidate-row {{ cursor: pointer; transition: background 0.2s, border 0.2s; }}
 .candidate-row:hover {{ background: rgba(240, 185, 11, 0.08); }}
 
-.candidate-active {{
-    background: rgba(14, 203, 129, 0.20) !important;
-    border-left: 5px solid #0ecb81 !important;
-    box-shadow: inset 0 0 10px rgba(14, 203, 129, 0.15);
-}}
-.candidate-active td {{
-    color: #ffffff !important;
-}}
-.active-tag {{
-    background: #0ecb81;
-    color: #0b0e11;
-    font-size: 10px;
-    font-weight: 800;
-    padding: 2px 7px;
-    border-radius: 4px;
-    margin-left: 6px;
-    text-transform: uppercase;
-    display: inline-block;
-}}
+.candidate-active {{ background: rgba(14, 203, 129, 0.20) !important; border-left: 5px solid #0ecb81 !important; box-shadow: inset 0 0 10px rgba(14, 203, 129, 0.15); }}
+.candidate-active td {{ color: #ffffff !important; }}
+.active-tag {{ background: #0ecb81; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
+.manual-tag {{ background: #f0b90b; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
 
-/* Temporary Blocked Row Styling */
-.candidate-row.row-temp-blocked {{
-    background: rgba(240, 185, 11, 0.15) !important;
-    border-left: 5px solid #f0b90b !important;
-}}
-.candidate-row.row-temp-blocked td {{
-    color: #f0b90b !important;
-}}
-.badge-temp-block {{
-    background: #f0b90b;
-    color: #0b0e11;
-    font-size: 10px;
-    font-weight: 800;
-    padding: 2px 7px;
-    border-radius: 4px;
-    margin-left: 6px;
-    text-transform: uppercase;
-    display: inline-block;
-}}
+.candidate-row.row-temp-blocked {{ background: rgba(240, 185, 11, 0.15) !important; border-left: 5px solid #f0b90b !important; }}
+.candidate-row.row-temp-blocked td {{ color: #f0b90b !important; }}
+.badge-temp-block {{ background: #f0b90b; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
 
-/* Dot Action Buttons */
-.dot-group {{
-    display: flex;
-    gap: 10px;
-    justify-content: center;
-    align-items: center;
-}}
-.btn-dot {{
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    cursor: pointer;
-    transition: transform 0.2s, box-shadow 0.2s;
-    outline: none;
-}}
-.btn-dot:hover {{
-    transform: scale(1.3);
-}}
-.btn-dot-yellow {{
-    background: #f0b90b;
-    box-shadow: 0 0 8px rgba(240, 185, 11, 0.6);
-}}
-.btn-dot-red {{
-    background: #ef4444;
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
-}}
+.dot-group {{ display: flex; gap: 10px; justify-content: center; align-items: center; }}
+.btn-dot {{ width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.2); cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; outline: none; }}
+.btn-dot:hover {{ transform: scale(1.3); }}
+.btn-dot-yellow {{ background: #f0b90b; box-shadow: 0 0 8px rgba(240, 185, 11, 0.6); }}
+.btn-dot-red {{ background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }}
 
-/* Blocked Coin Chips */
-.chip-blocked {{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 12px;
-    border-radius: 8px;
-    font-size: 12px;
-    font-family: 'SFMono-Regular', Consolas, monospace;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s;
-    user-select: none;
-}}
-.chip-blocked:hover {{
-    transform: translateY(-2px);
-}}
-.chip-temp {{
-    background: rgba(240, 185, 11, 0.15);
-    border: 1px solid rgba(240, 185, 11, 0.4);
-    color: #f0b90b;
-}}
-.chip-temp:hover {{
-    background: rgba(240, 185, 11, 0.3);
-    box-shadow: 0 0 10px rgba(240, 185, 11, 0.35);
-}}
-.chip-perm {{
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.4);
-    color: #f87171;
-}}
-.chip-perm:hover {{
-    background: rgba(239, 68, 68, 0.3);
-    box-shadow: 0 0 10px rgba(239, 68, 68, 0.35);
-}}
-.chip-close {{
-    font-size: 13px;
-    opacity: 0.75;
-    margin-left: 2px;
-}}
-.chip-close:hover {{
-    opacity: 1;
-    color: #ffffff;
-}}
-.btn-see-more {{
-    background: #14181d;
-    border: 1px solid #2b313a;
-    color: #f0b90b;
-    padding: 6px 16px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: 0.2s;
-}}
-.btn-see-more:hover {{
-    background: rgba(240, 185, 11, 0.12);
-    border-color: #f0b90b;
-}}
+.chip-blocked {{ display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 8px; font-size: 12px; font-family: 'SFMono-Regular', Consolas, monospace; font-weight: 700; cursor: pointer; transition: all 0.2s; user-select: none; }}
+.chip-blocked:hover {{ transform: translateY(-2px); }}
+.chip-temp {{ background: rgba(240, 185, 11, 0.15); border: 1px solid rgba(240, 185, 11, 0.4); color: #f0b90b; }}
+.chip-temp:hover {{ background: rgba(240, 185, 11, 0.3); box-shadow: 0 0 10px rgba(240, 185, 11, 0.35); }}
+.chip-perm {{ background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; }}
+.chip-perm:hover {{ background: rgba(239, 68, 68, 0.3); box-shadow: 0 0 10px rgba(239, 68, 68, 0.35); }}
+.chip-close {{ font-size: 13px; opacity: 0.75; margin-left: 2px; }}
+.chip-close:hover {{ opacity: 1; color: #ffffff; }}
+.btn-see-more {{ background: #14181d; border: 1px solid #2b313a; color: #f0b90b; padding: 6px 16px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; transition: 0.2s; }}
+.btn-see-more:hover {{ background: rgba(240, 185, 11, 0.12); border-color: #f0b90b; }}
 </style>
 </head>
 <body>
@@ -266,14 +103,14 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 <div class="header">
     <div>
         <h1>Binance Tokyo Funding Sniper</h1>
-        <div class="sub-text" style="color: #848e9c;">Radar Top 10 &bull; 24h Volume &bull; Automatic/Manual Modes &bull; T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
+        <div class="sub-text" style="color: #848e9c;">Radar Top 10 &bull; Multi-Coin Manual (Up to 3) &bull; Automatic Mode &bull; T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
     </div>
     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
         <button id="btn-trade-toggle" class="btn-toggle btn-on" onclick="toggleTrading()">TRADING: ON</button>
         
         <div class="mode-container">
             <button id="btn-mode-auto" class="btn-mode btn-mode-auto-active" onclick="setModeAuto()">⚡ AUTOMATIC</button>
-            <button id="btn-mode-manual" class="btn-mode btn-mode-inactive" onclick="setModeManualPrompt()">🎯 MANUAL</button>
+            <button id="btn-mode-manual" class="btn-mode btn-mode-inactive" onclick="setModeManual()">🎯 MANUAL</button>
         </div>
 
         <div class="badge-mode" id="lock-badge">SELECTION: OPEN (>1m)</div>
@@ -282,24 +119,24 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 </div>
 
 <div class="grid">
-    <div class="card"><div class="card-title">Target Coin</div><div class="card-value" id="coin">--</div></div>
+    <div class="card"><div class="card-title">Target Coin(s)</div><div class="card-value" id="coin">--</div></div>
     <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color: #0ecb81;">--%</div></div>
     <div class="card"><div class="card-title">Next Settlement</div><div class="card-value" id="settle" style="color: #eaecef;">--:--:-- IST</div></div>
-    <div class="card"><div class="card-title">Base Margin</div><div class="card-value" style="color: #f0b90b;">${config.TRADE_MARGIN_USD} USDT</div></div>
+    <div class="card"><div class="card-title">Base Margin</div><div class="card-value" id="margin-disp" style="color: #f0b90b;">${config.TRADE_MARGIN_USD} USDT</div></div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset" style="color: #0ecb81;">0.0 ms</div></div>
 </div>
 
 <!-- 1. TOP 10 CANDIDATES RADAR TABLE -->
 <div class="table-card">
     <div class="table-header">
-        <span>Top 10 Funding Radar (Click row to Select &bull; 🟡 Temp Block &bull; 🔴 Perm Block)</span>
+        <span id="radar-title">Top 10 Funding Radar (Click row to Toggle &bull; Select up to 3 coins in Manual)</span>
         <span id="lock-warning" style="font-size: 12px; color: #f0b90b;">Locked automatically within 1 min of settlement</span>
     </div>
     <div class="table-wrapper">
         <table style="min-width: 780px;">
             <thead>
                 <tr>
-                    <th style="width: 45px; text-align: center;">Active</th>
+                    <th style="width: 55px; text-align: center;">Select</th>
                     <th># Rank</th>
                     <th>Coin</th>
                     <th>24h Volume (USDT)</th>
@@ -317,7 +154,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 
 <!-- 2. BLOCKED COINS MANAGEMENT CARDS -->
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px;">
-    <!-- Box 1: Temporary Blocked Coins -->
     <div class="table-card">
         <div class="table-header">
             <span style="color: #f0b90b; display: flex; align-items: center; gap: 8px;">
@@ -334,7 +170,6 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
         </div>
     </div>
 
-    <!-- Box 2: Permanently Blocked Coins -->
     <div class="table-card">
         <div class="table-header">
             <span style="color: #f87171; display: flex; align-items: center; gap: 8px;">
@@ -352,10 +187,10 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     </div>
 </div>
 
-<!-- 3. TRADE HISTORY TABLE WITH FUNDING FEE & NET PNL COLUMNS -->
+<!-- 3. TRADE HISTORY TABLE -->
 <div class="table-card">
     <div class="table-header">
-        <span>Last 20 Trades Precision Ledger</span>
+        <span>Last 30 Trades Precision Ledger</span>
         <span style="font-size: 12px; color: #848e9c;">Auto-Refreshes every 1s</span>
     </div>
     <div class="table-wrapper">
@@ -384,10 +219,12 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 </div>
 
 <script>
-let currentTargetSymbol = "";
+const BASE_MARGIN_USD = {config.TRADE_MARGIN_USD};
 let isLocked = false;
 let showAllTemp = false;
 let showAllPerm = false;
+let currentManualList = [];
+let currentManualMode = false;
 
 function formatDurationJs(sec) {{
     if (sec <= 0) return '0s (Settling...)';
@@ -400,7 +237,6 @@ function formatDurationJs(sec) {{
 }}
 
 function renderLimitBoxHtml(d, boxColorClass) {{
-    // Canceled Shallow Limit Order Box (T+230ms Telemetry)
     if (d.status === "CANCELED") {{
         const cancelFired = d.cancel_fired || '--';
         const binanceCanceled = d.binance_canceled || '--';
@@ -424,7 +260,6 @@ function renderLimitBoxHtml(d, boxColorClass) {{
         `;
     }}
 
-    // Normal Filled Limit Order Box
     const firstTime = d.first_time || d.time || '--';
     const lastTime = d.last_time || d.time || '--';
     const spanMs = (d.span_ms !== undefined && d.span_ms !== null) ? d.span_ms : 0;
@@ -480,15 +315,24 @@ async function setModeAuto() {{
         if (!data.success) {{
             alert(data.message || "Failed to switch mode.");
         }}
+        updateUI();
     }} catch(e) {{}}
 }}
 
-function setModeManualPrompt() {{
+async function setModeManual() {{
     if (isLocked) {{
         alert("Selection is LOCKED because settlement is less than 1 minute away!");
         return;
     }}
-    alert("🎯 मैन्युअल मोड एक्टिवेट करने के लिए नीचे दी गई Top 10 टेबल में से किसी भी अनब्लॉक कॉइन पर क्लिक करें!");
+    try {{
+        const res = await fetch('/api/set-manual', {{ method: 'POST' }});
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Failed to switch mode.");
+        }} else {{
+            updateUI();
+        }}
+    }} catch(e) {{}}
 }}
 
 async function toggleSelectCandidate(sym, isTempBlocked) {{
@@ -500,6 +344,12 @@ async function toggleSelectCandidate(sym, isTempBlocked) {{
         alert("Coin selection is LOCKED because settlement is less than 1 minute away!");
         return;
     }}
+
+    if (currentManualMode && !currentManualList.includes(sym) && currentManualList.length >= 3) {{
+        alert("⚠️ अधिकतम 3 कॉइन्स ही चुने जा सकते हैं! किसी पुराने कॉइन पर दोबारा क्लिक करके उसे हटाएं, फिर नया कॉइन चुनें।");
+        return;
+    }}
+
     try {{
         const res = await fetch('/api/select-coin', {{
             method: 'POST',
@@ -509,6 +359,8 @@ async function toggleSelectCandidate(sym, isTempBlocked) {{
         const data = await res.json();
         if (!data.success) {{
             alert(data.message || "Action failed.");
+        }} else {{
+            updateUI();
         }}
     }} catch(e) {{}}
 }}
@@ -562,17 +414,15 @@ async function updateUI() {{
     try {{
         const res = await fetch('/api/status');
         const data = await res.json();
-        currentTargetSymbol = data.target_symbol || "";
         isLocked = !!data.selection_locked;
+        currentManualMode = !!data.manual_mode;
+        currentManualList = data.manual_selected_symbols || [];
 
         document.getElementById('ws-status').innerText = data.status;
-        document.getElementById('coin').innerText = data.target_symbol;
         document.getElementById('rate').innerText = data.funding_rate;
         document.getElementById('offset').innerText = data.clock_offset_ms + ' ms';
         updateToggleBtn(data.trading_enabled);
 
-        // Update Automatic / Manual Mode Buttons
-        const isManual = !!(data.manual_selected_symbol && data.manual_selected_symbol.trim().length > 0);
         const btnAuto = document.getElementById('btn-mode-auto');
         const btnManual = document.getElementById('btn-mode-manual');
 
@@ -580,15 +430,32 @@ async function updateUI() {{
             btnAuto.disabled = isLocked;
             btnManual.disabled = isLocked;
 
-            if (isManual) {{
+            if (currentManualMode) {{
                 btnAuto.className = "btn-mode btn-mode-inactive";
                 btnManual.className = "btn-mode btn-mode-manual-active";
-                btnManual.innerText = `🎯 MANUAL: ${{data.manual_selected_symbol}}`;
+                btnManual.innerText = `🎯 MANUAL (${{currentManualList.length}}/3)`;
             }} else {{
                 btnAuto.className = "btn-mode btn-mode-auto-active";
                 btnManual.className = "btn-mode btn-mode-inactive";
                 btnManual.innerText = "🎯 MANUAL";
             }}
+        }}
+
+        if (currentManualMode) {{
+            if (currentManualList.length === 0) {{
+                document.getElementById('coin').innerText = "0 Coins (PASS - IDLE)";
+                document.getElementById('coin').style.color = "#f87171";
+                document.getElementById('margin-disp').innerText = "$0.00 USDT";
+            }} else {{
+                document.getElementById('coin').innerText = currentManualList.join(", ");
+                document.getElementById('coin').style.color = "#f0b90b";
+                const totalMargin = (currentManualList.length * BASE_MARGIN_USD).toFixed(2);
+                document.getElementById('margin-disp').innerText = `$${{totalMargin}} USDT (${{currentManualList.length}}x $${{BASE_MARGIN_USD}})`;
+            }}
+        }} else {{
+            document.getElementById('coin').innerText = data.target_symbol;
+            document.getElementById('coin').style.color = "#f0b90b";
+            document.getElementById('margin-disp').innerText = `$${{BASE_MARGIN_USD}} USDT`;
         }}
 
         const lockBadge = document.getElementById('lock-badge');
@@ -599,7 +466,9 @@ async function updateUI() {{
         }} else {{
             lockBadge.className = "badge-mode";
             lockBadge.innerText = "SELECTION: OPEN (>1m)";
-            document.getElementById('lock-warning').innerText = "Locked automatically within 1 min of settlement";
+            document.getElementById('lock-warning').innerText = currentManualMode ? 
+                `Manual Mode (${{currentManualList.length}}/3 Selected • Click to Toggle)` : 
+                "Automatic Mode • Click any row to Switch to Manual";
         }}
 
         if (data.target_settlement_ms && data.target_settlement_ms > 0) {{
@@ -615,34 +484,39 @@ async function updateUI() {{
         const tempList = blockedData.temporary || [];
         const permList = blockedData.permanent || [];
 
-        // Render Top-10 Radar Candidates Table
         const cBody = document.getElementById('candidates-body');
         if (data.top_5_candidates && data.top_5_candidates.length > 0) {{
-            const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--"));
-            
             cBody.innerHTML = data.top_5_candidates.map((c, i) => {{
                 const isTemp = tempList.includes(c.symbol);
-                const isSelected = hasValidTarget && (c.symbol === data.target_symbol);
-                const disabledAttr = (isLocked || isTemp) ? "disabled" : "";
-                
+                let isSelected = false;
+                let activeTagHtml = '';
+
+                if (currentManualMode) {{
+                    const mIdx = currentManualList.indexOf(c.symbol);
+                    if (mIdx !== -1) {{
+                        isSelected = true;
+                        activeTagHtml = `<span class="manual-tag">SELECTED #${{mIdx + 1}}</span>`;
+                    }}
+                }} else {{
+                    const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--"));
+                    if (hasValidTarget && (c.symbol === data.target_symbol)) {{
+                        isSelected = true;
+                        activeTagHtml = '<span class="active-tag">ARMED</span>';
+                    }}
+                }}
+
                 let rowClass = "candidate-row";
                 if (isTemp) {{
                     rowClass += " row-temp-blocked";
-                }} else if (isSelected) {{
-                    rowClass += " candidate-active";
-                }}
-
-                let activeTagHtml = '';
-                if (isTemp) {{
                     activeTagHtml = '<span class="badge-temp-block">TEMP BLOCKED</span>';
                 }} else if (isSelected) {{
-                    activeTagHtml = '<span class="active-tag">ARMED</span>';
+                    rowClass += " candidate-active";
                 }}
 
                 return `
                     <tr class="${{rowClass}}" onclick="${{isLocked ? '' : `toggleSelectCandidate('${{c.symbol}}', ${{isTemp}})`}}">
                         <td style="text-align: center;">
-                            <input type="radio" name="candidate-select" ${{isSelected ? 'checked' : ''}} ${{disabledAttr}} onclick="event.stopPropagation(); toggleSelectCandidate('${{c.symbol}}', ${{isTemp}});">
+                            <input type="checkbox" ${{isSelected ? 'checked' : ''}} ${{isLocked || isTemp ? 'disabled' : ''}} onclick="event.stopPropagation(); toggleSelectCandidate('${{c.symbol}}', ${{isTemp}});">
                         </td>
                         <td><strong style="color: ${{isTemp ? '#f0b90b' : (isSelected ? '#0ecb81' : (i === 0 ? '#f0b90b' : '#848e9c'))}};">#${{i + 1}}</strong></td>
                         <td><strong>${{c.symbol}}</strong>${{activeTagHtml}}</td>
@@ -660,7 +534,6 @@ async function updateUI() {{
             }}).join('');
         }}
 
-        // Render Blocked Coins Management Cards
         document.getElementById('temp-count').innerText = tempList.length;
         document.getElementById('perm-count').innerText = permList.length;
 
@@ -708,7 +581,6 @@ async function updateUI() {{
             }}
         }}
 
-        // Render Trades History with Funding Fee & Net PnL Columns
         const tbody = document.getElementById('trades-body');
         if (!data.trades || data.trades.length === 0) {{
             tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:#848e9c;">Waiting for trades to execute...</td></tr>';
@@ -727,10 +599,12 @@ async function updateUI() {{
 
                 const hitsList = t.dca_hits || [];
                 let dcaHtml = '<span style="color:#848e9c;">None (No Limit Orders Filled)</span>';
+                let filledCount = 0;
 
                 if (hitsList.length > 0) {{
                     const shallowHits = hitsList.filter(d => (d.group === 'shallow') || (d.level && d.level.toLowerCase().includes('shallow')));
                     const dcaDeepHits = hitsList.filter(d => (d.group === 'dca') || (d.level && d.level.toLowerCase().includes('dca')));
+                    filledCount = hitsList.filter(d => d.status !== 'CANCELED').length;
 
                     let rowsHtml = '';
                     if (shallowHits.length > 0) {{
@@ -789,7 +663,7 @@ async function updateUI() {{
                                     <strong class="mono" style="color:#f0b90b;">${{t.pnl_breakdown || '--'}}</strong>
                                 </div>
                                 <div class="sub-item" style="flex-direction: column; align-items: flex-start; width: 100%;">
-                                    <span class="sub-label">Limit Order Fills (${{hitsList.length}} Levels Hit — Row 1: Blue Shallow | Row 2: Yellow DCA):</span>
+                                    <span class="sub-label">Limit Order Fills (${{filledCount}} Filled / ${{hitsList.length}} Total Levels):</span>
                                     ${{dcaHtml}}
                                 </div>
                             </div>
