@@ -103,7 +103,7 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 <div class="header">
     <div>
         <h1>Binance Tokyo Funding Sniper</h1>
-        <div class="sub-text" style="color: #848e9c;">Radar Top 10 &bull; Multi-Coin Manual (Up to 3) &bull; Automatic Mode &bull; T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
+        <div class="sub-text" style="color: #848e9c;">Radar Top 10 • Multi-Coin Manual (Up to 3) • Automatic Mode • T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
     </div>
     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
         <button id="btn-trade-toggle" class="btn-toggle btn-on" onclick="toggleTrading()">TRADING: ON</button>
@@ -129,7 +129,7 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 <!-- 1. TOP 10 CANDIDATES RADAR TABLE -->
 <div class="table-card">
     <div class="table-header">
-        <span id="radar-title">Top 10 Funding Radar (Click row to Toggle &bull; Select up to 3 coins in Manual)</span>
+        <span id="radar-title">Top 10 Funding Radar (Click row to Toggle • Select up to 3 coins in Manual)</span>
         <span id="lock-warning" style="font-size: 12px; color: #f0b90b;">Locked automatically within 1 min of settlement</span>
     </div>
     <div class="table-wrapper">
@@ -198,13 +198,13 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
             <thead>
                 <tr>
                     <th>#</th>
-                    <th>Coin &amp; Funding</th>
+                    <th>Coin & Funding</th>
                     <th>Strategy Mode</th>
                     <th>Entry Timeline</th>
                     <th>Avg Entry Price</th>
                     <th>Exit Timeline</th>
                     <th>Exit Price</th>
-                    <th style="min-width: 120px;">Funding Fee</th>
+                    <th style="min-width: 175px;">Funding Fee</th>
                     <th style="min-width: 105px;">Net PnL</th>
                     <th>Status</th>
                 </tr>
@@ -595,7 +595,8 @@ async function updateUI() {{
 
                 let fundingClass = t.funding_fee_class || "pnl-neutral";
                 let fundingValStr = t.funding_fee_received || "$0.0000";
-                let fundingTimeStr = (t.funding_fee_time && t.funding_fee_time !== "--:--:--") ? `@ ${{t.funding_fee_time}}` : "--:--:--";
+                let fundingTimeStr = (t.funding_fee_time && t.funding_fee_time !== "--:--:--") ? `🕒 ${{t.funding_fee_time}}` : "🕒 --:--:--";
+                let fundingOrdersStr = t.funding_orders_summary || "0 Orders ($0.00)";
 
                 const hitsList = t.dca_hits || [];
                 let dcaHtml = '<span style="color:#848e9c;">None (No Limit Orders Filled)</span>';
@@ -626,8 +627,8 @@ async function updateUI() {{
                         <td><span class="badge" style="font-size:10px; padding:3px 8px;">${{t.tier || 'UNIFIED HARVEST'}}</span></td>
                         <td>
                             <div class="mono">Sent: ${{t.entry_sent || '--'}}</div>
-                            <div class="mono sub-text">&#8594; ACK: ${{t.entry_ack || '--'}} (${{t.entry_rtt || '--'}})</div>
-                            <div class="mono sub-text" style="color:#0ecb81; font-weight:600;">&#8594; First Fill: ${{t.entry_fill_time || '--'}}</div>
+                            <div class="mono sub-text">→ ACK: ${{t.entry_ack || '--'}} (${{t.entry_rtt || '--'}})</div>
+                            <div class="mono sub-text" style="color:#0ecb81; font-weight:600;">→ First Fill: ${{t.entry_fill_time || '--'}}</div>
                         </td>
                         <td>
                             <div class="mono" style="color:#0ecb81; font-weight:bold;">${{t.entry_fill_price || '--'}}</div>
@@ -635,7 +636,7 @@ async function updateUI() {{
                         </td>
                         <td>
                             <div class="mono">Fired: ${{t.exit_sent || '--'}}</div>
-                            <div class="mono sub-text" style="color:#eaecef;">&#8594; Closed: ${{t.exit_fill_time || '--'}}</div>
+                            <div class="mono sub-text" style="color:#eaecef;">→ Closed: ${{t.exit_fill_time || '--'}}</div>
                         </td>
                         <td>
                             <div class="mono"><strong style="color:#f0b90b; font-size:14px;">${{t.exit_price || '--'}}</strong></div>
@@ -643,7 +644,8 @@ async function updateUI() {{
                         </td>
                         <td>
                             <div class="mono ${{fundingClass}}">${{fundingValStr}}</div>
-                            <div class="sub-text" style="color:#848e9c; font-size:10px;">${{fundingTimeStr}}</div>
+                            <div class="mono sub-text" style="color:#60a5fa; font-size:10.5px; font-weight:600;">${{fundingTimeStr}}</div>
+                            <div class="mono sub-text" style="color:#f0b90b; font-size:10.5px; font-weight:600;">📦 ${{fundingOrdersStr}}</div>
                         </td>
                         <td>
                             <div class="mono ${{pnlClass}}">${{pnlValStr}}</div>
