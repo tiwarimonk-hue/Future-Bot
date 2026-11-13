@@ -619,7 +619,13 @@ class BinanceFastLaneWS:
             return {"error": "Timeout waiting for WS order.cancel"}
         return res
 
-    def cancel_orders_batch_ws(self, symbol: str, client_order_ids: Sequence[str], timeout: float = 0.08) -> list[tuple[str, dict]]:
+    def cancel_orders_batch_ws(
+        self,
+        symbol: str,
+        client_order_ids: Sequence[str],
+        timeout: float = 0.08,
+        strike_tag: str = "c1"
+    ) -> list[tuple[str, dict]]:
         valid_cids = [c for c in client_order_ids if c]
         if not self.order_ws or not self.order_ws_ready:
             return [(cid, {"error": "Order WebSocket not connected"}) for cid in valid_cids]
@@ -637,7 +643,7 @@ class BinanceFastLaneWS:
             query_string = "&".join([f"{k}={sign_dict[k]}" for k in sorted(sign_dict.keys())])
             sig = hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
 
-            cancel_req_id = f"cancel-{cid}"
+            cancel_req_id = f"{strike_tag}-{cid}"
             payload = {
                 "id": cancel_req_id,
                 "method": "order.cancel",
@@ -684,11 +690,15 @@ class BinanceFastLaneWS:
                 binance_engine_update_ts = res["result"].get("updateTime")
 
             with self.ws_lock:
-                self.shallow_cancels_telemetry[cid] = {
-                    "fired_local_ms": fired_local_exact_ts_ms,
-                    "binance_engine_ms": int(binance_engine_update_ts) if binance_engine_update_ts else (fired_local_exact_ts_ms + 2),
-                    "response": res
-                }
+                existing_telem = self.shallow_cancels_telemetry.get(cid)
+                is_success = isinstance(res, dict) and res.get("status") == 200 and not res.get("error")
+                if existing_telem is None or (is_success and not existing_telem.get("confirmed", False)):
+                    self.shallow_cancels_telemetry[cid] = {
+                        "fired_local_ms": fired_local_exact_ts_ms,
+                        "binance_engine_ms": int(binance_engine_update_ts) if binance_engine_update_ts else (fired_local_exact_ts_ms + 2),
+                        "confirmed": is_success,
+                        "response": res
+                    }
 
             results.append((cid, res))
 
