@@ -659,7 +659,7 @@ async function updateUI() {{
                                 <div class="sub-item">
                                     <span class="sub-label">Execution Summary:</span>
                                     <strong class="mono" style="color:#eaecef;">${{t.details || '--'}}</strong>
-                                </div>
+                                                                </div>
                                 <div class="sub-item">
                                     <span class="sub-label">PnL Breakdown (incl. Funding):</span>
                                     <strong class="mono" style="color:#f0b90b;">${{t.pnl_breakdown || '--'}}</strong>
