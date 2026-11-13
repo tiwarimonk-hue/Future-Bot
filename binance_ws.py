@@ -16,19 +16,21 @@ DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 def resolve_limit_level_meta(client_order_id: str, fallback_id: Any = "") -> tuple[str, str, int]:
     """
-    clientOrderId ke aadhar par (Level Name, Group ['shallow' | 'dca'], Sort Index [1..5]) return karta hai.
+    clientOrderId ke aadhar par (Level Name, Group ['shallow' | 'dca'], Sort Index [1..4]) return karta hai.
     """
     cid = (client_order_id or "").lower()
     if "shlw1" in cid or "s1-" in cid:
-        return "Shallow Limit #1 (30% FR)", "shallow", 1
+        return "Shallow Limit #1 (20% FR)", "shallow", 1
     if "shlw2" in cid or "s2-" in cid:
-        return "Shallow Limit #2 (50% FR)", "shallow", 2
+        return "Shallow Limit #2 (40% FR)", "shallow", 2
     if "shlw3" in cid or "s3-" in cid:
-        return "Shallow Limit #3 (70% FR)", "shallow", 3
+        return "Shallow Limit #3 (60% FR)", "shallow", 3
+    if "shlw4" in cid or "s4-" in cid:
+        return "Shallow Limit #4 (80% FR)", "shallow", 4
     if "dca-dip1" in cid or "d1-" in cid:
-        return "DCA Limit #1", "dca", 4
+        return "DCA Limit #1", "dca", 5
     if "dca-dip2" in cid or "d2-" in cid:
-        return "DCA Limit #2", "dca", 5
+        return "DCA Limit #2", "dca", 6
     lbl = f"Limit Order #{fallback_id}" if fallback_id else "Limit Order Fill"
     return lbl, "shallow", 99
 
