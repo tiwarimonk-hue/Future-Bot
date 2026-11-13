@@ -42,7 +42,7 @@ def binance_rest_delete(endpoint: str, params: dict) -> dict:
 
 def fast_cancel_shallow_orders(ws_pipeline, symbol: str, shallow_cids: Sequence[str]) -> None:
     now_cancel_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-    add_ui_log(f"⚡ [SHALLOW CANCEL BURST at {now_cancel_dt}] Firing WS cancel for 3 shallow orders on {symbol}...")
+    add_ui_log(f"⚡ [SHALLOW CANCEL BURST at {now_cancel_dt}] Firing WS cancel for {len(shallow_cids)} shallow orders on {symbol}...")
     results = ws_pipeline.cancel_orders_batch_ws(symbol, list(shallow_cids), timeout=0.08)
     for cid, res in results:
         telem = ws_pipeline.get_shallow_cancel_telemetry(cid)
@@ -99,11 +99,17 @@ def fetch_live_position_size(symbol: str) -> float:
     return 0.0
 
 
-def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[float, float, str, str, list[dict], dict]:
+def fetch_post_trade_reconciliation(
+    symbol: str,
+    start_time_ms: int,
+    settle_epoch_ms: int = 0,
+    funding_rate: float = 0.0,
+    unit_notional_usd: float = 30.0
+) -> tuple[float, float, str, str, list[dict], dict]:
     """
     Trade khatm hone ke baad (T+15s par) Binance REST API (/allOrders, /userTrades, /income) se official
     millisecond-precision timestamps, First/Last fill times, aggregated limit boxes,
-    dedicated Funding Fee with exact credit timestamp aur Net PnL fetch karta hai.
+    dedicated Funding Fee with exact millisecond credit timestamp, funded orders breakdown aur Net PnL fetch karta hai.
     Agar Binance cache lag se realizedPnl 0.0 aaye to mathematical fallback calculate karta hai.
     """
     try:
@@ -167,6 +173,7 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
             "funding_fee_str": "$0.0000",
             "funding_fee_class": "pnl-neutral",
             "funding_fee_time": "--:--:--",
+            "funding_orders_summary": "0 Orders ($0.00) | No Fill",
             "commission": 0.0,
             "pnl_str": "$0.0000",
             "pnl_class": "pnl-neutral",
@@ -192,6 +199,16 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
         total_buy_qty = 0.0
         total_sell_qty = 0.0
 
+        # Track orders filled on or before settlement snapshot (T+0ms) for Funding Fee attribution
+        short_level_labels = {
+            1: "S1(20%)",
+            2: "S2(40%)",
+            3: "S3(60%)",
+            4: "S4(80%)"
+        }
+        pre_settle_levels: dict[int, str] = {}
+        pre_settle_notional = 0.0
+
         if buy_trades:
             total_buy_qty = sum(float(t.get("qty", 0.0)) for t in buy_trades)
             total_buy_cost = sum(float(t.get("price", 0.0)) * float(t.get("qty", 0.0)) for t in buy_trades)
@@ -208,6 +225,14 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
                 oid = t.get("orderId")
                 cid = order_map.get(oid, "")
                 lvl_name, grp_type, s_idx = resolve_limit_level_meta(cid, oid)
+
+                # Check if this fill occurred on or before settlement snapshot timestamp
+                if settle_epoch_ms > 0 and t_ms <= settle_epoch_ms:
+                    pre_settle_notional += (p * q)
+                    if s_idx in short_level_labels:
+                        pre_settle_levels[s_idx] = short_level_labels[s_idx]
+                    else:
+                        pre_settle_levels[100 + int(oid or 0)] = f"Order#{oid}"
 
                 if lvl_name not in grouped_by_level:
                     grouped_by_level[lvl_name] = {
@@ -296,7 +321,32 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
             funding_fee_class = "pnl-neutral"
             funding_fee_str = "$0.0000 USDT"
 
-        funding_fee_time_str = datetime.fromtimestamp(funding_fee_time_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if funding_fee_time_ms > 0 else "--:--:--"
+        funding_fee_time_str = (
+            f"{datetime.fromtimestamp(funding_fee_time_ms / 1000, tz=IST).strftime('%H:%M:%S.%f')[:-3]} IST"
+            if funding_fee_time_ms > 0 else "--:--:--"
+        )
+
+        # Calculate exact funded orders count & position USDT value
+        abs_fr = abs(float(funding_rate))
+        math_funded_usd = (abs(funding_fee) / abs_fr) if (abs(funding_fee) > 1e-6 and abs_fr > 1e-6) else 0.0
+
+        if abs(funding_fee) > 1e-6:
+            if pre_settle_levels:
+                ordered_tags = [pre_settle_levels[k] for k in sorted(pre_settle_levels.keys())]
+                ord_cnt = len(ordered_tags)
+                disp_usd = pre_settle_notional if pre_settle_notional > 0 else math_funded_usd
+                tags_joined = ", ".join(ordered_tags)
+                funding_orders_summary = f"{ord_cnt} Order{'s' if ord_cnt > 1 else ''} (~${disp_usd:.2f}) | {tags_joined}"
+            elif math_funded_usd > 0:
+                est_cnt = max(1, min(4, round(math_funded_usd / max(1.0, unit_notional_usd))))
+                funding_orders_summary = f"~{est_cnt} Order{'s' if est_cnt > 1 else ''} (~${math_funded_usd:.2f}) | Snapshot Fill"
+            else:
+                funding_orders_summary = "1+ Order | Credited"
+        else:
+            if buy_trades:
+                funding_orders_summary = "0 Orders ($0.00) | Filled After Snapshot"
+            else:
+                funding_orders_summary = "0 Orders ($0.00) | No Fill"
 
         if net_pnl > 0.00001:
             pnl_class = "pnl-positive"
@@ -320,6 +370,7 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
             "funding_fee_str": funding_fee_str,
             "funding_fee_class": funding_fee_class,
             "funding_fee_time": funding_fee_time_str,
+            "funding_orders_summary": funding_orders_summary,
             "commission": round(total_comm, 4),
             "pnl_str": pnl_str,
             "pnl_class": pnl_class,
@@ -337,6 +388,7 @@ def fetch_post_trade_reconciliation(symbol: str, start_time_ms: int) -> tuple[fl
             "funding_fee_str": "$0.0000",
             "funding_fee_class": "pnl-neutral",
             "funding_fee_time": "--:--:--",
+            "funding_orders_summary": "0 Orders ($0.00)",
             "commission": 0.0,
             "pnl_str": "$0.0000",
             "pnl_class": "pnl-neutral",
