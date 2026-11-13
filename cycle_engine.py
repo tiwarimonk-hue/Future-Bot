@@ -81,9 +81,9 @@ def run_settlement_cycle(
     Executes the complete high-precision settlement cycle from T-20s to T+20s:
     Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s TLS / T-4s Ping) ->
     Phase 3 (T-2.5s Snapshot / T-500ms 3-Ping Burst) -> Phase 4 (T-50ms 4-Shallow Limit Burst) ->
-    Phase 5 (SL Watchdog + T+265ms Shallow Cancel) -> Phase 6 (T+6s Cancel / T+7s Exit) ->
-    Phase 6B (T+9s Safety Sweep #1) -> Phase 7 (T+15s Ledger Audit & Smart Merge) ->
-    Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
+    Phase 5 (SL Watchdog + 3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms) ->
+    Phase 6 (T+6s Cancel / T+7s Exit) -> Phase 6B (T+9s Safety Sweep #1) ->
+    Phase 7 (T+15s Ledger Audit & Smart Merge) -> Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
     """
     t_rescan_20s = settle_epoch - config.RESCAN_BEFORE_SETTLE_MS
     targets_meta: dict[str, dict] = {}
@@ -150,9 +150,11 @@ def run_settlement_cycle(
         t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS                      # T-2.5s (2500ms)
         t_multi_ping = settle_epoch - config.MULTI_PING_BEFORE_SETTLE_MS                # T-500ms 3-Ping Rapid Burst
 
-        # Default entry & cancel targets before T-500ms multi-ping measurement
+        # Default entry & 3-strike cancel targets before T-500ms multi-ping measurement
         t_limit_burst = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS
-        t_cancel_shallow = settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS
+        t_cancel_shallow_1 = settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS
+        t_cancel_shallow_2 = settle_epoch + config.SHALLOW_CANCEL_BACKUP_1_MS
+        t_cancel_shallow_3 = settle_epoch + config.SHALLOW_CANCEL_BACKUP_2_MS
 
         t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS           # T+6s
         t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS                   # T+7s
@@ -279,7 +281,7 @@ def run_settlement_cycle(
             add_ui_log("🛑 [PRE-ENTRY HARD ABORT at T-2.5s] All target coins became invalid. Cancelling cycle!")
             return
 
-        # Phase 3B (T-500ms): Fresh 3-Ping Rapid WS Burst & Dynamic Lead Lock (For Entry & Cancel)
+        # Phase 3B (T-500ms): Fresh 3-Ping Rapid WS Burst & Dynamic Lead Lock (For Entry & 3-Strike Cancel)
         precision_wait_until(t_multi_ping)
         ws_pipeline.ping_order_ws_burst(count=3, interval_sec=0.025, timeout_per_ping=0.075)
 
@@ -287,13 +289,14 @@ def run_settlement_cycle(
         target_entry_ms = settle_epoch - config.ENTRY_BEFORE_SETTLE_MS
         t_limit_burst = target_entry_ms - dynamic_lead
 
-        target_strike_ms = settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS
-        t_cancel_shallow = target_strike_ms - dynamic_lead
+        t_cancel_shallow_1 = (settle_epoch + config.SHALLOW_CANCEL_AFTER_SETTLE_MS) - dynamic_lead
+        t_cancel_shallow_2 = (settle_epoch + config.SHALLOW_CANCEL_BACKUP_1_MS) - dynamic_lead
+        t_cancel_shallow_3 = (settle_epoch + config.SHALLOW_CANCEL_BACKUP_2_MS) - dynamic_lead
 
         add_ui_log(
             f"⚡ [DYNAMIC LEAD TIMELINE] Locked 1-Way Lead: {dynamic_lead:.2f}ms | "
             f"Entry Fire: T-{settle_epoch - t_limit_burst:.2f}ms (Target: T-{config.ENTRY_BEFORE_SETTLE_MS}ms) | "
-            f"Cancel Fire: T+{t_cancel_shallow - settle_epoch:.2f}ms (Target: T+{config.SHALLOW_CANCEL_AFTER_SETTLE_MS:.1f}ms)"
+            f"Cancel Strikes: T+{t_cancel_shallow_1 - settle_epoch:.1f}ms / T+{t_cancel_shallow_2 - settle_epoch:.1f}ms / T+{t_cancel_shallow_3 - settle_epoch:.1f}ms"
         )
 
         # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED 4-SHALLOW LIMIT BURST (NO RETRIES)
@@ -363,8 +366,10 @@ def run_settlement_cycle(
         # Flush all Limit Orders across all active coins in 1 single socket lock (<0.5ms)
         executor.execute_multi_symbol_limit_burst_ws(ws_pipeline, multi_burst_frames)
 
-        # Phase 5: Real-Trade (LTP) Stop Loss Watchdog Loop + T+265ms Shallow Cancel Burst
-        shallow_cancel_fired = False
+        # Phase 5: Real-Trade (LTP) Stop Loss Watchdog Loop + 3-Strike Shallow Cancel (T+235ms / T+250ms / T+270ms)
+        shallow_cancel_1_fired = False
+        shallow_cancel_2_fired = False
+        shallow_cancel_3_fired = False
 
         def trigger_sl_sequence(target_symbol: str, meta: dict, real_ltp: float) -> None:
             meta["exit_price_detected"] = real_ltp
@@ -400,13 +405,33 @@ def run_settlement_cycle(
         while get_synced_time_ms() < t_cancel_orders:
             now_loop_ms = get_synced_time_ms()
 
-            # T+265ms Lead-Compensated Shallow Cancel (All 4 Shallow Orders)
-            if not shallow_cancel_fired and now_loop_ms >= t_cancel_shallow:
-                shallow_cancel_fired = True
+            # Strike #1: T+235ms Lead-Compensated Primary WS Shallow Cancel
+            if not shallow_cancel_1_fired and now_loop_ms >= t_cancel_shallow_1:
+                shallow_cancel_1_fired = True
                 for sym, meta in targets_meta.items():
                     threading.Thread(
                         target=executor.fast_cancel_shallow_orders,
-                        args=(ws_pipeline, sym, meta["shallow_cids"]),
+                        args=(ws_pipeline, sym, meta["shallow_cids"], "c1", f"STRIKE #1 (T+{int(config.SHALLOW_CANCEL_AFTER_SETTLE_MS)}ms)", False),
+                        daemon=True
+                    ).start()
+
+            # Strike #2: T+250ms Unconditional Backup #1 WS Shallow Cancel
+            if not shallow_cancel_2_fired and now_loop_ms >= t_cancel_shallow_2:
+                shallow_cancel_2_fired = True
+                for sym, meta in targets_meta.items():
+                    threading.Thread(
+                        target=executor.fast_cancel_shallow_orders,
+                        args=(ws_pipeline, sym, meta["shallow_cids"], "c2", f"BACKUP #1 (T+{int(config.SHALLOW_CANCEL_BACKUP_1_MS)}ms)", False),
+                        daemon=True
+                    ).start()
+
+            # Strike #3: T+270ms Unconditional Backup #2 WS Shallow Cancel (+ HTTP REST Fallback)
+            if not shallow_cancel_3_fired and now_loop_ms >= t_cancel_shallow_3:
+                shallow_cancel_3_fired = True
+                for sym, meta in targets_meta.items():
+                    threading.Thread(
+                        target=executor.fast_cancel_shallow_orders,
+                        args=(ws_pipeline, sym, meta["shallow_cids"], "c3", f"BACKUP #2 (T+{int(config.SHALLOW_CANCEL_BACKUP_2_MS)}ms)", True),
                         daemon=True
                     ).start()
 
