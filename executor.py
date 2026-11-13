@@ -40,10 +40,19 @@ def binance_rest_delete(endpoint: str, params: dict) -> dict:
         return {"error": str(e)}
 
 
-def fast_cancel_shallow_orders(ws_pipeline, symbol: str, shallow_cids: Sequence[str]) -> None:
+def fast_cancel_shallow_orders(
+    ws_pipeline,
+    symbol: str,
+    shallow_cids: Sequence[str],
+    strike_tag: str = "c1",
+    strike_label: str = "STRIKE #1",
+    use_rest_fallback: bool = False
+) -> None:
     now_cancel_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
-    add_ui_log(f"⚡ [SHALLOW CANCEL BURST at {now_cancel_dt}] Firing WS cancel for {len(shallow_cids)} shallow orders on {symbol}...")
-    results = ws_pipeline.cancel_orders_batch_ws(symbol, list(shallow_cids), timeout=0.08)
+    add_ui_log(f"⚡ [SHALLOW CANCEL {strike_label} at {now_cancel_dt}] Firing WS cancel for {len(shallow_cids)} shallow orders on {symbol}...")
+    results = ws_pipeline.cancel_orders_batch_ws(symbol, list(shallow_cids), timeout=0.08, strike_tag=strike_tag)
+    ws_transport_failed = False
+
     for cid, res in results:
         telem = ws_pipeline.get_shallow_cancel_telemetry(cid)
         f_ms = telem.get("fired_local_ms", 0)
@@ -52,14 +61,22 @@ def fast_cancel_shallow_orders(ws_pipeline, symbol: str, shallow_cids: Sequence[
         f_str = datetime.fromtimestamp(f_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if f_ms > 0 else "--"
         b_str = datetime.fromtimestamp(b_ms / 1000, tz=IST).strftime("%H:%M:%S.%f")[:-3] if b_ms > 0 else "--"
 
-        err_obj = res.get("error", {}) if isinstance(res, dict) else {}
-        err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
-        if isinstance(res, dict) and res.get("status") == 200 and not res.get("error"):
-            add_ui_log(f"✅ [SHALLOW CANCEL CONFIRMED] {cid} | Fired: {f_str} | Engine: {b_str} (RTT: {lat}ms)")
+        err_raw = res.get("error") if isinstance(res, dict) else None
+        err_code = err_raw.get("code") if isinstance(err_raw, dict) else None
+
+        if isinstance(err_raw, str) and err_raw:
+            ws_transport_failed = True
+
+        if isinstance(res, dict) and res.get("status") == 200 and not err_raw:
+            add_ui_log(f"✅ [{strike_label} CONFIRMED] {cid} | Fired: {f_str} | Engine: {b_str} (RTT: {lat}ms)")
         elif err_code == -2011:
-            add_ui_log(f"ℹ️ [SHALLOW ALREADY FILLED/CLOSED] {cid} ignored safely.")
+            add_ui_log(f"ℹ️ [{strike_label} ALREADY FILLED/CLOSED] {cid} ignored safely.")
         else:
-            add_ui_log(f"⚠️ [SHALLOW CANCEL RESPONSE] {cid}: {res}")
+            add_ui_log(f"⚠️ [{strike_label} RESPONSE] {cid}: {res}")
+
+    if use_rest_fallback and (ws_transport_failed or not ws_pipeline.order_ws_ready):
+        add_ui_log(f"🚨 [{strike_label} REST FALLBACK] WS issue detected on {symbol}! Firing HTTP REST allOpenOrders cancel...")
+        binance_rest_delete("/fapi/v1/allOpenOrders", {"symbol": symbol})
 
 
 def fast_cancel_all_orders(ws_pipeline, symbol: str, cids: Sequence[str] = ()) -> bool:
@@ -104,7 +121,7 @@ def fetch_post_trade_reconciliation(
     start_time_ms: int,
     settle_epoch_ms: int = 0,
     funding_rate: float = 0.0,
-    unit_notional_usd: float = 30.0
+    unit_notional_usd: float = 140.0
 ) -> tuple[float, float, str, str, list[dict], dict]:
     """
     Trade khatm hone ke baad (T+15s par) Binance REST API (/allOrders, /userTrades, /income) se official
