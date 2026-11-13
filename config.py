@@ -16,10 +16,10 @@ BINANCE_REST_URL = "https://fapi.binance.com"
 BINANCE_WS_URL = "wss://fstream.binance.com"
 BINANCE_WS_API_URL = "wss://ws-fapi.binance.com/ws-fapi/v1"
 
-# Margin & Dynamic Leverage Configuration ($7.0 USDT Base Margin @ 20x)
-TRADE_MARGIN_USD = 7.0                 # Scanner preflight & UI base margin reference ($7.0 USDT)
-LIMIT_ORDER_MARGIN_USD = 7.0           # 4 Shallow limit orders ke liye fixed $7.0 USDT margin each
-MAX_LEVERAGE_CAP = 20.0                # 20x hard cap ceiling ($7.0 * 20 = $140.0 USDT > $5.0 min notional)
+# Margin & Dynamic Leverage Configuration ($7.00 USDT Base Margin @ 20x)
+TRADE_MARGIN_USD = 7.00                # Scanner preflight & UI base margin reference ($7.00 USDT)
+LIMIT_ORDER_MARGIN_USD = 7.00          # 4 Shallow limit orders ke liye fixed $7.00 USDT margin each
+MAX_LEVERAGE_CAP = 20.0                # 20x hard cap ceiling ($7.00 * 20 = $140.0 USDT > $5.0 min notional)
 BINANCE_MIN_NOTIONAL = 5.0             # Binance Futures minimum notional safety threshold
 
 # Scanner Base Eligibility & Danger Ceiling
@@ -30,7 +30,7 @@ MAX_DANGER_FUNDING_RATE = -0.0160      # Maximum -1.60% hard risk ceiling (Safe 
 SWEET_SPOT_MIN = -0.0140               # -1.40% (Updated Priority Bound)
 SWEET_SPOT_MAX = -0.0080               # -0.80%
 
-# 4 Shallow Limit Orders (20%, 40%, 60%, 80% of |FR| @ $7.0 USDT each; No DCA Orders)
+# 4 Shallow Limit Orders (20%, 40%, 60%, 80% of |FR| @ $7.00 USDT each; No DCA Orders)
 SHALLOW_LIMIT_RATIOS = (0.20, 0.40, 0.60, 0.80)
 
 # Stop-Loss Configuration (150% of |FR| below Anchor Price, with strict 0.60% Minimum Floor)
@@ -55,8 +55,10 @@ MULTI_PING_BEFORE_SETTLE_MS = 500      # T-500ms: 3-Ping Rapid WS Burst for Fres
 # Single-Shot Limit Execution Target Offset on Binance Engine
 ENTRY_BEFORE_SETTLE_MS = 50            # T-50ms target arrival on Binance (compensated by 1-way lead)
 
-# Post-Settlement Timeline Offsets & Dynamic Lead Bounds
-SHALLOW_CANCEL_AFTER_SETTLE_MS = 265.0 # Target cancellation strike time (T+265ms) on Binance matching engine
+# Post-Settlement Timeline Offsets & Dynamic Lead Bounds (3-Strike Shallow Cancel: 235ms -> 250ms -> 270ms)
+SHALLOW_CANCEL_AFTER_SETTLE_MS = 235.0 # Strike #1: Target cancellation strike time (T+235ms) on Binance matching engine
+SHALLOW_CANCEL_BACKUP_1_MS = 250.0     # Strike #2 (Backup #1): Unconditional WS cancel at T+250ms
+SHALLOW_CANCEL_BACKUP_2_MS = 270.0     # Strike #3 (Backup #2): Unconditional WS + REST fallback cancel at T+270ms
 SHALLOW_CANCEL_LEAD_MIN_MS = 0.5       # Minimum clamped 1-way network lead
 SHALLOW_CANCEL_LEAD_MAX_MS = 25.0      # Maximum clamped 1-way network lead (supports full compensation)
 SHALLOW_CANCEL_LEAD_DEFAULT_MS = 1.2   # Safe fallback lead if ping not yet measured
