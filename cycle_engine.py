@@ -26,33 +26,18 @@ session.headers.update({
 
 
 def get_strategy_label(rate_val: float) -> str:
-    if abs(float(rate_val)) >= config.FR_THRESHOLD_RATIO:
-        return f"COND 1 (>=0.9%): 4 LIMITS (30/50/70/130% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
-    return f"COND 2 (<0.9%): 5 LIMITS (30/50/70% @ ${config.LIMIT_ORDER_MARGIN_USD} + 2 DCA @ ${config.DCA_SPLIT_MARGIN_USD}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
+    return f"4 SHALLOW LIMITS (20/40/60/80% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
 
 
-def evaluate_dca_condition_specs(current_rate: float) -> tuple[float, float, float, str, bool]:
-    """Funding rate ke aadhar par Condition 1 ya Condition 2 ke fixed deep DCA ratios aur SL return karta hai"""
+def evaluate_sl_specs(current_rate: float) -> tuple[float, str]:
+    """Funding rate ke aadhar par Anchor Price se Stop-Loss distance (150% |FR|, min 0.60%) return karta hai"""
     abs_r = abs(float(current_rate))
-    if abs_r >= config.FR_THRESHOLD_RATIO:
-        g1 = round(abs_r * config.GRID_RATIO_DCA_HIGH, 5)
-        g2 = 0.0
-        sl_r = config.SL_BELOW_LIMIT_RATIO_COND_1
-        lbl = (
-            f"COND 1 (|FR| >= 0.90%): 3 Shallow (30/50/70% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) + "
-            f"DCA #1 (-{g1 * 100:.3f}% @ ${config.LIMIT_ORDER_MARGIN_USD}), SL (-{sl_r * 100:.2f}%)"
-        )
-        return g1, g2, sl_r, lbl, True
-    else:
-        g1 = max(config.MIN_GRID_GAP_DCA_1_LOW, round(abs_r * config.GRID_RATIO_DCA_LOW, 5))
-        g2 = 0.0
-        sl_r = config.SL_BELOW_LIMIT_RATIO_COND_2
-        lbl = (
-            f"COND 2 (|FR| < 0.90%): 3 Shallow (30/50/70% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) + "
-            f"L1 (-{g1 * 100:.3f}% @ ${config.DCA_SPLIT_MARGIN_USD}) + "
-            f"L2 (L1 - 0.50% @ ${config.DCA_SPLIT_MARGIN_USD}), SL (-{sl_r * 100:.2f}%)"
-        )
-        return g1, g2, sl_r, lbl, False
+    sl_r = max(config.MIN_SL_DROP_RATIO, round(abs_r * config.SL_FUNDING_MULTIPLIER, 6))
+    lbl = (
+        f"4 Shallow (20/40/60/80% FR @ ${config.LIMIT_ORDER_MARGIN_USD}), "
+        f"SL (-{sl_r * 100:.3f}% from Anchor)"
+    )
+    return sl_r, lbl
 
 
 def format_limit_qty(notional_usd: float, limit_price_str: str, min_qty: float, qty_step: float) -> str:
@@ -95,8 +80,8 @@ def run_settlement_cycle(
     """
     Executes the complete high-precision settlement cycle from T-20s to T+20s:
     Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s TLS / T-4s Ping) ->
-    Phase 3 (T-2.5s Snapshot / T-500ms 3-Ping Burst) -> Phase 4 (T-50ms Limit Burst) ->
-    Phase 5 (SL Watchdog + T+230ms Shallow Cancel) -> Phase 6 (T+6s Cancel / T+7s Exit) ->
+    Phase 3 (T-2.5s Snapshot / T-500ms 3-Ping Burst) -> Phase 4 (T-50ms 4-Shallow Limit Burst) ->
+    Phase 5 (SL Watchdog + T+265ms Shallow Cancel) -> Phase 6 (T+6s Cancel / T+7s Exit) ->
     Phase 6B (T+9s Safety Sweep #1) -> Phase 7 (T+15s Ledger Audit & Smart Merge) ->
     Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
     """
@@ -178,25 +163,22 @@ def run_settlement_cycle(
         cycle_order_start_ms = 0
         epoch_tag = f"{int(settle_epoch / 1000) % 100000}"
 
-        # Build execution structures & Unique Collision-Free Client Order IDs + Planned DCA Maps
+        # Build execution structures & Unique Collision-Free Client Order IDs + Planned Shallow Maps
         for c_idx, c in enumerate(fresh_targets, start=1):
             sym = c["symbol"]
             clean_sym = sym.replace("USDT", "")[:7]
             rate = c["rate"]
             p_val = c["price"]
             qty_str, applied_lev, tick_s, qty_s, min_q = calculate_order_specs(sym, p_val)
-            gap_dca_1, _, sl_ratio, cond_label, is_cond_1 = evaluate_dca_condition_specs(rate)
+            sl_ratio, cond_label = evaluate_sl_specs(rate)
 
             shallow_notional = max(5.5, config.LIMIT_ORDER_MARGIN_USD * applied_lev)
-            dca1_notional = max(5.5, config.LIMIT_ORDER_MARGIN_USD * applied_lev)
-            dca2_notional = max(5.5, config.DCA_SPLIT_MARGIN_USD * applied_lev)
 
-            # Unique non-colliding order ID format (e.g. s1-c1-1000CAT-84600)
+            # Unique non-colliding order ID format for 4 Shallow Orders (20%, 40%, 60%, 80% FR)
             cid_s1 = f"s1-c{c_idx}-{clean_sym}-{epoch_tag}"
             cid_s2 = f"s2-c{c_idx}-{clean_sym}-{epoch_tag}"
             cid_s3 = f"s3-c{c_idx}-{clean_sym}-{epoch_tag}"
-            cid_d1 = f"d1-c{c_idx}-{clean_sym}-{epoch_tag}"
-            cid_d2 = f"d2-c{c_idx}-{clean_sym}-{epoch_tag}"
+            cid_s4 = f"s4-c{c_idx}-{clean_sym}-{epoch_tag}"
 
             targets_meta[sym] = {
                 "symbol": sym,
@@ -211,18 +193,14 @@ def run_settlement_cycle(
                 "qty_step": qty_s,
                 "min_qty": min_q,
                 "qty_str": qty_str,
-                "gap_dca_1": gap_dca_1,
                 "sl_ratio": sl_ratio,
                 "cond_label": cond_label,
-                "is_cond_1": is_cond_1,
                 "shallow_notional": shallow_notional,
-                "dca1_notional": dca1_notional,
-                "dca2_notional": dca2_notional,
-                "shallow_cids": [cid_s1, cid_s2, cid_s3],
-                "all_cids": [cid_s1, cid_s2, cid_s3, cid_d1] + ([] if is_cond_1 else [cid_d2]),
-                "cids": (cid_s1, cid_s2, cid_s3, cid_d1, cid_d2),
+                "shallow_cids": [cid_s1, cid_s2, cid_s3, cid_s4],
+                "all_cids": [cid_s1, cid_s2, cid_s3, cid_s4],
+                "cids": (cid_s1, cid_s2, cid_s3, cid_s4),
                 "planned_shallow_map": {},
-                "planned_dca_map": {},        # Permanent reservation for Row 2 Yellow DCA boxes
+                "planned_dca_map": {},
                 "sl_price": 0.0,
                 "sl_target_str": "--",
                 "sl_triggered": False,
@@ -318,7 +296,7 @@ def run_settlement_cycle(
             f"Cancel Fire: T+{t_cancel_shallow - settle_epoch:.2f}ms (Target: T+{config.SHALLOW_CANCEL_AFTER_SETTLE_MS:.1f}ms)"
         )
 
-        # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED LIMIT BURST (NO RETRIES)
+        # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED 4-SHALLOW LIMIT BURST (NO RETRIES)
         precision_wait_until(t_limit_burst)
         cycle_order_start_ms = int(get_synced_time_ms()) - 1000
         entry_dispatch_time = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
@@ -339,12 +317,13 @@ def run_settlement_cycle(
 
             dec_anchor = Decimal(str(anchor_price))
             abs_rate_dec = Decimal(str(abs(float(meta["rate"]))))
-            cid_s1, cid_s2, cid_s3, cid_d1, cid_d2 = meta["cids"]
+            cid_s1, cid_s2, cid_s3, cid_s4 = meta["cids"]
 
             shallow_specs = [
-                (cid_s1, config.SHALLOW_LIMIT_RATIOS[0], "Shallow Limit #1 (30% FR)", 1),
-                (cid_s2, config.SHALLOW_LIMIT_RATIOS[1], "Shallow Limit #2 (50% FR)", 2),
-                (cid_s3, config.SHALLOW_LIMIT_RATIOS[2], "Shallow Limit #3 (70% FR)", 3),
+                (cid_s1, config.SHALLOW_LIMIT_RATIOS[0], "Shallow Limit #1 (20% FR)", 1),
+                (cid_s2, config.SHALLOW_LIMIT_RATIOS[1], "Shallow Limit #2 (40% FR)", 2),
+                (cid_s3, config.SHALLOW_LIMIT_RATIOS[2], "Shallow Limit #3 (60% FR)", 3),
+                (cid_s4, config.SHALLOW_LIMIT_RATIOS[3], "Shallow Limit #4 (80% FR)", 4),
             ]
 
             coin_orders_count = 0
@@ -363,66 +342,28 @@ def run_settlement_cycle(
                     "sort_idx": s_idx
                 }
 
-            if meta["is_cond_1"]:
-                # Condition 1: 1 DCA Limit Order at 130% of |FR| ($1.50 USDT Margin), SL 0.50% below DCA Limit #1
-                dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(meta["gap_dca_1"])))
-                dca1_price_str = format_tick(float(dca1_p_dec), meta["tick_size"])
-                dca1_qty = format_limit_qty(meta["dca1_notional"], dca1_price_str, meta["min_qty"], meta["qty_step"])
-                multi_burst_frames.append((sym, cid_d1, dca1_qty, dca1_price_str, meta["gap_dca_1"], "DCA Limit #1 (130% FR)"))
-                coin_orders_count += 1
-                meta["planned_dca_map"][cid_d1] = {
-                    "cid": cid_d1,
-                    "label": "DCA Limit #1",
-                    "price": dca1_price_str,
-                    "qty": dca1_qty,
-                    "sort_idx": 4
-                }
-
-                sl_dec = Decimal(dca1_price_str) * (Decimal("1") - Decimal(str(meta["sl_ratio"])))
-                meta["sl_price"] = float(sl_dec)
-                meta["sl_target_str"] = format_tick(meta["sl_price"], meta["tick_size"])
-            else:
-                # Condition 2: 2 DCA Limit Orders ($0.75 USDT Margin each), SL 0.50% below DCA Limit #2
-                dca1_p_dec = dec_anchor * (Decimal("1") - Decimal(str(meta["gap_dca_1"])))
-                dca1_price_str = format_tick(float(dca1_p_dec), meta["tick_size"])
-                dca1_qty = format_limit_qty(meta["dca2_notional"], dca1_price_str, meta["min_qty"], meta["qty_step"])
-                multi_burst_frames.append((sym, cid_d1, dca1_qty, dca1_price_str, meta["gap_dca_1"], f"DCA Limit #1 (${config.DCA_SPLIT_MARGIN_USD})"))
-                meta["planned_dca_map"][cid_d1] = {
-                    "cid": cid_d1,
-                    "label": "DCA Limit #1",
-                    "price": dca1_price_str,
-                    "qty": dca1_qty,
-                    "sort_idx": 4
-                }
-
-                dca2_p_dec = Decimal(dca1_price_str) * (Decimal("1") - Decimal(str(config.L2_BELOW_L1_GAP)))
-                dca2_price_str = format_tick(float(dca2_p_dec), meta["tick_size"])
-                gap_dca_2_val = float((dec_anchor - Decimal(dca2_price_str)) / dec_anchor)
-                dca2_qty = format_limit_qty(meta["dca2_notional"], dca2_price_str, meta["min_qty"], meta["qty_step"])
-                multi_burst_frames.append((sym, cid_d2, dca2_qty, dca2_price_str, gap_dca_2_val, f"DCA Limit #2 (${config.DCA_SPLIT_MARGIN_USD})"))
-                meta["planned_dca_map"][cid_d2] = {
-                    "cid": cid_d2,
-                    "label": "DCA Limit #2",
-                    "price": dca2_price_str,
-                    "qty": dca2_qty,
-                    "sort_idx": 5
-                }
-                coin_orders_count += 2
-
-                sl_dec = Decimal(dca2_price_str) * (Decimal("1") - Decimal(str(meta["sl_ratio"])))
-                meta["sl_price"] = float(sl_dec)
-                meta["sl_target_str"] = format_tick(meta["sl_price"], meta["tick_size"])
+            # Stop-Loss: 150% of |FR| below Anchor Price, with strict 0.60% minimum floor
+            sl_drop_dec = max(
+                Decimal(str(config.MIN_SL_DROP_RATIO)),
+                abs_rate_dec * Decimal(str(config.SL_FUNDING_MULTIPLIER))
+            )
+            sl_dec = dec_anchor * (Decimal("1") - sl_drop_dec)
+            meta["sl_price"] = float(sl_dec)
+            meta["sl_target_str"] = format_tick(meta["sl_price"], meta["tick_size"])
 
             add_ui_log(
-                f"⚡ [T-{config.ENTRY_BEFORE_SETTLE_MS}ms SINGLE-SHOT BURST ({entry_dispatch_time})] Firing {coin_orders_count} Limit Orders on {sym} "
+                f"⚡ [T-{config.ENTRY_BEFORE_SETTLE_MS}ms SINGLE-SHOT BURST ({entry_dispatch_time})] Firing {coin_orders_count} Shallow Limit Orders on {sym} "
                 f"(${config.LIMIT_ORDER_MARGIN_USD} Base @ {meta['applied_lev']}x) | Anchor ({anchor_src}): {anchor_price:.6f} | {meta['cond_label']}"
             )
-            add_ui_log(f"🛡️ [STOP LOSS ARMED ({sym})] Floor: {meta['sl_target_str']} USDT (Pure Trade LTP Trigger)")
+            add_ui_log(
+                f"🛡️ [STOP LOSS ARMED ({sym})] Floor: {meta['sl_target_str']} USDT "
+                f"(-{float(sl_drop_dec) * 100:.3f}% from Anchor | Pure Trade LTP Trigger)"
+            )
 
         # Flush all Limit Orders across all active coins in 1 single socket lock (<0.5ms)
         executor.execute_multi_symbol_limit_burst_ws(ws_pipeline, multi_burst_frames)
 
-        # Phase 5: Real-Trade (LTP) Stop Loss Watchdog Loop + T+230ms Shallow Cancel Burst
+        # Phase 5: Real-Trade (LTP) Stop Loss Watchdog Loop + T+265ms Shallow Cancel Burst
         shallow_cancel_fired = False
 
         def trigger_sl_sequence(target_symbol: str, meta: dict, real_ltp: float) -> None:
@@ -459,7 +400,7 @@ def run_settlement_cycle(
         while get_synced_time_ms() < t_cancel_orders:
             now_loop_ms = get_synced_time_ms()
 
-            # T+230ms Lead-Compensated Shallow Cancel
+            # T+265ms Lead-Compensated Shallow Cancel (All 4 Shallow Orders)
             if not shallow_cancel_fired and now_loop_ms >= t_cancel_shallow:
                 shallow_cancel_fired = True
                 for sym, meta in targets_meta.items():
@@ -489,11 +430,11 @@ def run_settlement_cycle(
 
             time.sleep(0.001)
 
-        # Phase 6: Normal Settlement Exit (T+6s Cancel Unfilled Limits -> T+7s Market Exit)
+        # Phase 6: Normal Settlement Exit (T+6s Cancel Any Remaining Open Orders -> T+7s Market Exit)
         remaining_active_metas = [m for m in targets_meta.values() if not m["sl_triggered"]]
         if remaining_active_metas:
             precision_wait_until(t_cancel_orders)
-            add_ui_log(f"⚡ [T+{(config.CANCEL_ORDERS_AFTER_SETTLE_MS // 1000)}s SETTLEMENT FEE CAPTURED] Purging remaining unfilled limit orders via Fast WS...")
+            add_ui_log(f"⚡ [T+{(config.CANCEL_ORDERS_AFTER_SETTLE_MS // 1000)}s SETTLEMENT FEE CAPTURED] Purging any remaining open orders via Fast WS...")
             cancel_threads = []
             for meta in remaining_active_metas:
                 th_c = threading.Thread(
@@ -562,7 +503,11 @@ def run_settlement_cycle(
         add_ui_log(f"📊 [POST-TRADE AUDIT at T+{(config.POST_TRADE_AUDIT_AFTER_SETTLE_MS // 1000)}s] Reconciling official millisecond timestamps and PnL from Binance...")
         for sym, meta in targets_meta.items():
             rec_entry_p, rec_exit_p, rec_entry_t, rec_exit_t, rec_dca_hits, rec_pnl = executor.fetch_post_trade_reconciliation(
-                sym, cycle_order_start_ms or (settle_epoch - 5000)
+                sym,
+                cycle_order_start_ms or (settle_epoch - 5000),
+                settle_epoch_ms=settle_epoch,
+                funding_rate=meta["rate"],
+                unit_notional_usd=meta["shallow_notional"]
             )
 
             final_avg_entry = rec_entry_p or ws_pipeline.get_avg_fill_price(sym) or 0.0
@@ -593,7 +538,7 @@ def run_settlement_cycle(
 
             dca_hits_list = list(combined_hits_by_idx.values())
 
-            # Row 1 Reservation: Ensure all 3 Shallow Order boxes ALWAYS appear in Row 1 (Blue)
+            # Row 1 Reservation: Ensure all 4 Shallow Order boxes ALWAYS appear in Row 1 (Blue)
             filled_shallow_indices = {h.get("sort_idx") for h in dca_hits_list if h.get("group") == "shallow"}
             for cid_s, p_info in meta["planned_shallow_map"].items():
                 s_idx = p_info["sort_idx"]
@@ -619,32 +564,13 @@ def run_settlement_cycle(
                         "cancel_latency_ms": lat
                     })
 
-            # Row 2 Reservation: Ensure planned DCA boxes ALWAYS appear in Row 2 (Yellow)
-            filled_dca_indices = {h.get("sort_idx") for h in dca_hits_list if h.get("group") == "dca"}
-            for cid_d, d_info in meta["planned_dca_map"].items():
-                d_idx = d_info["sort_idx"]
-                if d_idx not in filled_dca_indices:
-                    dca_hits_list.append({
-                        "level": d_info["label"],
-                        "group": "dca",
-                        "sort_idx": d_idx,
-                        "status": "CANCELED",
-                        "target_price": d_info["price"],
-                        "target_qty": d_info["qty"],
-                        "price": d_info["price"],
-                        "qty": d_info["qty"],
-                        "cancel_fired": "--",
-                        "binance_canceled": "--",
-                        "cancel_latency_ms": 0
-                    })
-
-            # Re-sort dca_hits_list so Shallow #1 -> #2 -> #3 -> DCA #1 -> DCA #2 are in strict order
+            # Re-sort dca_hits_list so Shallow #1 -> #2 -> #3 -> #4 are in strict order
             dca_hits_list.sort(key=lambda x: (x.get("sort_idx", 99), x.get("first_ms", 0)))
 
             if final_avg_entry > 0:
                 add_ui_log(
                     f"✅ [RECONCILED STATS ({sym})] Avg Entry: {final_avg_entry} | Exit: {final_exit_price} | "
-                    f"Funding: {rec_pnl.get('funding_fee_str')} ({rec_pnl.get('funding_fee_time')}) | "
+                    f"Funding: {rec_pnl.get('funding_fee_str')} ({rec_pnl.get('funding_fee_time')}) [{rec_pnl.get('funding_orders_summary')}] | "
                     f"Net PnL: {rec_pnl.get('pnl_str')} | First Fill: {entry_fill_time_str}"
                 )
                 add_ui_log(f"   💵 [PNL BREAKDOWN ({sym})] {rec_pnl.get('pnl_breakdown')}")
@@ -668,6 +594,7 @@ def run_settlement_cycle(
                 "funding_fee_received": rec_pnl.get("funding_fee_str", "$0.0000"),
                 "funding_fee_class": rec_pnl.get("funding_fee_class", "pnl-neutral"),
                 "funding_fee_time": rec_pnl.get("funding_fee_time", "--:--:--"),
+                "funding_orders_summary": rec_pnl.get("funding_orders_summary", "0 Orders ($0.00)"),
                 "pnl": rec_pnl.get("pnl_str", "$0.0000"),
                 "pnl_class": rec_pnl.get("pnl_class", "pnl-neutral"),
                 "pnl_breakdown": rec_pnl.get("pnl_breakdown", ""),
