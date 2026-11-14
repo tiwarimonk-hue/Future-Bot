@@ -121,7 +121,7 @@ def fetch_post_trade_reconciliation(
     start_time_ms: int,
     settle_epoch_ms: int = 0,
     funding_rate: float = 0.0,
-    unit_notional_usd: float = 140.0
+    unit_notional_usd: float = 30.0
 ) -> tuple[float, float, str, str, list[dict], dict]:
     """
     Trade khatm hone ke baad (T+15s par) Binance REST API (/allOrders, /userTrades, /income) se official
