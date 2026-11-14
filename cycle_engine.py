@@ -9,7 +9,8 @@ import config
 from binance_ws import BinanceFastLaneWS
 from dashboard import (
     IST, data_lock, dashboard_data, add_ui_log,
-    record_completed_trade, load_blocked_coins
+    record_completed_trade, load_blocked_coins,
+    get_active_base_margin_usd
 )
 from scanner import (
     sync_binance_clock, get_synced_time_ms, precision_wait_until,
@@ -25,16 +26,18 @@ session.headers.update({
 })
 
 
-def get_strategy_label(rate_val: float) -> str:
-    return f"4 SHALLOW LIMITS (20/40/60/80% FR @ ${config.LIMIT_ORDER_MARGIN_USD}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
+def get_strategy_label(rate_val: float, margin_usd: float | None = None) -> str:
+    m_val = margin_usd if margin_usd is not None else get_active_base_margin_usd()
+    return f"4 SHALLOW LIMITS (20/40/60/80% FR @ ${m_val:.2f}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
 
 
-def evaluate_sl_specs(current_rate: float) -> tuple[float, str]:
+def evaluate_sl_specs(current_rate: float, margin_usd: float | None = None) -> tuple[float, str]:
     """Funding rate ke aadhar par Anchor Price se Stop-Loss distance (150% |FR|, min 0.60%) return karta hai"""
+    m_val = margin_usd if margin_usd is not None else get_active_base_margin_usd()
     abs_r = abs(float(current_rate))
     sl_r = max(config.MIN_SL_DROP_RATIO, round(abs_r * config.SL_FUNDING_MULTIPLIER, 6))
     lbl = (
-        f"4 Shallow (20/40/60/80% FR @ ${config.LIMIT_ORDER_MARGIN_USD}), "
+        f"4 Shallow (20/40/60/80% FR @ ${m_val:.2f}), "
         f"SL (-{sl_r * 100:.3f}% from Anchor)"
     )
     return sl_r, lbl
@@ -97,6 +100,8 @@ def run_settlement_cycle(
             is_manual_mode = dashboard_data.get("manual_mode", False)
             selected_symbols = list(dashboard_data.get("manual_selected_symbols", []))
             dashboard_data["selection_locked"] = True
+
+        active_margin_usd = get_active_base_margin_usd()
 
         # Safety Check: if any target coin got blocked, filter/abort immediately
         blocked_now = load_blocked_coins()
@@ -172,9 +177,9 @@ def run_settlement_cycle(
             rate = c["rate"]
             p_val = c["price"]
             qty_str, applied_lev, tick_s, qty_s, min_q = calculate_order_specs(sym, p_val)
-            sl_ratio, cond_label = evaluate_sl_specs(rate)
+            sl_ratio, cond_label = evaluate_sl_specs(rate, active_margin_usd)
 
-            shallow_notional = max(5.5, config.LIMIT_ORDER_MARGIN_USD * applied_lev)
+            shallow_notional = max(5.5, active_margin_usd * applied_lev)
 
             # Unique non-colliding order ID format for 4 Shallow Orders (20%, 40%, 60%, 80% FR)
             cid_s1 = f"s1-c{c_idx}-{clean_sym}-{epoch_tag}"
@@ -190,6 +195,7 @@ def run_settlement_cycle(
                 "rate_str": f"{rate * 100:+.4f}%",
                 "price": p_val,
                 "t2_snapshot_price": p_val,
+                "margin_usd": active_margin_usd,
                 "applied_lev": applied_lev,
                 "tick_size": tick_s,
                 "qty_step": qty_s,
@@ -356,7 +362,7 @@ def run_settlement_cycle(
 
             add_ui_log(
                 f"⚡ [T-{config.ENTRY_BEFORE_SETTLE_MS}ms SINGLE-SHOT BURST ({entry_dispatch_time})] Firing {coin_orders_count} Shallow Limit Orders on {sym} "
-                f"(${config.LIMIT_ORDER_MARGIN_USD} Base @ {meta['applied_lev']}x) | Anchor ({anchor_src}): {anchor_price:.6f} | {meta['cond_label']}"
+                f"(${meta['margin_usd']:.2f} Base @ {meta['applied_lev']}x) | Anchor ({anchor_src}): {anchor_price:.6f} | {meta['cond_label']}"
             )
             add_ui_log(
                 f"🛡️ [STOP LOSS ARMED ({sym})] Floor: {meta['sl_target_str']} USDT "
@@ -600,7 +606,7 @@ def run_settlement_cycle(
                 )
                 add_ui_log(f"   💵 [PNL BREAKDOWN ({sym})] {rec_pnl.get('pnl_breakdown')}")
 
-            strategy_lbl = get_strategy_label(meta["rate"])
+            strategy_lbl = get_strategy_label(meta["rate"], meta["margin_usd"])
             record_completed_trade({
                 "symbol": sym,
                 "funding_rate": meta["rate_str"],
