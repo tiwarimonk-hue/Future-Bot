@@ -7,7 +7,10 @@ from typing import Optional, Tuple, List, Dict, Any, Sequence
 from datetime import datetime, timezone, timedelta
 import requests
 import config
-from dashboard import dashboard_data, data_lock, add_ui_log, load_blocked_coins
+from dashboard import (
+    dashboard_data, data_lock, add_ui_log,
+    load_blocked_coins, get_active_base_margin_usd
+)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 clock_offset_ms = 0.0
@@ -238,12 +241,13 @@ def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[boo
     if rules.get("status") != "TRADING" or rules.get("contract_type") != "PERPETUAL":
         return False, f"Not trading perpetual ({rules.get('status')}/{rules.get('contract_type')})"
 
+    active_margin = get_active_base_margin_usd()
     coin_max_lev = get_symbol_max_leverage(symbol)
     effective_lev = min(coin_max_lev, int(config.MAX_LEVERAGE_CAP))
-    purchasing_power = config.TRADE_MARGIN_USD * effective_lev
+    purchasing_power = active_margin * effective_lev
 
     if purchasing_power < config.BINANCE_MIN_NOTIONAL:
-        return False, f"Purchasing power ({purchasing_power:.2f} USDT) < Min Notional ({config.BINANCE_MIN_NOTIONAL} USDT)"
+        return False, f"Purchasing power ({purchasing_power:.2f} USDT @ ${active_margin:.2f} x {effective_lev}x) < Min Notional ({config.BINANCE_MIN_NOTIONAL} USDT)"
 
     min_qty = rules["min_qty"]
     min_lot_cost = min_qty * mark_price
@@ -485,7 +489,8 @@ def calculate_order_specs(symbol: str, price: float):
     qty_step = rules.get("qty_step", 1.0)
     min_qty = rules.get("min_qty", 1.0)
 
-    total_notional_usd = max(config.BINANCE_MIN_NOTIONAL, config.TRADE_MARGIN_USD * applied_leverage)
+    active_margin = get_active_base_margin_usd()
+    total_notional_usd = max(config.BINANCE_MIN_NOTIONAL, active_margin * applied_leverage)
     raw_qty = max(min_qty, (total_notional_usd / price)) if price > 0 else min_qty
     qty_str = format_step(raw_qty, qty_step)
     if float(qty_str) < min_qty:
