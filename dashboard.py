@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import math
 import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -114,7 +115,8 @@ dashboard_data = {
     "target_settlement_ms": 0,
     "target_settlement": "--:--:-- IST",
     "clock_offset_ms": 0.0,
-    "margin_usd": f"${config.TRADE_MARGIN_USD} USDT",
+    "base_margin_usd": float(config.TRADE_MARGIN_USD),
+    "margin_usd": f"${config.TRADE_MARGIN_USD:.2f} USDT",
     "trades": trade_history,
     "trading_enabled": True,
     "manual_mode": False,
@@ -124,6 +126,12 @@ dashboard_data = {
     "top_5_candidates": [],
     "blocked_coins": load_blocked_coins()
 }
+
+
+def get_active_base_margin_usd() -> float:
+    with data_lock:
+        val = float(dashboard_data.get("base_margin_usd", config.TRADE_MARGIN_USD))
+        return max(0.30, round(val, 2))
 
 
 def add_ui_log(message: str) -> None:
@@ -170,6 +178,52 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "trading_enabled": current_state}).encode("utf-8"))
             return
+
+        elif self.path == "/api/set-margin":
+            try:
+                payload = json.loads(body)
+                raw_val = float(payload.get("margin", 0.0))
+                if math.isnan(raw_val) or math.isinf(raw_val) or raw_val < 0.30:
+                    self.send_response(400)
+                    self.send_header("Content-type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "success": False,
+                        "message": "Minimum Base Margin is $0.30 USDT (required for $5.00 Binance min notional at 20x)."
+                    }).encode("utf-8"))
+                    return
+
+                new_margin = round(raw_val, 2)
+                with data_lock:
+                    if dashboard_data["selection_locked"]:
+                        self.send_response(403)
+                        self.send_header("Content-type", "application/json")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "success": False,
+                            "message": "Base Margin is locked within 1 minute of settlement."
+                        }).encode("utf-8"))
+                        return
+
+                    dashboard_data["base_margin_usd"] = new_margin
+                    dashboard_data["margin_usd"] = f"${new_margin:.2f} USDT"
+                    dashboard_data["force_rescan"] = True
+
+                add_ui_log(f"💰 [BASE MARGIN UPDATED] Active Base Margin set to ${new_margin:.2f} USDT per order.")
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "base_margin_usd": new_margin}).encode("utf-8"))
+                return
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "message": f"Invalid margin value: {e}"}).encode("utf-8"))
+                return
 
         elif self.path == "/api/set-manual":
             try:
