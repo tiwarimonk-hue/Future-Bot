@@ -8,7 +8,7 @@ def get_dashboard_html() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes">
-<title>Binance Tokyo Funding Sniper (${config.TRADE_MARGIN_USD} USDT Ledger)</title>
+<title>Binance Tokyo Funding Sniper (Dynamic Margin Ledger)</title>
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
 
@@ -34,7 +34,9 @@ body {{ background-color: #0b0e11; color: #eaecef; padding: 14px; display: flex;
 
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }}
 .card {{ background: #1e2329; padding: 12px 14px; border-radius: 10px; border: 1px solid #2b313a; }}
-.card-title {{ font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 4px; }}
+.card-editable {{ cursor: pointer; border: 1px solid rgba(240, 185, 11, 0.45); transition: 0.2s; position: relative; }}
+.card-editable:hover {{ background: #262c34; border-color: #f0b90b; box-shadow: 0 0 10px rgba(240, 185, 11, 0.18); }}
+.card-title {{ font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }}
 .card-value {{ font-size: 16px; font-weight: 700; color: #f0b90b; }}
 .table-card {{ background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; overflow: hidden; }}
 .table-header {{ font-size: 15px; font-weight: 700; color: #eaecef; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }}
@@ -96,6 +98,19 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .chip-close:hover {{ opacity: 1; color: #ffffff; }}
 .btn-see-more {{ background: #14181d; border: 1px solid #2b313a; color: #f0b90b; padding: 6px 16px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; transition: 0.2s; }}
 .btn-see-more:hover {{ background: rgba(240, 185, 11, 0.12); border-color: #f0b90b; }}
+
+.modal-overlay {{ display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.78); z-index: 9999; justify-content: center; align-items: center; padding: 16px; }}
+.modal-box {{ background: #1e2329; border: 1px solid #f0b90b; border-radius: 14px; padding: 20px; width: 100%; max-width: 380px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65); display: flex; flex-direction: column; gap: 14px; }}
+.modal-title {{ font-size: 16px; font-weight: 800; color: #f0b90b; }}
+.modal-sub {{ font-size: 12px; color: #848e9c; line-height: 1.4; }}
+.modal-input {{ width: 100%; padding: 12px 14px; border-radius: 8px; border: 1px solid #2b313a; background: #0b0e11; color: #ffffff; font-size: 18px; font-weight: 800; font-family: 'SFMono-Regular', Consolas, monospace; outline: none; }}
+.modal-input:focus {{ border-color: #f0b90b; }}
+.preset-row {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+.btn-preset {{ background: #14181d; border: 1px solid #2b313a; color: #eaecef; padding: 5px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; }}
+.btn-preset:hover {{ border-color: #f0b90b; color: #f0b90b; }}
+.modal-actions {{ display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }}
+.btn-modal-cancel {{ background: #2b313a; color: #eaecef; border: none; padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; }}
+.btn-modal-ok {{ background: #0ecb81; color: #0b0e11; border: none; padding: 9px 22px; border-radius: 8px; font-size: 13px; font-weight: 800; cursor: pointer; }}
 </style>
 </head>
 <body>
@@ -122,8 +137,36 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     <div class="card"><div class="card-title">Target Coin(s)</div><div class="card-value" id="coin">--</div></div>
     <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color: #0ecb81;">--%</div></div>
     <div class="card"><div class="card-title">Next Settlement</div><div class="card-value" id="settle" style="color: #eaecef;">--:--:-- IST</div></div>
-    <div class="card"><div class="card-title">Base Margin</div><div class="card-value" id="margin-disp" style="color: #f0b90b;">${config.TRADE_MARGIN_USD} USDT</div></div>
+    <div class="card card-editable" id="margin-card" onclick="openMarginModal()" title="Click to change Base Margin per order">
+        <div class="card-title">
+            <span>Base Margin</span>
+            <span style="color: #f0b90b; font-size: 10px; font-weight: 800;">✏️ EDIT</span>
+        </div>
+        <div class="card-value" id="margin-disp" style="color: #f0b90b;">${config.TRADE_MARGIN_USD:.2f} USDT</div>
+    </div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset" style="color: #0ecb81;">0.0 ms</div></div>
+</div>
+
+<!-- BASE MARGIN EDIT MODAL -->
+<div class="modal-overlay" id="margin-modal" onclick="if(event.target === this) closeMarginModal();">
+    <div class="modal-box">
+        <div class="modal-title">💰 Set Base Margin (USDT)</div>
+        <div class="modal-sub">Har ek Shallow Limit Order (20%, 40%, 60%, 80% FR) par itna margin lagega. Minimum: <strong>$0.30 USDT</strong></div>
+        <input type="number" id="margin-input" class="modal-input" step="0.05" min="0.30" placeholder="1.50" onkeydown="if(event.key==='Enter') submitMarginModal(); else if(event.key==='Escape') closeMarginModal();">
+        <div class="preset-row">
+            <button type="button" class="btn-preset" onclick="setMarginPreset(0.30)">$0.30</button>
+            <button type="button" class="btn-preset" onclick="setMarginPreset(0.50)">$0.50</button>
+            <button type="button" class="btn-preset" onclick="setMarginPreset(0.75)">$0.75</button>
+            <button type="button" class="btn-preset" onclick="setMarginPreset(1.00)">$1.00</button>
+            <button type="button" class="btn-preset" onclick="setMarginPreset(1.50)">$1.50</button>
+            <button type="button" class="btn-preset" onclick="setMarginPreset(2.50)">$2.50</button>
+            <button type="button" class="btn-preset" onclick="setMarginPreset(5.00)">$5.00</button>
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn-modal-cancel" onclick="closeMarginModal()">Cancel</button>
+            <button type="button" class="btn-modal-ok" onclick="submitMarginModal()">OK</button>
+        </div>
+    </div>
 </div>
 
 <!-- 1. TOP 10 CANDIDATES RADAR TABLE -->
@@ -219,12 +262,62 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 </div>
 
 <script>
-const BASE_MARGIN_USD = {config.TRADE_MARGIN_USD};
+let currentBaseMargin = {config.TRADE_MARGIN_USD};
 let isLocked = false;
 let showAllTemp = false;
 let showAllPerm = false;
 let currentManualList = [];
 let currentManualMode = false;
+
+function openMarginModal() {{
+    if (isLocked) {{
+        alert("Base Margin is LOCKED because settlement is less than 1 minute away!");
+        return;
+    }}
+    const modal = document.getElementById('margin-modal');
+    const inp = document.getElementById('margin-input');
+    inp.value = currentBaseMargin.toFixed(2);
+    modal.style.display = 'flex';
+    setTimeout(() => {{ inp.focus(); inp.select(); }}, 50);
+}}
+
+function closeMarginModal() {{
+    document.getElementById('margin-modal').style.display = 'none';
+}}
+
+function setMarginPreset(val) {{
+    document.getElementById('margin-input').value = Number(val).toFixed(2);
+}}
+
+async function submitMarginModal() {{
+    if (isLocked) {{
+        alert("Base Margin is LOCKED because settlement is less than 1 minute away!");
+        closeMarginModal();
+        return;
+    }}
+    const rawVal = parseFloat(document.getElementById('margin-input').value);
+    if (isNaN(rawVal) || rawVal < 0.30) {{
+        alert("⚠️ Minimum Base Margin is $0.30 USDT (required for $5.00 Binance min notional at 20x leverage).");
+        return;
+    }}
+    try {{
+        const res = await fetch('/api/set-margin', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ margin: rawVal }})
+        }});
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Failed to update Base Margin.");
+        }} else {{
+            currentBaseMargin = Number(data.base_margin_usd);
+            closeMarginModal();
+            updateUI();
+        }}
+    }} catch(e) {{
+        alert("Network error while updating Base Margin.");
+    }}
+}}
 
 function formatDurationJs(sec) {{
     if (sec <= 0) return '0s (Settling...)';
@@ -417,6 +510,9 @@ async function updateUI() {{
         isLocked = !!data.selection_locked;
         currentManualMode = !!data.manual_mode;
         currentManualList = data.manual_selected_symbols || [];
+        if (data.base_margin_usd !== undefined && data.base_margin_usd !== null) {{
+            currentBaseMargin = Number(data.base_margin_usd);
+        }}
 
         document.getElementById('ws-status').innerText = data.status;
         document.getElementById('rate').innerText = data.funding_rate;
@@ -445,17 +541,17 @@ async function updateUI() {{
             if (currentManualList.length === 0) {{
                 document.getElementById('coin').innerText = "0 Coins (PASS - IDLE)";
                 document.getElementById('coin').style.color = "#f87171";
-                document.getElementById('margin-disp').innerText = "$0.00 USDT";
+                document.getElementById('margin-disp').innerText = `$0.00 USDT (Base: $${{currentBaseMargin.toFixed(2)}})`;
             }} else {{
                 document.getElementById('coin').innerText = currentManualList.join(", ");
                 document.getElementById('coin').style.color = "#f0b90b";
-                const totalMargin = (currentManualList.length * BASE_MARGIN_USD).toFixed(2);
-                document.getElementById('margin-disp').innerText = `$${{totalMargin}} USDT (${{currentManualList.length}}x $${{BASE_MARGIN_USD}})`;
+                const totalMargin = (currentManualList.length * currentBaseMargin).toFixed(2);
+                document.getElementById('margin-disp').innerText = `$${{totalMargin}} USDT (${{currentManualList.length}}x $${{currentBaseMargin.toFixed(2)}})`;
             }}
         }} else {{
             document.getElementById('coin').innerText = data.target_symbol;
             document.getElementById('coin').style.color = "#f0b90b";
-            document.getElementById('margin-disp').innerText = `$${{BASE_MARGIN_USD}} USDT`;
+            document.getElementById('margin-disp').innerText = `$${{currentBaseMargin.toFixed(2)}} USDT`;
         }}
 
         const lockBadge = document.getElementById('lock-badge');
@@ -659,7 +755,7 @@ async function updateUI() {{
                                 <div class="sub-item">
                                     <span class="sub-label">Execution Summary:</span>
                                     <strong class="mono" style="color:#eaecef;">${{t.details || '--'}}</strong>
-                                                                </div>
+                                </div>
                                 <div class="sub-item">
                                     <span class="sub-label">PnL Breakdown (incl. Funding):</span>
                                     <strong class="mono" style="color:#f0b90b;">${{t.pnl_breakdown || '--'}}</strong>
