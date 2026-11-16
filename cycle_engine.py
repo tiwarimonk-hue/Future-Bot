@@ -9,7 +9,7 @@ from binance_ws import BinanceFastLaneWS
 from dashboard import (
     IST, data_lock, dashboard_data, add_ui_log,
     record_completed_trade, load_blocked_coins,
-    get_active_base_margin_usd
+    get_active_base_margin_usd, get_slot_margin_usd
 )
 from scanner import (
     sync_binance_clock, get_synced_time_ms, precision_wait_until,
@@ -53,9 +53,11 @@ def update_dashboard_armed_state(chosen_candidates: list[dict], is_manual_mode: 
     rates_summary = " | ".join([f"{c['symbol']}: {c['rate'] * 100:+.4f}%" for c in chosen_candidates])
     symbols_title = ", ".join(active_syms)
     if len(chosen_candidates) == 1:
-        tier_label = get_strategy_label(chosen_candidates[0]["rate"])
+        s0_margin = get_slot_margin_usd(chosen_candidates[0].get("slot_index", 0))
+        tier_label = get_strategy_label(chosen_candidates[0]["rate"], s0_margin)
     else:
-        tier_label = f"{'MANUAL' if is_manual_mode else 'AUTO'} ({len(active_syms)} Pairs) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
+        slot_tags = "/".join([f"${get_slot_margin_usd(c.get('slot_index', idx)):.2f}" for idx, c in enumerate(chosen_candidates)])
+        tier_label = f"{'MANUAL' if is_manual_mode else 'AUTO'} ({len(active_syms)} Pairs @ {slot_tags}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
 
     with data_lock:
         dashboard_data["target_symbol"] = symbols_title
@@ -75,9 +77,9 @@ def run_settlement_cycle(
 ) -> None:
     """
     Executes the complete high-precision settlement cycle from T-20s to T+20s:
-    Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s TLS / T-4s Ping) ->
+    Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s -> T-6s -> T-4s Force-Cut WS Reconnect & Ping) ->
     Phase 3 (T-2.5s Snapshot via Shared executor.session / T-500ms 3-Ping Burst) ->
-    Phase 4 (T-50ms 4-Shallow Limit Burst) ->
+    Phase 4 (T-50ms Pure WS 4-Shallow Limit Burst using Slot #1/#2/#3 Margins) ->
     Phase 5 (3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms + T+5000ms Open-Order Purge + T+1200ms..T+5980ms @aggTrade Close-All SL Watchdog) ->
     Phase 6 (Exact T+6000ms Harvest Exit) -> Phase 6B (T+9s Safety Sweep #1) ->
     Phase 7 (T+15s Ledger Audit & Smart Merge) -> Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
@@ -94,8 +96,6 @@ def run_settlement_cycle(
             is_manual_mode = dashboard_data.get("manual_mode", False)
             selected_symbols = list(dashboard_data.get("manual_selected_symbols", []))
             dashboard_data["selection_locked"] = True
-
-        active_margin_usd = get_active_base_margin_usd()
 
         # Safety Check: filter out any newly blocked coin(s); abort only if ALL coins are blocked
         blocked_now = load_blocked_coins()
@@ -160,8 +160,9 @@ def run_settlement_cycle(
 
         # Timeline markers
         t_gc_purge = settle_epoch - config.GC_PURGE_BEFORE_SETTLE_MS                    # T-10s
-        t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS                  # T-8s TLS Handshake
-        t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS                # T-4s Backup Ping Warmup
+        t_ws_warmup = settle_epoch - config.WS_WARMUP_BEFORE_SETTLE_MS                  # T-8s Attempt #1
+        t_ws_retry_2 = settle_epoch - config.WS_RETRY_2_BEFORE_SETTLE_MS                # T-6s Attempt #2 (Bypass if ready)
+        t_tcp_warmup = settle_epoch - config.TCP_WARMUP_BEFORE_SETTLE_MS                # T-4s Final Attempt #3 + Backup Ping
         t_recheck = settle_epoch - config.RECHECK_BEFORE_SETTLE_MS                      # T-2.5s (2500ms)
         t_multi_ping = settle_epoch - config.MULTI_PING_BEFORE_SETTLE_MS                # T-500ms 3-Ping Rapid Burst
 
@@ -183,16 +184,19 @@ def run_settlement_cycle(
         cycle_order_start_ms = 0
         epoch_tag = f"{int(settle_epoch / 1000) % 100000}"
 
-        # Build execution structures & Unique Collision-Free Client Order IDs + Planned Shallow Maps
+        # Build execution structures & Unique Collision-Free Client Order IDs + Slot-Specific Margins (#1/#2/#3)
         for c_idx, c in enumerate(fresh_targets, start=1):
             sym = c["symbol"]
             clean_sym = sym.replace("USDT", "")[:7]
             rate = c["rate"]
             p_val = c["price"]
-            qty_str, applied_lev, tick_s, qty_s, min_q = calculate_order_specs(sym, p_val)
-            sl_ratio, cond_label = evaluate_sl_specs(rate, active_margin_usd)
+            slot_idx = int(c.get("slot_index", c_idx - 1))
+            coin_margin_usd = get_slot_margin_usd(slot_idx)
 
-            shallow_notional = max(5.5, active_margin_usd * applied_lev)
+            qty_str, applied_lev, tick_s, qty_s, min_q = calculate_order_specs(sym, p_val, slot_index=slot_idx)
+            sl_ratio, cond_label = evaluate_sl_specs(rate, coin_margin_usd)
+
+            shallow_notional = max(5.5, coin_margin_usd * applied_lev)
 
             # Unique non-colliding order ID format for 4 Shallow Orders (20%, 40%, 60%, 80% FR)
             cid_s1 = f"s1-c{c_idx}-{clean_sym}-{epoch_tag}"
@@ -204,11 +208,12 @@ def run_settlement_cycle(
                 "symbol": sym,
                 "clean_sym": clean_sym,
                 "c_idx": c_idx,
+                "slot_idx": slot_idx,
                 "rate": rate,
                 "rate_str": f"{rate * 100:+.4f}%",
                 "price": p_val,
                 "t2_snapshot_price": p_val,
-                "margin_usd": active_margin_usd,
+                "margin_usd": coin_margin_usd,
                 "applied_lev": applied_lev,
                 "tick_size": tick_s,
                 "qty_step": qty_s,
@@ -247,24 +252,52 @@ def run_settlement_cycle(
         gc.disable()
         add_ui_log("[PRE-ENTRY T-10s] GC cleaned and paused. Dedicated CPU locked.")
 
-        # Phase 2B (T-8s): Zero-Clash Order WebSocket Re-Arm & Fresh TLS Handshake
+        # Phase 2B (T-8s): Attempt #1 — 0ms Force-Cut & Fresh Order WebSocket TLS Handshake
         precision_wait_until(t_ws_warmup)
-        add_ui_log("🔌 [PRE-WARM T-8s] Refreshing Order WebSocket TLS session to eliminate dormant disconnects...")
+        add_ui_log("🔌 [PRE-WARM T-8s | ATTEMPT #1] Force-cutting old Order WebSocket & initiating fresh TLS session...")
         ws_pipeline.reconnect_order_ws()
-        t_wait_end = time.time() + 3.0
-        while not ws_pipeline.order_ws_ready and time.time() < t_wait_end:
-            time.sleep(0.05)
+        t_wait_end_1 = time.time() + 1.5
+        while not ws_pipeline.order_ws_ready and time.time() < t_wait_end_1:
+            time.sleep(0.02)
         if ws_pipeline.order_ws_ready:
             add_ui_log("⚡ [PRE-WARM T-8s CONFIRMED] Fresh Order WebSocket TLS Handshake active and armed.")
         else:
-            add_ui_log("⚠️ [PRE-WARM T-8s WARNING] Order WebSocket re-arming in progress...")
+            add_ui_log("⚠️ [PRE-WARM T-8s PENDING] Not ready within 1.5s; T-6s Attempt #2 will take over if needed.")
 
-        # Phase 2C (T-4s): Order WebSocket Backup Ping Warm-Up & Backup Latency Measurement
-        precision_wait_until(t_tcp_warmup)
-        if ws_pipeline.ping_order_ws():
-            add_ui_log("🔥 [BACKUP PING at T-4s] Order WebSocket backup ping frame sent. Measuring backup RTT...")
+        # Phase 2C (T-6s): Attempt #2 — Bypassed if already connected; otherwise Force-Cut & Re-Attempt
+        precision_wait_until(t_ws_retry_2)
+        if ws_pipeline.order_ws_ready:
+            add_ui_log("✅ [PRE-WARM T-6s BYPASSED] Order WebSocket already connected & armed. Skipping Attempt #2.")
         else:
-            add_ui_log("⚠️ [BACKUP PING at T-4s WARNING] Backup ping frame skipped (socket not ready).")
+            add_ui_log("🔄 [PRE-WARM T-6s | ATTEMPT #2] Still not connected! Force-cutting T-8s socket & firing Attempt #2...")
+            ws_pipeline.reconnect_order_ws()
+            t_wait_end_2 = time.time() + 1.5
+            while not ws_pipeline.order_ws_ready and time.time() < t_wait_end_2:
+                time.sleep(0.02)
+            if ws_pipeline.order_ws_ready:
+                add_ui_log("⚡ [PRE-WARM T-6s CONFIRMED] Order WebSocket connected & armed on Attempt #2.")
+            else:
+                add_ui_log("⚠️ [PRE-WARM T-6s PENDING] Not ready within 1.5s; T-4s Final Attempt #3 armed.")
+
+        # Phase 2D (T-4s): Final Attempt #3 (if still disconnected) + Order WebSocket Backup Ping Warm-Up
+        precision_wait_until(t_tcp_warmup)
+        if ws_pipeline.order_ws_ready:
+            add_ui_log("✅ [PRE-WARM T-4s BYPASSED] Order WebSocket already active. Firing Backup Ping...")
+            if ws_pipeline.ping_order_ws():
+                add_ui_log("🔥 [BACKUP PING at T-4s] Order WebSocket backup ping frame sent. Measuring backup RTT...")
+            else:
+                add_ui_log("⚠️ [BACKUP PING at T-4s WARNING] Backup ping frame skipped.")
+        else:
+            add_ui_log("🚨 [PRE-WARM T-4s | FINAL ATTEMPT #3] Still disconnected! Force-cutting T-6s socket & firing Final Attempt #3...")
+            ws_pipeline.reconnect_order_ws()
+            t_wait_end_3 = time.time() + 1.2
+            while not ws_pipeline.order_ws_ready and time.time() < t_wait_end_3:
+                time.sleep(0.02)
+            if ws_pipeline.order_ws_ready:
+                add_ui_log("⚡ [PRE-WARM T-4s CONFIRMED] Order WebSocket connected on Final Attempt #3! Sending Backup Ping...")
+                ws_pipeline.ping_order_ws()
+            else:
+                add_ui_log("❌ [PRE-WARM T-4s WARNING] Order WebSocket still not ready after 3 attempts.")
 
         # Phase 3A (T-2.5s / 2500ms): Pure Price Snapshot Anchor Lock & Shared executor.session REST Warm-Up
         precision_wait_until(t_recheck)
@@ -319,7 +352,7 @@ def run_settlement_cycle(
             f"Cancel Strikes: T+{t_cancel_shallow_1 - settle_epoch:.1f}ms / T+{t_cancel_shallow_2 - settle_epoch:.1f}ms / T+{t_cancel_shallow_3 - settle_epoch:.1f}ms"
         )
 
-        # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED 4-SHALLOW LIMIT BURST (NO RETRIES)
+        # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED 4-SHALLOW LIMIT BURST (100% WEBSOCKET)
         precision_wait_until(t_limit_burst)
         cycle_order_start_ms = int(get_synced_time_ms()) - 1000
         entry_dispatch_time = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
@@ -380,7 +413,7 @@ def run_settlement_cycle(
 
             add_ui_log(
                 f"⚡ [T-{config.ENTRY_BEFORE_SETTLE_MS}ms SINGLE-SHOT BURST ({entry_dispatch_time})] Firing {coin_orders_count} Shallow Limit Orders on {sym} "
-                f"(${meta['margin_usd']:.2f} Base @ {meta['applied_lev']}x | Max Close-All Qty: {meta['total_max_qty']}) | "
+                f"(Slot #{meta['slot_idx'] + 1}: ${meta['margin_usd']:.2f} @ {meta['applied_lev']}x | Max Close-All Qty: {meta['total_max_qty']}) | "
                 f"Anchor ({anchor_src}): {anchor_price:.6f} | {meta['cond_label']}"
             )
             add_ui_log(
