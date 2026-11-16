@@ -177,15 +177,17 @@ def run_dump_dip_engine() -> None:
                     chk_ms = chk_targets[0]["settle_ms"]
                     is_earlier_settlement = (chk_ms < (settle_epoch - 60000))
                     if is_earlier_settlement:
-                        add_ui_log(f"⚡ [EARLIER SETTLEMENT DETECTED AT T-2m] {chk_targets[0]['symbol']} ({chk_targets[0]['rate'] * 100:+.4f}%) settles sooner! Auto-switching...")
+                        new_syms = [c["symbol"] for c in chk_targets]
+                        add_ui_log(f"⚡ [EARLIER SETTLEMENT DETECTED AT T-2m] {new_syms} settles sooner! Auto-switching...")
                         with data_lock:
                             dashboard_data["manual_mode"] = False
                             dashboard_data["manual_selected_symbols"] = []
                         for s in active_target_syms:
                             ws_pipeline.reset_cycle_state(s)
-                        chosen_candidates = [chk_targets[0]]
-                        active_target_syms = [chk_targets[0]["symbol"]]
-                        ws_pipeline.reset_cycle_state(active_target_syms[0])
+                        chosen_candidates = chk_targets
+                        active_target_syms = new_syms
+                        for s in active_target_syms:
+                            ws_pipeline.reset_cycle_state(s)
                         ws_pipeline.subscribe_tickers(active_target_syms)
                         settle_epoch = chk_ms
                         settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
@@ -202,11 +204,12 @@ def run_dump_dip_engine() -> None:
                         add_ui_log(f"🔒 [MANUAL LOCK AT T-2m] Verified {symbols_title} ({rates_summary}).")
                     else:
                         if [c["symbol"] for c in chk_targets] != active_target_syms:
-                            add_ui_log(f"⚡ [AUTO SWITCH AT T-2m] Switched target to Rank #1: {chk_targets[0]['symbol']} ({chk_targets[0]['rate'] * 100:+.4f}%)")
+                            new_syms = [c["symbol"] for c in chk_targets]
+                            add_ui_log(f"⚡ [AUTO SWITCH AT T-2m] Switched target(s) to: {new_syms}")
                             for s in active_target_syms:
                                 ws_pipeline.reset_cycle_state(s)
                             chosen_candidates = chk_targets
-                            active_target_syms = [c["symbol"] for c in chosen_candidates]
+                            active_target_syms = new_syms
                             for s in active_target_syms:
                                 ws_pipeline.reset_cycle_state(s)
                             ws_pipeline.subscribe_tickers(active_target_syms)
@@ -221,7 +224,7 @@ def run_dump_dip_engine() -> None:
 
                     add_ui_log("✅ [T-2m PRE-LOCK AUDIT COMPLETE] Radar refreshed. 60 seconds left for manual selection!")
                 elif cur_man and len(cur_sel) > 0:
-                    add_ui_log("⚠️ [MANUAL COINS WEAKENED AT T-2m] Selected manual coins failed validation. Reverting to Automatic Rank #1...")
+                    add_ui_log("⚠️ [MANUAL COINS WEAKENED AT T-2m] Selected manual coins failed validation. Reverting to Automatic Mode...")
                     with data_lock:
                         dashboard_data["manual_mode"] = False
                         dashboard_data["manual_selected_symbols"] = []
@@ -231,6 +234,8 @@ def run_dump_dip_engine() -> None:
                             ws_pipeline.reset_cycle_state(s)
                         chosen_candidates = auto_chk
                         active_target_syms = [c["symbol"] for c in chosen_candidates]
+                        for s in active_target_syms:
+                            ws_pipeline.reset_cycle_state(s)
                         ws_pipeline.subscribe_tickers(active_target_syms)
                         settle_epoch = chosen_candidates[0]["settle_ms"]
                         settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
@@ -306,15 +311,17 @@ def run_dump_dip_engine() -> None:
                     chk_ms = chk_targets[0]["settle_ms"]
                     is_earlier_settlement = (chk_ms < (settle_epoch - 60000))
                     if is_earlier_settlement:
-                        add_ui_log(f"⚡ [EARLIER SETTLEMENT DETECTED] {chk_targets[0]['symbol']} ({chk_targets[0]['rate'] * 100:+.4f}%) settles sooner! Auto-switching...")
+                        new_syms = [c["symbol"] for c in chk_targets]
+                        add_ui_log(f"⚡ [EARLIER SETTLEMENT DETECTED] {new_syms} settles sooner! Auto-switching...")
                         with data_lock:
                             dashboard_data["manual_mode"] = False
                             dashboard_data["manual_selected_symbols"] = []
                         for s in active_target_syms:
                             ws_pipeline.reset_cycle_state(s)
-                        chosen_candidates = [chk_targets[0]]
-                        active_target_syms = [chk_targets[0]["symbol"]]
-                        ws_pipeline.reset_cycle_state(active_target_syms[0])
+                        chosen_candidates = chk_targets
+                        active_target_syms = new_syms
+                        for s in active_target_syms:
+                            ws_pipeline.reset_cycle_state(s)
                         ws_pipeline.subscribe_tickers(active_target_syms)
                         settle_epoch = chk_ms
                         settle_dt = datetime.fromtimestamp(settle_epoch / 1000, tz=IST)
@@ -328,11 +335,12 @@ def run_dump_dip_engine() -> None:
                         add_ui_log(f"🔒 [MANUAL LOCK SECURE] User coin(s) {symbols_title} verified ({rates_summary}). Keeping selection untouched.")
                     else:
                         if [c["symbol"] for c in chk_targets] != active_target_syms:
-                            add_ui_log(f"⚡ [AUTO SWITCH] {symbols_title} -> {chk_targets[0]['symbol']} ({chk_targets[0]['rate'] * 100:+.4f}%)")
+                            new_syms = [c["symbol"] for c in chk_targets]
+                            add_ui_log(f"⚡ [AUTO SWITCH] {symbols_title} -> {new_syms} ({chk_targets[0]['rate'] * 100:+.4f}%)")
                             for s in active_target_syms:
                                 ws_pipeline.reset_cycle_state(s)
                             chosen_candidates = chk_targets
-                            active_target_syms = [c["symbol"] for c in chosen_candidates]
+                            active_target_syms = new_syms
                             for s in active_target_syms:
                                 ws_pipeline.reset_cycle_state(s)
                             ws_pipeline.subscribe_tickers(active_target_syms)
@@ -387,7 +395,7 @@ def run_dump_dip_engine() -> None:
                     time.sleep(1.0)
             continue
 
-        # Hand off live settlement window (T-20s to T+15s) to dedicated Cycle Execution Engine
+        # Hand off live settlement window (T-20s to T+20s) to dedicated Cycle Execution Engine
         run_settlement_cycle(ws_pipeline, active_target_syms, settle_epoch)
 
 
