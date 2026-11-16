@@ -1,5 +1,6 @@
 from __future__ import annotations
 import config
+from dashboard_styles import get_dashboard_css
 
 
 def get_dashboard_html() -> str:
@@ -8,342 +9,9 @@ def get_dashboard_html() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes">
-<title>Binance Tokyo Funding Sniper (Dynamic Margin Ledger)</title>
+<title>Binance Tokyo Funding Sniper (Slot Margin Ledger)</title>
 <style>
-* {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
-
-body {{ background-color: #0b0e11; color: #eaecef; padding: 14px; display: flex; justify-content: center; }}
-.container {{ width: 100%; max-width: 1260px; display: flex; flex-direction: column; gap: 14px; }}
-
-/* PROFESSIONAL TRADING TERMINAL HEADER */
-.header {{
-    background: linear-gradient(180deg, #1e2329 0%, #181c22 100%);
-    padding: 16px 18px;
-    border-radius: 12px;
-    border: 1px solid #2b313a;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}}
-.header-top {{
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: center;
-    gap: 14px;
-}}
-.brand-block {{
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}}
-.header h1 {{
-    font-size: 17px;
-    color: #f0b90b;
-    font-weight: 800;
-    letter-spacing: 0.2px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}}
-.brand-dot {{
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #0ecb81;
-    box-shadow: 0 0 8px #0ecb81;
-    display: inline-block;
-}}
-
-/* UNIFORM HEIGHT CONTROL DECK */
-.controls-deck {{
-    display: flex;
-    flex-wrap: wrap;
-    align-items: stretch;
-    gap: 10px;
-}}
-.btn-toggle {{
-    height: 58px;
-    min-width: 158px;
-    padding: 8px 20px;
-    border-radius: 10px;
-    font-size: 12.5px;
-    font-weight: 800;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: all 0.2s ease;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    gap: 2px;
-    letter-spacing: 0.4px;
-}}
-.btn-toggle-sub {{
-    font-size: 9px;
-    font-weight: 700;
-    opacity: 0.85;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-}}
-.btn-on {{
-    background: linear-gradient(180deg, #10d889 0%, #0bb873 100%);
-    color: #062115;
-    border-color: #34eba1;
-    box-shadow: 0 3px 12px rgba(14, 203, 129, 0.28);
-}}
-.btn-on:hover {{ filter: brightness(1.05); }}
-.btn-off {{
-    background: linear-gradient(180deg, #f05252 0%, #dc2626 100%);
-    color: #ffffff;
-    border-color: #f87171;
-    box-shadow: 0 3px 12px rgba(239, 68, 68, 0.28);
-}}
-.btn-off:hover {{ filter: brightness(1.05); }}
-
-/* SEGMENTED MODE SWITCHER (COOL CYAN AUTO + 1/2/3 PILLS & AMBER MANUAL) */
-.mode-container {{
-    display: flex;
-    align-items: stretch;
-    gap: 6px;
-    background: #12161b;
-    padding: 4px;
-    border-radius: 11px;
-    border: 1px solid #2b313a;
-    height: 58px;
-}}
-.mode-slot {{
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    min-width: 152px;
-    height: 100%;
-    border-radius: 8px;
-    padding: 3px;
-    transition: all 0.2s ease;
-}}
-.mode-slot-auto-active {{
-    background: rgba(56, 189, 248, 0.12);
-    border: 1px solid rgba(56, 189, 248, 0.45);
-}}
-.mode-slot-manual-active {{
-    background: rgba(240, 185, 11, 0.14);
-    border: 1px solid rgba(240, 185, 11, 0.5);
-}}
-.mode-slot-inactive {{
-    background: transparent;
-    border: 1px solid transparent;
-}}
-
-.btn-mode {{
-    width: 100%;
-    flex: 1;
-    padding: 4px 14px;
-    border-radius: 6px;
-    font-size: 11.5px;
-    font-weight: 800;
-    cursor: pointer;
-    border: none;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    letter-spacing: 0.3px;
-}}
-.btn-mode-auto-active {{
-    background: linear-gradient(180deg, #38bdf8 0%, #0ea5e9 100%);
-    color: #041e2c;
-    box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
-}}
-.btn-mode-manual-active {{
-    background: #f0b90b;
-    color: #0b0e11;
-    box-shadow: 0 2px 8px rgba(240, 185, 11, 0.3);
-}}
-.btn-mode-inactive {{
-    background: transparent;
-    color: #848e9c;
-}}
-.btn-mode-inactive:hover {{
-    color: #eaecef;
-    background: rgba(255, 255, 255, 0.05);
-}}
-.btn-mode:disabled {{ opacity: 0.45; cursor: not-allowed; }}
-
-.auto-count-row {{
-    display: flex;
-    gap: 4px;
-    width: 100%;
-    margin-top: 3px;
-}}
-.btn-auto-cnt {{
-    flex: 1;
-    height: 18px;
-    line-height: 16px;
-    border-radius: 4px;
-    font-size: 10.5px;
-    font-weight: 800;
-    cursor: pointer;
-    border: 1px solid #2b313a;
-    transition: all 0.15s ease;
-    text-align: center;
-    background: #181d24;
-    color: #848e9c;
-}}
-.btn-auto-cnt:hover {{
-    border-color: #38bdf8;
-    color: #eaecef;
-}}
-.btn-auto-cnt-active {{
-    background: #38bdf8;
-    color: #041e2c;
-    border-color: #38bdf8;
-    box-shadow: 0 0 6px rgba(56, 189, 248, 0.4);
-}}
-.btn-auto-cnt:disabled {{ opacity: 0.45; cursor: not-allowed; }}
-
-.manual-sub-pill {{
-    height: 18px;
-    line-height: 18px;
-    text-align: center;
-    font-size: 9.5px;
-    font-weight: 700;
-    color: #848e9c;
-    letter-spacing: 0.4px;
-    margin-top: 3px;
-}}
-
-/* HEADER BOTTOM STATUS STRIP */
-.header-status-bar {{
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    padding-top: 10px;
-    border-top: 1px solid #262c35;
-}}
-.badge {{
-    background: rgba(240, 185, 11, 0.12);
-    color: #f0b90b;
-    border: 1px solid rgba(240, 185, 11, 0.3);
-    padding: 5px 12px;
-    border-radius: 7px;
-    font-size: 11.5px;
-    font-weight: 700;
-}}
-.badge-mode {{
-    background: rgba(37, 99, 235, 0.16);
-    color: #60a5fa;
-    padding: 5px 12px;
-    border-radius: 7px;
-    font-size: 11.5px;
-    font-weight: 800;
-    border: 1px solid rgba(96, 165, 250, 0.35);
-    letter-spacing: 0.3px;
-}}
-.badge-locked {{
-    background: rgba(239, 68, 68, 0.18);
-    color: #f87171;
-    padding: 5px 12px;
-    border-radius: 7px;
-    font-size: 11.5px;
-    font-weight: 800;
-    border: 1px solid rgba(239, 68, 68, 0.4);
-    letter-spacing: 0.3px;
-}}
-
-.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }}
-.card {{ background: #1e2329; padding: 12px 14px; border-radius: 10px; border: 1px solid #2b313a; }}
-.card-editable {{ cursor: pointer; border: 1px solid rgba(240, 185, 11, 0.45); transition: 0.2s; position: relative; }}
-.card-editable:hover {{ background: #262c34; border-color: #f0b90b; box-shadow: 0 0 10px rgba(240, 185, 11, 0.18); }}
-.card-title {{ font-size: 11px; color: #848e9c; text-transform: uppercase; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }}
-.card-value {{ font-size: 16px; font-weight: 700; color: #f0b90b; }}
-.table-card {{ background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; overflow: hidden; }}
-.table-header {{ font-size: 15px; font-weight: 700; color: #eaecef; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }}
-.table-wrapper {{ width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; border: 1px solid #2b313a; }}
-table {{ width: 100%; border-collapse: collapse; min-width: 1040px; font-size: 13px; text-align: left; }}
-th {{ background: #14181d; color: #848e9c; padding: 12px 14px; font-weight: 600; text-transform: uppercase; font-size: 11px; border-bottom: 1px solid #2b313a; white-space: nowrap; }}
-td {{ padding: 12px 14px; border-bottom: 1px solid #1e252e; vertical-align: middle; white-space: nowrap; }}
-tr.main-row:nth-child(4n+1) {{ background: #181d24; }}
-tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a; }}
-.sub-box {{ padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; border-left: 3px solid #f0b90b; background: rgba(240, 185, 11, 0.04); white-space: normal; }}
-.sub-item {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
-.sub-label {{ color: #848e9c; text-transform: uppercase; font-size: 10px; font-weight: 700; letter-spacing: 0.4px; }}
-.tag-success {{ background: rgba(14, 203, 129, 0.15); color: #0ecb81; padding: 4px 8px; border-radius: 5px; font-weight: 700; font-size: 11px; }}
-.tag-cancel {{ background: rgba(132, 142, 156, 0.2); color: #848e9c; padding: 4px 8px; border-radius: 5px; font-weight: 700; font-size: 11px; }}
-.tag-warn {{ background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); padding: 4px 8px; border-radius: 5px; font-weight: 700; font-size: 11px; }}
-.mono {{ font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; }}
-.sub-text {{ font-size: 11px; color: #848e9c; margin-top: 2px; }}
-
-.pnl-positive {{ color: #0ecb81 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(14, 203, 129, 0.25); }}
-.pnl-negative {{ color: #f87171 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }}
-.pnl-neutral {{ color: #848e9c !important; font-size: 13px; }}
-
-/* LIMIT ORDER BOXES: GREEN = FILLED, BLUE = UNFILLED/CANCELED */
-.limit-rows-wrapper {{ display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 4px; }}
-.limit-row {{ display: flex; flex-wrap: wrap; gap: 10px; width: 100%; align-items: stretch; }}
-.limit-box {{ flex: 1 1 260px; max-width: 350px; padding: 10px 12px; border-radius: 8px; font-family: 'SFMono-Regular', Consolas, monospace; display: flex; flex-direction: column; gap: 6px; }}
-.limit-box-green {{ background: rgba(14, 203, 129, 0.12); border: 1px solid rgba(14, 203, 129, 0.60); border-left: 4px solid #0ecb81; color: #6ee7b7; box-shadow: 0 2px 8px rgba(14, 203, 129, 0.10); }}
-.limit-box-blue {{ background: rgba(59, 130, 246, 0.10); border: 1px solid rgba(59, 130, 246, 0.55); border-left: 4px solid #3b82f6; color: #93c5fd; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08); }}
-.limit-box-yellow {{ background: rgba(240, 185, 11, 0.10); border: 1px solid rgba(240, 185, 11, 0.55); border-left: 4px solid #f0b90b; color: #fcd34d; box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08); }}
-.limit-box-header {{ font-size: 12px; font-weight: 800; padding-bottom: 5px; border-bottom: 1px solid rgba(255, 255, 255, 0.10); display: flex; justify-content: space-between; align-items: center; }}
-.limit-box-green .limit-box-header {{ color: #0ecb81; }}
-.limit-box-blue .limit-box-header {{ color: #60a5fa; }}
-.limit-box-yellow .limit-box-header {{ color: #f0b90b; }}
-.limit-box-metrics {{ font-size: 11px; color: #eaecef; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; }}
-.limit-box-timings {{ font-size: 11px; line-height: 1.45; color: #cbd5e1; background: rgba(0, 0, 0, 0.25); padding: 6px 8px; border-radius: 5px; }}
-
-.candidate-row {{ cursor: pointer; transition: background 0.2s, border 0.2s; }}
-.candidate-row:hover {{ background: rgba(240, 185, 11, 0.08); }}
-
-.candidate-active {{ background: rgba(14, 203, 129, 0.20) !important; border-left: 5px solid #0ecb81 !important; box-shadow: inset 0 0 10px rgba(14, 203, 129, 0.15); }}
-.candidate-active td {{ color: #ffffff !important; }}
-.active-tag {{ background: #0ecb81; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
-.manual-tag {{ background: #f0b90b; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
-
-.candidate-row.row-temp-blocked {{ background: rgba(240, 185, 11, 0.15) !important; border-left: 5px solid #f0b90b !important; }}
-.candidate-row.row-temp-blocked td {{ color: #f0b90b !important; }}
-.badge-temp-block {{ background: #f0b90b; color: #0b0e11; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; }}
-
-.dot-group {{ display: flex; gap: 10px; justify-content: center; align-items: center; }}
-.btn-dot {{ width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.2); cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; outline: none; }}
-.btn-dot:hover {{ transform: scale(1.3); }}
-.btn-dot-yellow {{ background: #f0b90b; box-shadow: 0 0 8px rgba(240, 185, 11, 0.6); }}
-.btn-dot-red {{ background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }}
-
-.chip-blocked {{ display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 8px; font-size: 12px; font-family: 'SFMono-Regular', Consolas, monospace; font-weight: 700; cursor: pointer; transition: all 0.2s; user-select: none; }}
-.chip-blocked:hover {{ transform: translateY(-2px); }}
-.chip-temp {{ background: rgba(240, 185, 11, 0.15); border: 1px solid rgba(240, 185, 11, 0.4); color: #f0b90b; }}
-.chip-temp:hover {{ background: rgba(240, 185, 11, 0.3); box-shadow: 0 0 10px rgba(240, 185, 11, 0.35); }}
-.chip-perm {{ background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; }}
-.chip-perm:hover {{ background: rgba(239, 68, 68, 0.3); box-shadow: 0 0 10px rgba(239, 68, 68, 0.35); }}
-.chip-close {{ font-size: 13px; opacity: 0.75; margin-left: 2px; }}
-.chip-close:hover {{ opacity: 1; color: #ffffff; }}
-.btn-see-more {{ background: #14181d; border: 1px solid #2b313a; color: #f0b90b; padding: 6px 16px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; transition: 0.2s; }}
-.btn-see-more:hover {{ background: rgba(240, 185, 11, 0.12); border-color: #f0b90b; }}
-
-.modal-overlay {{ display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.78); z-index: 9999; justify-content: center; align-items: center; padding: 16px; }}
-.modal-box {{ background: #1e2329; border: 1px solid #f0b90b; border-radius: 14px; padding: 20px; width: 100%; max-width: 380px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65); display: flex; flex-direction: column; gap: 14px; }}
-.modal-title {{ font-size: 16px; font-weight: 800; color: #f0b90b; }}
-.modal-sub {{ font-size: 12px; color: #848e9c; line-height: 1.4; }}
-.modal-input {{ width: 100%; padding: 12px 14px; border-radius: 8px; border: 1px solid #2b313a; background: #0b0e11; color: #ffffff; font-size: 18px; font-weight: 800; font-family: 'SFMono-Regular', Consolas, monospace; outline: none; }}
-.modal-input:focus {{ border-color: #f0b90b; }}
-.preset-row {{ display: flex; flex-wrap: wrap; gap: 6px; }}
-.btn-preset {{ background: #14181d; border: 1px solid #2b313a; color: #eaecef; padding: 5px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; }}
-.btn-preset:hover {{ border-color: #f0b90b; color: #f0b90b; }}
-.modal-actions {{ display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }}
-.btn-modal-cancel {{ background: #2b313a; color: #eaecef; border: none; padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; }}
-.btn-modal-ok {{ background: #0ecb81; color: #0b0e11; border: none; padding: 9px 22px; border-radius: 8px; font-size: 13px; font-weight: 800; cursor: pointer; }}
-
-@media (max-width: 640px) {{
-    .controls-deck {{ width: 100%; }}
-    .btn-toggle {{ flex: 1 1 100%; min-width: 100%; }}
-    .mode-container {{ flex: 1 1 100%; width: 100%; }}
-    .mode-slot {{ flex: 1; min-width: 0; }}
-}}
+{get_dashboard_css()}
 </style>
 </head>
 <body>
@@ -352,7 +20,7 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     <div class="header-top">
         <div class="brand-block">
             <h1><span class="brand-dot"></span>Binance Tokyo Funding Sniper</h1>
-            <div class="sub-text" style="color: #848e9c;">Radar Top 10 • Multi-Coin Auto & Manual (Up to 3) • T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
+            <div class="sub-text" style="color: #848e9c;">Radar Top 10 • Slot Margins (#1/#2/#3) • Auto & Manual • T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
         </div>
 
         <div class="controls-deck">
@@ -388,34 +56,97 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
     <div class="card"><div class="card-title">Target Coin(s)</div><div class="card-value" id="coin">--</div></div>
     <div class="card"><div class="card-title">Funding Rate</div><div class="card-value" id="rate" style="color: #0ecb81;">--%</div></div>
     <div class="card"><div class="card-title">Next Settlement</div><div class="card-value" id="settle" style="color: #eaecef;">--:--:-- IST</div></div>
-    <div class="card card-editable" id="margin-card" onclick="openMarginModal()" title="Click to change Base Margin per order">
+    <div class="card card-editable" id="margin-card" onclick="openMarginModal()" title="Click to configure #1, #2, #3 or Default Margin">
         <div class="card-title">
-            <span>Base Margin</span>
+            <span>Base Margin (Per Order)</span>
             <span style="color: #f0b90b; font-size: 10px; font-weight: 800;">✏️ EDIT</span>
         </div>
-        <div class="card-value" id="margin-disp" style="color: #f0b90b;">${config.TRADE_MARGIN_USD:.2f} USDT</div>
+        <div class="slot-preview-list">
+            <div class="slot-preview-row slot-row-1" id="slot-row-1">
+                <span><span class="slot-tag-1">#1</span><span id="slot-coin-1" class="slot-coin-empty">Waiting...</span></span>
+                <span class="slot-amt-val" id="slot-val-1">${config.TRADE_MARGIN_USD:.2f}</span>
+            </div>
+            <div class="slot-preview-row slot-row-2" id="slot-row-2">
+                <span><span class="slot-tag-2">#2</span><span id="slot-coin-2" class="slot-coin-empty">Empty</span></span>
+                <span class="slot-amt-val" id="slot-val-2">${config.TRADE_MARGIN_USD:.2f}</span>
+            </div>
+            <div class="slot-preview-row slot-row-3" id="slot-row-3">
+                <span><span class="slot-tag-3">#3</span><span id="slot-coin-3" class="slot-coin-empty">Empty</span></span>
+                <span class="slot-amt-val" id="slot-val-3">${config.TRADE_MARGIN_USD:.2f}</span>
+            </div>
+        </div>
     </div>
     <div class="card"><div class="card-title">Clock Drift</div><div class="card-value" id="offset" style="color: #0ecb81;">0.0 ms</div></div>
 </div>
 
-<!-- BASE MARGIN EDIT MODAL -->
+<!-- TWO-PART SLOT MARGIN CONTROL MODAL -->
 <div class="modal-overlay" id="margin-modal" onclick="if(event.target === this) closeMarginModal();">
     <div class="modal-box">
-        <div class="modal-title">💰 Set Base Margin (USDT)</div>
-        <div class="modal-sub">Har ek Shallow Limit Order (20%, 40%, 60%, 80% FR) par itna margin lagega. Minimum: <strong>$0.30 USDT</strong></div>
-        <input type="number" id="margin-input" class="modal-input" step="0.05" min="0.30" placeholder="1.50" onkeydown="if(event.key==='Enter') submitMarginModal(); else if(event.key==='Escape') closeMarginModal();">
-        <div class="preset-row">
-            <button type="button" class="btn-preset" onclick="setMarginPreset(0.30)">$0.30</button>
-            <button type="button" class="btn-preset" onclick="setMarginPreset(0.50)">$0.50</button>
-            <button type="button" class="btn-preset" onclick="setMarginPreset(0.75)">$0.75</button>
-            <button type="button" class="btn-preset" onclick="setMarginPreset(1.00)">$1.00</button>
-            <button type="button" class="btn-preset" onclick="setMarginPreset(1.50)">$1.50</button>
-            <button type="button" class="btn-preset" onclick="setMarginPreset(2.50)">$2.50</button>
-            <button type="button" class="btn-preset" onclick="setMarginPreset(5.00)">$5.00</button>
+        <div class="modal-title">
+            <span>💰 Base Margin Control</span>
+            <span style="font-size: 11px; color: #848e9c; font-weight: 600;">Min: $0.30 USDT</span>
         </div>
+        <div class="modal-sub">Har ek Shallow Limit Order (20%, 40%, 60%, 80% FR) par uske slot (#1, #2, #3) ka margin lagega.</div>
+
+        <!-- PART 1: DEFAULT (ALL 3 SLOTS) -->
+        <div class="default-panel">
+            <div class="default-panel-header">
+                <span>⚡ DEFAULT (ALL 3 SLOTS)</span>
+                <span style="font-size: 10px; color: #94a3b8;">Sabhi coins me same margin</span>
+            </div>
+            <div class="default-input-row">
+                <input type="number" id="default-margin-input" class="modal-input" step="0.05" min="0.30" placeholder="1.50" onkeydown="if(event.key==='Enter') applyDefaultToAllSlots();">
+                <button type="button" class="btn-apply-all" onclick="applyDefaultToAllSlots()">Apply to All</button>
+            </div>
+            <div class="preset-row">
+                <button type="button" class="btn-preset" onclick="setDefaultPreset(0.30)">$0.30</button>
+                <button type="button" class="btn-preset" onclick="setDefaultPreset(0.50)">$0.50</button>
+                <button type="button" class="btn-preset" onclick="setDefaultPreset(1.00)">$1.00</button>
+                <button type="button" class="btn-preset" onclick="setDefaultPreset(1.50)">$1.50</button>
+                <button type="button" class="btn-preset" onclick="setDefaultPreset(3.00)">$3.00</button>
+                <button type="button" class="btn-preset" onclick="setDefaultPreset(5.00)">$5.00</button>
+            </div>
+        </div>
+
+        <!-- PART 2: INDIVIDUAL SLOTS (#1, #2, #3) -->
+        <div class="slots-edit-list">
+            <div class="slot-edit-card slot-edit-1">
+                <div class="slot-edit-info">
+                    <div class="slot-edit-badge"><span class="slot-tag-1">#1</span><span id="modal-coin-1" style="color: #ffffff;">Slot #1</span></div>
+                    <div class="slot-edit-sub">1st Selected / Rank #1 Auto Coin</div>
+                </div>
+                <div class="slot-edit-input-wrap">
+                    <input type="number" id="slot-input-1" class="slot-num-input" step="0.05" min="0.30" onkeydown="if(event.key==='Enter') submitMarginModal();">
+                    <span style="font-size: 11px; color: #848e9c; font-weight: 700;">USDT</span>
+                </div>
+            </div>
+
+            <div class="slot-edit-card slot-edit-2">
+                <div class="slot-edit-info">
+                    <div class="slot-edit-badge"><span class="slot-tag-2">#2</span><span id="modal-coin-2" style="color: #ffffff;">Slot #2</span></div>
+                    <div class="slot-edit-sub">2nd Selected / Rank #2 Auto Coin</div>
+                </div>
+                <div class="slot-edit-input-wrap">
+                    <input type="number" id="slot-input-2" class="slot-num-input" step="0.05" min="0.30" onkeydown="if(event.key==='Enter') submitMarginModal();">
+                    <span style="font-size: 11px; color: #848e9c; font-weight: 700;">USDT</span>
+                </div>
+            </div>
+
+            <div class="slot-edit-card slot-edit-3">
+                <div class="slot-edit-info">
+                    <div class="slot-edit-badge"><span class="slot-tag-3">#3</span><span id="modal-coin-3" style="color: #ffffff;">Slot #3</span></div>
+                    <div class="slot-edit-sub">3rd Selected / Rank #3 Auto Coin</div>
+                </div>
+                <div class="slot-edit-input-wrap">
+                    <input type="number" id="slot-input-3" class="slot-num-input" step="0.05" min="0.30" onkeydown="if(event.key==='Enter') submitMarginModal();">
+                    <span style="font-size: 11px; color: #848e9c; font-weight: 700;">USDT</span>
+                </div>
+            </div>
+        </div>
+
         <div class="modal-actions">
             <button type="button" class="btn-modal-cancel" onclick="closeMarginModal()">Cancel</button>
-            <button type="button" class="btn-modal-ok" onclick="submitMarginModal()">OK</button>
+            <button type="button" class="btn-modal-ok" onclick="submitMarginModal()">OK / SAVE</button>
         </div>
     </div>
 </div>
@@ -513,13 +244,30 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 </div>
 
 <script>
-let currentBaseMargin = {config.TRADE_MARGIN_USD};
+let currentSlotMargins = [{config.TRADE_MARGIN_USD}, {config.TRADE_MARGIN_USD}, {config.TRADE_MARGIN_USD}];
 let currentAutoMaxCoins = 1;
 let isLocked = false;
 let showAllTemp = false;
 let showAllPerm = false;
 let currentManualList = [];
 let currentManualMode = false;
+let latestArmedAutoList = [];
+
+function getResolvedSlotLabels() {{
+    const activeCoins = currentManualMode ? currentManualList : latestArmedAutoList;
+    const labels = [];
+    for (let i = 0; i < 3; i++) {{
+        if (activeCoins[i]) {{
+            labels.push({{ text: activeCoins[i], active: true, enabledSlot: true }});
+        }} else if (currentManualMode) {{
+            labels.push({{ text: "Empty", active: false, enabledSlot: true }});
+        }} else {{
+            const isSlotOn = (i < currentAutoMaxCoins);
+            labels.push({{ text: isSlotOn ? "Auto Slot" : "Inactive", active: false, enabledSlot: isSlotOn }});
+        }}
+    }}
+    return labels;
+}}
 
 function openMarginModal() {{
     if (isLocked) {{
@@ -527,18 +275,48 @@ function openMarginModal() {{
         return;
     }}
     const modal = document.getElementById('margin-modal');
-    const inp = document.getElementById('margin-input');
-    inp.value = currentBaseMargin.toFixed(2);
+    const defInp = document.getElementById('default-margin-input');
+    defInp.value = currentSlotMargins[0].toFixed(2);
+
+    const slotLabels = getResolvedSlotLabels();
+    for (let i = 0; i < 3; i++) {{
+        const sInp = document.getElementById(`slot-input-${{i + 1}}`);
+        const mCoin = document.getElementById(`modal-coin-${{i + 1}}`);
+        if (sInp) sInp.value = currentSlotMargins[i].toFixed(2);
+        if (mCoin) {{
+            mCoin.innerText = slotLabels[i].text;
+            mCoin.style.color = slotLabels[i].active ? "#ffffff" : "#848e9c";
+        }}
+    }}
+
     modal.style.display = 'flex';
-    setTimeout(() => {{ inp.focus(); inp.select(); }}, 50);
+    setTimeout(() => {{ defInp.focus(); defInp.select(); }}, 50);
 }}
 
 function closeMarginModal() {{
     document.getElementById('margin-modal').style.display = 'none';
 }}
 
-function setMarginPreset(val) {{
-    document.getElementById('margin-input').value = Number(val).toFixed(2);
+function setDefaultPreset(val) {{
+    const formatted = Number(val).toFixed(2);
+    document.getElementById('default-margin-input').value = formatted;
+    for (let i = 1; i <= 3; i++) {{
+        const el = document.getElementById(`slot-input-${{i}}`);
+        if (el) el.value = formatted;
+    }}
+}}
+
+function applyDefaultToAllSlots() {{
+    const rawDef = parseFloat(document.getElementById('default-margin-input').value);
+    if (isNaN(rawDef) || rawDef < 0.30) {{
+        alert("⚠️ Minimum Base Margin is $0.30 USDT.");
+        return;
+    }}
+    const formatted = rawDef.toFixed(2);
+    for (let i = 1; i <= 3; i++) {{
+        const el = document.getElementById(`slot-input-${{i}}`);
+        if (el) el.value = formatted;
+    }}
 }}
 
 async function submitMarginModal() {{
@@ -547,27 +325,31 @@ async function submitMarginModal() {{
         closeMarginModal();
         return;
     }}
-    const rawVal = parseFloat(document.getElementById('margin-input').value);
-    if (isNaN(rawVal) || rawVal < 0.30) {{
-        alert("⚠️ Minimum Base Margin is $0.30 USDT (required for $5.00 Binance min notional at 20x leverage).");
-        return;
+    const vals = [];
+    for (let i = 1; i <= 3; i++) {{
+        const v = parseFloat(document.getElementById(`slot-input-${{i}}`).value);
+        if (isNaN(v) || v < 0.30) {{
+            alert(`⚠️ Slot #${{i}} margin must be at least $0.30 USDT (required for $5.00 Binance min notional at 20x leverage).`);
+            return;
+        }}
+        vals.push(Math.round(v * 100) / 100);
     }}
     try {{
         const res = await fetch('/api/set-margin', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ margin: rawVal }})
+            body: JSON.stringify({{ slots: vals }})
         }});
         const data = await res.json();
         if (!data.success) {{
-            alert(data.message || "Failed to update Base Margin.");
+            alert(data.message || "Failed to update Slot Margins.");
         }} else {{
-            currentBaseMargin = Number(data.base_margin_usd);
+            currentSlotMargins = data.slot_margins.map(Number);
             closeMarginModal();
             updateUI();
         }}
     }} catch(e) {{
-        alert("Network error while updating Base Margin.");
+        alert("Network error while updating Slot Margins.");
     }}
 }}
 
@@ -787,8 +569,12 @@ async function updateUI() {{
         isLocked = !!data.selection_locked;
         currentManualMode = !!data.manual_mode;
         currentManualList = data.manual_selected_symbols || [];
-        if (data.base_margin_usd !== undefined && data.base_margin_usd !== null) {{
-            currentBaseMargin = Number(data.base_margin_usd);
+
+        if (Array.isArray(data.slot_margins) && data.slot_margins.length === 3) {{
+            currentSlotMargins = data.slot_margins.map(Number);
+        }} else if (data.base_margin_usd !== undefined && data.base_margin_usd !== null) {{
+            const m = Number(data.base_margin_usd);
+            currentSlotMargins = [m, m, m];
         }}
         if (data.auto_max_coins !== undefined && data.auto_max_coins !== null) {{
             currentAutoMaxCoins = Number(data.auto_max_coins);
@@ -832,7 +618,7 @@ async function updateUI() {{
                     manualHint.style.color = "#848e9c";
                 }}
             }}
-        }}
+        }});
 
         [1, 2, 3].forEach(n => {{
             const cntBtn = document.getElementById(`btn-auto-cnt-${{n}}`);
@@ -843,27 +629,36 @@ async function updateUI() {{
         }});
 
         const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--") && !data.target_symbol.includes("IDLE"));
-        const armedAutoList = hasValidTarget ? data.target_symbol.split(',').map(s => s.trim()).filter(Boolean) : [];
+        latestArmedAutoList = hasValidTarget ? data.target_symbol.split(',').map(s => s.trim()).filter(Boolean) : [];
 
         if (currentManualMode) {{
             if (currentManualList.length === 0) {{
                 document.getElementById('coin').innerText = "0 Coins (PASS - IDLE)";
                 document.getElementById('coin').style.color = "#f87171";
-                document.getElementById('margin-disp').innerText = `$0.00 USDT (Base: $${{currentBaseMargin.toFixed(2)}})`;
             }} else {{
                 document.getElementById('coin').innerText = currentManualList.join(", ");
                 document.getElementById('coin').style.color = "#f0b90b";
-                const totalMargin = (currentManualList.length * currentBaseMargin).toFixed(2);
-                document.getElementById('margin-disp').innerText = `$${{totalMargin}} USDT (${{currentManualList.length}}x $${{currentBaseMargin.toFixed(2)}})`;
             }}
         }} else {{
             document.getElementById('coin').innerText = data.target_symbol;
             document.getElementById('coin').style.color = "#f0b90b";
-            if (armedAutoList.length > 1) {{
-                const totalMargin = (armedAutoList.length * currentBaseMargin).toFixed(2);
-                document.getElementById('margin-disp').innerText = `$${{totalMargin}} USDT (${{armedAutoList.length}}x $${{currentBaseMargin.toFixed(2)}})`;
-            }} else {{
-                document.getElementById('margin-disp').innerText = `$${{currentBaseMargin.toFixed(2)}} USDT (Max ${{currentAutoMaxCoins}})`;
+        }}
+
+        // Update Live Slot Margin Preview Card (#1, #2, #3 + Live Coin Name)
+        const slotLabels = getResolvedSlotLabels();
+        for (let i = 0; i < 3; i++) {{
+            const rowEl = document.getElementById(`slot-row-${{i + 1}}`);
+            const coinEl = document.getElementById(`slot-coin-${{i + 1}}`);
+            const valEl = document.getElementById(`slot-val-${{i + 1}}`);
+            if (coinEl) {{
+                coinEl.innerText = slotLabels[i].text;
+                coinEl.className = slotLabels[i].active ? "slot-coin-name" : "slot-coin-empty";
+            }}
+            if (valEl) {{
+                valEl.innerText = `$${{currentSlotMargins[i].toFixed(2)}}`;
+            }}
+            if (rowEl) {{
+                rowEl.className = `slot-preview-row slot-row-${{i + 1}}${{slotLabels[i].enabledSlot ? '' : ' slot-row-dim'}}`;
             }}
         }}
 
@@ -904,15 +699,15 @@ async function updateUI() {{
                     const mIdx = currentManualList.indexOf(c.symbol);
                     if (mIdx !== -1) {{
                         isSelected = true;
-                        activeTagHtml = `<span class="manual-tag">SELECTED #${{mIdx + 1}}</span>`;
+                        const sMargin = currentSlotMargins[mIdx] !== undefined ? `$${{currentSlotMargins[mIdx].toFixed(2)}}` : '';
+                        activeTagHtml = `<span class="manual-tag">SELECTED #${{mIdx + 1}} (${{sMargin}})</span>`;
                     }}
                 }} else {{
-                    const aIdx = armedAutoList.indexOf(c.symbol);
+                    const aIdx = latestArmedAutoList.indexOf(c.symbol);
                     if (aIdx !== -1) {{
                         isSelected = true;
-                        activeTagHtml = armedAutoList.length > 1
-                            ? `<span class="active-tag">ARMED #${{aIdx + 1}}</span>`
-                            : '<span class="active-tag">ARMED</span>';
+                        const sMargin = currentSlotMargins[aIdx] !== undefined ? `$${{currentSlotMargins[aIdx].toFixed(2)}}` : '';
+                        activeTagHtml = `<span class="active-tag">ARMED #${{aIdx + 1}} (${{sMargin}})</span>`;
                     }}
                 }}
 
