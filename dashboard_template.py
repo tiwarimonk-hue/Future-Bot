@@ -618,7 +618,7 @@ async function updateUI() {{
                     manualHint.style.color = "#848e9c";
                 }}
             }}
-        }});
+        }}
 
         [1, 2, 3].forEach(n => {{
             const cntBtn = document.getElementById(`btn-auto-cnt-${{n}}`);
