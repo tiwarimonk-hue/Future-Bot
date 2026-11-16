@@ -4,7 +4,6 @@ import time
 import threading
 from decimal import Decimal
 from datetime import datetime
-import requests
 import config
 from binance_ws import BinanceFastLaneWS
 from dashboard import (
@@ -19,12 +18,6 @@ from scanner import (
 )
 import executor
 
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-})
-
 
 def get_strategy_label(rate_val: float, margin_usd: float | None = None) -> str:
     m_val = margin_usd if margin_usd is not None else get_active_base_margin_usd()
@@ -38,7 +31,7 @@ def evaluate_sl_specs(current_rate: float, margin_usd: float | None = None) -> t
     sl_r = max(config.MIN_SL_DROP_RATIO, round(abs_r * config.SL_FUNDING_MULTIPLIER, 6))
     lbl = (
         f"4 Shallow (20/40/60/80% FR @ ${m_val:.2f}), "
-        f"SL (-{sl_r * 100:.3f}% from Anchor)"
+        f"SL (-{sl_r * 100:.3f}% from Anchor | T+{config.SL_GRACE_AFTER_SETTLE_MS}ms Shield)"
     )
     return sl_r, lbl
 
@@ -83,9 +76,10 @@ def run_settlement_cycle(
     """
     Executes the complete high-precision settlement cycle from T-20s to T+20s:
     Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s TLS / T-4s Ping) ->
-    Phase 3 (T-2.5s Snapshot / T-500ms 3-Ping Burst) -> Phase 4 (T-50ms 4-Shallow Limit Burst) ->
-    Phase 5 (SL Watchdog + 3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms) ->
-    Phase 6 (T+6s Cancel / T+7s Exit) -> Phase 6B (T+9s Safety Sweep #1) ->
+    Phase 3 (T-2.5s Snapshot via Shared executor.session / T-500ms 3-Ping Burst) ->
+    Phase 4 (T-50ms 4-Shallow Limit Burst) ->
+    Phase 5 (3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms + T+5000ms Open-Order Purge + T+1200ms..T+5980ms @aggTrade Close-All SL Watchdog) ->
+    Phase 6 (Exact T+6000ms Harvest Exit) -> Phase 6B (T+9s Safety Sweep #1) ->
     Phase 7 (T+15s Ledger Audit & Smart Merge) -> Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
     """
     t_rescan_20s = settle_epoch - config.RESCAN_BEFORE_SETTLE_MS
@@ -103,17 +97,24 @@ def run_settlement_cycle(
 
         active_margin_usd = get_active_base_margin_usd()
 
-        # Safety Check: if any target coin got blocked, filter/abort immediately
+        # Safety Check: filter out any newly blocked coin(s); abort only if ALL coins are blocked
         blocked_now = load_blocked_coins()
+        blocked_set = set(blocked_now.get("temporary", [])) | set(blocked_now.get("permanent", []))
         if is_manual_mode:
-            selected_symbols = [s for s in selected_symbols if s not in blocked_now.get("temporary", []) and s not in blocked_now.get("permanent", [])]
+            selected_symbols = [s for s in selected_symbols if s not in blocked_set]
             if not selected_symbols:
                 add_ui_log("[T-20s SCAN ABORT] Manually selected coin(s) are empty or in block list. Aborting cycle safely!")
                 return
         else:
-            if any(s in blocked_now.get("temporary", []) or s in blocked_now.get("permanent", []) for s in active_target_syms):
-                add_ui_log(f"[T-20s SCAN ABORT] Target coin ({active_target_syms}) is in block list. Aborting cycle safely!")
+            unblocked_auto = [s for s in active_target_syms if s not in blocked_set]
+            if not unblocked_auto:
+                add_ui_log(f"[T-20s SCAN ABORT] All auto target coin(s) ({active_target_syms}) are in block list. Aborting cycle safely!")
                 return
+            for s in active_target_syms:
+                if s in blocked_set:
+                    add_ui_log(f"⚠️ [T-20s BLOCK FILTER] Dropping blocked coin {s}; continuing with {unblocked_auto}.")
+                    ws_pipeline.reset_cycle_state(s)
+            active_target_syms = unblocked_auto
 
         fresh_targets, top_10_fresh = find_top_negative_funding_candidates(
             target_settle_ms=settle_epoch,
@@ -130,10 +131,19 @@ def run_settlement_cycle(
                 return
             fresh_targets = valid_manual
         else:
-            if (not fresh_targets or fresh_targets[0].get("rate") is None or
-                fresh_targets[0]["rate"] > config.MIN_FUNDING_RATE or fresh_targets[0]["rate"] < config.MAX_DANGER_FUNDING_RATE):
-                add_ui_log(f"[T-20s SCAN ABORT] Auto-selected coin ({active_target_syms}) rate out of safe bounds. Aborting cycle safely.")
+            valid_auto = [
+                c for c in fresh_targets
+                if c.get("rate") is not None
+                and config.MAX_DANGER_FUNDING_RATE <= c["rate"] <= config.MIN_FUNDING_RATE
+                and c["symbol"] not in blocked_set
+            ]
+            if not valid_auto:
+                add_ui_log(f"[T-20s SCAN ABORT] No auto target coin ({active_target_syms}) remained within safe bounds (-0.35% to -1.60%). Aborting cycle safely.")
                 return
+            if len(valid_auto) < len(fresh_targets):
+                dropped_auto = [c["symbol"] for c in fresh_targets if c not in valid_auto]
+                add_ui_log(f"⚠️ [T-20s SMART FILTER] Dropped out-of-range coin(s) {dropped_auto}; proceeding with {[c['symbol'] for c in valid_auto]}.")
+            fresh_targets = valid_auto
 
         fresh_syms = [c["symbol"] for c in fresh_targets]
         if fresh_syms != active_target_syms:
@@ -161,8 +171,11 @@ def run_settlement_cycle(
         t_cancel_shallow_2 = settle_epoch + config.SHALLOW_CANCEL_BACKUP_1_MS
         t_cancel_shallow_3 = settle_epoch + config.SHALLOW_CANCEL_BACKUP_2_MS
 
-        t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS           # T+6s
-        t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS                   # T+7s
+        # Stop-Loss Recovery Grace Window (T+1200ms -> T+5980ms) & Post-Settlement Timers (T+5000ms / T+6000ms)
+        t_sl_active_start = settle_epoch + config.SL_GRACE_AFTER_SETTLE_MS              # T+1200ms SL Checkpoint
+        t_cancel_orders = settle_epoch + config.CANCEL_ORDERS_AFTER_SETTLE_MS           # T+5000ms (5s)
+        t_sl_watchdog_end = settle_epoch + config.SL_WATCHDOG_END_AFTER_SETTLE_MS       # T+5980ms SL Watchdog Cutoff
+        t_scheduled_exit = settle_epoch + config.EXIT_AFTER_SETTLE_MS                   # T+6000ms (6s) Harvest Exit
         t_emergency_sweep = settle_epoch + config.EMERGENCY_SWEEP_AFTER_SETTLE_MS       # T+9s Safety Sweep #1
         t_post_trade_audit = settle_epoch + config.POST_TRADE_AUDIT_AFTER_SETTLE_MS     # T+15s Official Audit
         t_second_emergency_sweep = settle_epoch + config.SECOND_EMERGENCY_SWEEP_AFTER_SETTLE_MS # T+20s Safety Sweep #2
@@ -201,6 +214,7 @@ def run_settlement_cycle(
                 "qty_step": qty_s,
                 "min_qty": min_q,
                 "qty_str": qty_str,
+                "total_max_qty": qty_str,
                 "sl_ratio": sl_ratio,
                 "cond_label": cond_label,
                 "shallow_notional": shallow_notional,
@@ -252,12 +266,12 @@ def run_settlement_cycle(
         else:
             add_ui_log("⚠️ [BACKUP PING at T-4s WARNING] Backup ping frame skipped (socket not ready).")
 
-        # Phase 3A (T-2.5s / 2500ms): Pure Price Snapshot Anchor Lock (Backup) & Rate Recheck
+        # Phase 3A (T-2.5s / 2500ms): Pure Price Snapshot Anchor Lock & Shared executor.session REST Warm-Up
         precision_wait_until(t_recheck)
         dropped_syms = []
         for sym, meta in targets_meta.items():
             try:
-                r_check = session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex?symbol={sym}", timeout=1.2).json()
+                r_check = executor.session.get(f"{config.BINANCE_REST_URL}/fapi/v1/premiumIndex?symbol={sym}", timeout=1.2).json()
                 fresh_r = float(r_check.get("lastFundingRate", meta["rate"]))
                 fresh_p = float(r_check.get("markPrice", meta["price"]))
                 if fresh_p > 0:
@@ -276,7 +290,7 @@ def run_settlement_cycle(
                     add_ui_log(f"[PRE-ENTRY HARD ABORT at T-2.5s] {sym} rate dropped to {fresh_r * 100:.4f}%. Dropping coin!")
                     dropped_syms.append(sym)
                 else:
-                    add_ui_log(f"🔍 [T-2.5s BACKUP SNAPSHOT] {sym} Mark Price: {meta['t2_snapshot_price']:.6f} USDT (Backup Anchor Locked)")
+                    add_ui_log(f"🔍 [T-2.5s BACKUP SNAPSHOT] {sym} Mark Price: {meta['t2_snapshot_price']:.6f} USDT (Backup Anchor & REST Session Warmed)")
             except Exception as t_err:
                 add_ui_log(f"⚠️ [T-2.5s RECHECK WARNING ({sym})] REST glitch ({t_err}). Using verified snapshot.")
 
@@ -336,11 +350,13 @@ def run_settlement_cycle(
             ]
 
             coin_orders_count = 0
+            total_max_q_val = 0.0
             for cid_s, s_ratio, s_label, s_idx in shallow_specs:
                 drop_dec = abs_rate_dec * Decimal(str(s_ratio))
                 p_dec = dec_anchor * (Decimal("1") - drop_dec)
                 p_str = format_tick(float(p_dec), meta["tick_size"])
                 q_str = format_limit_qty(meta["shallow_notional"], p_str, meta["min_qty"], meta["qty_step"])
+                total_max_q_val += float(q_str)
                 multi_burst_frames.append((sym, cid_s, q_str, p_str, float(drop_dec), s_label))
                 coin_orders_count += 1
                 meta["planned_shallow_map"][cid_s] = {
@@ -350,6 +366,8 @@ def run_settlement_cycle(
                     "qty": q_str,
                     "sort_idx": s_idx
                 }
+
+            meta["total_max_qty"] = format_step(total_max_q_val, meta["qty_step"]) if total_max_q_val > 0 else meta["qty_str"]
 
             # Stop-Loss: 150% of |FR| below Anchor Price, with strict 0.60% minimum floor
             sl_drop_dec = max(
@@ -362,41 +380,44 @@ def run_settlement_cycle(
 
             add_ui_log(
                 f"⚡ [T-{config.ENTRY_BEFORE_SETTLE_MS}ms SINGLE-SHOT BURST ({entry_dispatch_time})] Firing {coin_orders_count} Shallow Limit Orders on {sym} "
-                f"(${meta['margin_usd']:.2f} Base @ {meta['applied_lev']}x) | Anchor ({anchor_src}): {anchor_price:.6f} | {meta['cond_label']}"
+                f"(${meta['margin_usd']:.2f} Base @ {meta['applied_lev']}x | Max Close-All Qty: {meta['total_max_qty']}) | "
+                f"Anchor ({anchor_src}): {anchor_price:.6f} | {meta['cond_label']}"
             )
             add_ui_log(
                 f"🛡️ [STOP LOSS ARMED ({sym})] Floor: {meta['sl_target_str']} USDT "
-                f"(-{float(sl_drop_dec) * 100:.3f}% from Anchor | Pure Trade LTP Trigger)"
+                f"(-{float(sl_drop_dec) * 100:.3f}% from Anchor | Active T+{config.SL_GRACE_AFTER_SETTLE_MS}ms..T+{config.SL_WATCHDOG_END_AFTER_SETTLE_MS}ms on @aggTrade LTP)"
             )
 
         # Flush all Limit Orders across all active coins in 1 single socket lock (<0.5ms)
         executor.execute_multi_symbol_limit_burst_ws(ws_pipeline, multi_burst_frames)
 
-        # Phase 5: Real-Trade (LTP) Stop Loss Watchdog Loop + 3-Strike Shallow Cancel (T+235ms / T+250ms / T+270ms)
+        # Phase 5: 3-Strike Shallow Cancel (T+235ms / T+250ms / T+270ms) + T+5000ms Open-Order Purge + T+1200ms..T+5980ms @aggTrade Close-All SL Watchdog
         shallow_cancel_1_fired = False
         shallow_cancel_2_fired = False
         shallow_cancel_3_fired = False
+        cancel_5s_fired = False
 
         def trigger_sl_sequence(target_symbol: str, meta: dict, real_ltp: float) -> None:
             meta["exit_price_detected"] = real_ltp
             meta["exit_reason"] = f"REAL-TRADE SL HIT (LTP: {real_ltp} <= SL: {meta['sl_target_str']})"
             meta["exit_status"] = "STOP LOSS EXECUTED (MAX LOSS SHIELD)"
-            add_ui_log(f"🚨 [{target_symbol} | {meta['exit_reason']}] Triggering Emergency Stop Loss Priority...")
+            add_ui_log(f"🚨 [{target_symbol} | {meta['exit_reason']}] Triggering Close-All Stop Loss (0ms -> +50ms -> +100ms)...")
 
-            # STEP 1: CLOSE POSITION FIRST VIA ZERO-DELAY WEBSOCKET COUNTER (2-4ms)
+            # STEP 1: CLOSE ALL OPEN POSITION FIRST VIA 0ms -> +50ms -> +100ms (total_max_qty + reduceOnly=True)
             ws_pos = ws_pipeline.get_filled_qty(target_symbol)
-            exit_qty = format_step(ws_pos, meta["qty_step"]) if ws_pos > 0 else meta["qty_str"]
+            close_all_qty = meta["total_max_qty"]
+            if ws_pos > float(close_all_qty):
+                close_all_qty = format_step(ws_pos, meta["qty_step"])
 
-            if ws_pos > 0:
-                add_ui_log(f"⚡ [SL PRIORITY #1 ({target_symbol})] Closing OPEN POSITION FIRST via WS! Market Sell for {exit_qty} {target_symbol}...")
-                _, meta["exit_send_time"], _ = executor.execute_market_exit_3layer(
-                    ws_pipeline, target_symbol, exit_qty, f"SL EMERGENCY EXIT ({target_symbol})"
-                )
-            else:
-                add_ui_log(f"🛡️ [SL PRIORITY #1 ({target_symbol})] Verified: 0 open WS position to close.")
+            add_ui_log(
+                f"⚡ [SL PRIORITY #1 ({target_symbol})] Firing Close-All Market Sell (Qty: {close_all_qty}, reduceOnly=True | WS Tracked: {ws_pos})..."
+            )
+            _, meta["exit_send_time"], _ = executor.execute_market_exit_3layer(
+                ws_pipeline, target_symbol, close_all_qty, f"SL CLOSE-ALL EXIT ({target_symbol})"
+            )
 
             # STEP 2: CANCEL ALL REMAINING LIMIT ORDERS SECOND (Ultra-Fast WS)
-            add_ui_log(f"🧹 [SL PRIORITY #2 ({target_symbol})] Position closed! Purging all open limit orders via Fast-Lane WS...")
+            add_ui_log(f"🧹 [SL PRIORITY #2 ({target_symbol})] Purging any open limit orders via Fast-Lane WS...")
             executor.fast_cancel_all_orders(ws_pipeline, target_symbol, meta["all_cids"])
 
             # STEP 3: FINAL REMNANT SWEEP (REST API Cross-Check)
@@ -408,7 +429,7 @@ def run_settlement_cycle(
                     ws_pipeline, target_symbol, rem_qty, f"SL REM-SWEEP EXIT ({target_symbol})"
                 )
 
-        while get_synced_time_ms() < t_cancel_orders:
+        while get_synced_time_ms() < t_sl_watchdog_end:
             now_loop_ms = get_synced_time_ms()
 
             # Strike #1: T+235ms Lead-Compensated Primary WS Shallow Cancel
@@ -441,43 +462,43 @@ def run_settlement_cycle(
                         daemon=True
                     ).start()
 
-            for sym, meta in targets_meta.items():
-                if meta["sl_triggered"]:
-                    continue
+            # T+5000ms (5s) Scheduled Open-Order Purge (While SL Watchdog remains active until T+5980ms)
+            if not cancel_5s_fired and now_loop_ms >= t_cancel_orders:
+                cancel_5s_fired = True
+                active_for_5s = [m for m in targets_meta.values() if not m["sl_triggered"]]
+                if active_for_5s:
+                    add_ui_log(f"⚡ [T+{(config.CANCEL_ORDERS_AFTER_SETTLE_MS // 1000)}s SETTLEMENT FEE CAPTURED] Purging any remaining open orders via Fast WS...")
+                    for meta in active_for_5s:
+                        threading.Thread(
+                            target=executor.fast_cancel_all_orders,
+                            args=(ws_pipeline, meta["symbol"], meta["all_cids"]),
+                            daemon=True
+                        ).start()
 
-                real_market_trade_price = ws_pipeline.get_last_traded_price(sym)
-                active_pos_check = ws_pipeline.get_filled_qty(sym)
+            # Stop-Loss Watchdog: Paused from T+0ms to T+1200ms (Recovery Shield); Active from T+1200ms to T+5980ms on @aggTrade LTP only
+            if now_loop_ms >= t_sl_active_start:
+                for sym, meta in targets_meta.items():
+                    if meta["sl_triggered"]:
+                        continue
 
-                if active_pos_check > 0 and (0.0 < real_market_trade_price <= meta["sl_price"] and meta["sl_price"] > 0):
-                    meta["sl_triggered"] = True
-                    threading.Thread(
-                        target=trigger_sl_sequence,
-                        args=(sym, meta, real_market_trade_price),
-                        daemon=True
-                    ).start()
+                    real_market_trade_price = ws_pipeline.get_last_traded_price(sym)
+                    if 0.0 < real_market_trade_price <= meta["sl_price"] and meta["sl_price"] > 0:
+                        meta["sl_triggered"] = True
+                        threading.Thread(
+                            target=trigger_sl_sequence,
+                            args=(sym, meta, real_market_trade_price),
+                            daemon=True
+                        ).start()
 
             if all(m["sl_triggered"] for m in targets_meta.values()):
                 break
 
             time.sleep(0.001)
 
-        # Phase 6: Normal Settlement Exit (T+6s Cancel Any Remaining Open Orders -> T+7s Market Exit)
+        # Phase 6: Normal Settlement Exit at exact T+6000ms (after 20ms settling window from T+5980ms)
         remaining_active_metas = [m for m in targets_meta.values() if not m["sl_triggered"]]
         if remaining_active_metas:
-            precision_wait_until(t_cancel_orders)
-            add_ui_log(f"⚡ [T+{(config.CANCEL_ORDERS_AFTER_SETTLE_MS // 1000)}s SETTLEMENT FEE CAPTURED] Purging any remaining open orders via Fast WS...")
-            cancel_threads = []
-            for meta in remaining_active_metas:
-                th_c = threading.Thread(
-                    target=executor.fast_cancel_all_orders,
-                    args=(ws_pipeline, meta["symbol"], meta["all_cids"]),
-                    daemon=True
-                )
-                th_c.start()
-                cancel_threads.append(th_c)
-
             precision_wait_until(t_scheduled_exit)
-            time.sleep(0.02)
 
             def trigger_harvest_exit(meta: dict) -> None:
                 sym = meta["symbol"]
