@@ -493,7 +493,7 @@ def find_top_negative_funding_candidates(
                     item_copy = dict(c)
                     item_copy["slot_index"] = next_slot_idx
                     item_copy["slot_margin"] = get_slot_margin_usd(next_slot_idx)
-                    chosen_auto_list.append(item_`c`)
+                    chosen_auto_list.append(item_copy)
                     selected_syms_set.add(c["symbol"])
                 else:
                     time.sleep(0.15)
