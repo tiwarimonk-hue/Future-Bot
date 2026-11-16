@@ -119,6 +119,7 @@ dashboard_data = {
     "margin_usd": f"${config.TRADE_MARGIN_USD:.2f} USDT",
     "trades": trade_history,
     "trading_enabled": True,
+    "auto_max_coins": 1,
     "manual_mode": False,
     "manual_selected_symbols": [],
     "selection_locked": False,
@@ -132,6 +133,12 @@ def get_active_base_margin_usd() -> float:
     with data_lock:
         val = float(dashboard_data.get("base_margin_usd", config.TRADE_MARGIN_USD))
         return max(0.30, round(val, 2))
+
+
+def get_auto_max_coins() -> int:
+    with data_lock:
+        cnt = int(dashboard_data.get("auto_max_coins", 1))
+        return max(1, min(3, cnt))
 
 
 def add_ui_log(message: str) -> None:
@@ -225,6 +232,46 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"success": False, "message": f"Invalid margin value: {e}"}).encode("utf-8"))
                 return
 
+        elif self.path == "/api/set-auto-count":
+            try:
+                payload = json.loads(body)
+                count_val = int(payload.get("count", 1))
+                if count_val not in (1, 2, 3):
+                    self.send_response(400)
+                    self.send_header("Content-type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "message": "Automatic coin count must be 1, 2, or 3."}).encode("utf-8"))
+                    return
+
+                with data_lock:
+                    if dashboard_data["selection_locked"]:
+                        self.send_response(403)
+                        self.send_header("Content-type", "application/json")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "message": "Selection is locked within 1 minute of settlement."}).encode("utf-8"))
+                        return
+
+                    dashboard_data["auto_max_coins"] = count_val
+                    dashboard_data["manual_mode"] = False
+                    dashboard_data["manual_selected_symbols"] = []
+                    dashboard_data["force_rescan"] = True
+
+                add_ui_log(f"⚡ [AUTO COIN COUNT LOCKED] Automatic Mode set to lock up to {count_val} coin(s) (Sweet-Spot -0.80%..-1.40% priority).")
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "auto_max_coins": count_val, "manual_mode": False}).encode("utf-8"))
+                return
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "message": f"Invalid auto count: {e}"}).encode("utf-8"))
+                return
+
         elif self.path == "/api/set-manual":
             try:
                 with data_lock:
@@ -264,13 +311,14 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                     dashboard_data["manual_mode"] = False
                     dashboard_data["manual_selected_symbols"] = []
                     dashboard_data["force_rescan"] = True
+                    cur_auto_cnt = dashboard_data.get("auto_max_coins", 1)
 
-                add_ui_log("⚡ [MODE SWITCH] AUTOMATIC MODE ACTIVATED. Bot will auto-select highest negative safe coin.")
+                add_ui_log(f"⚡ [MODE SWITCH] AUTOMATIC MODE ACTIVATED (Max Coins: {cur_auto_cnt}). Bot will auto-select highest negative safe coin(s).")
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "manual_mode": False}).encode("utf-8"))
+                self.wfile.write(json.dumps({"success": True, "manual_mode": False, "auto_max_coins": cur_auto_cnt}).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(400)
