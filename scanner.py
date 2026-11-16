@@ -9,7 +9,8 @@ import requests
 import config
 from dashboard import (
     dashboard_data, data_lock, add_ui_log,
-    load_blocked_coins, get_active_base_margin_usd
+    load_blocked_coins, get_active_base_margin_usd,
+    get_auto_max_coins
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -296,8 +297,9 @@ def find_top_negative_funding_candidates(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Returns (chosen_targets_list, top_10_radar_list).
-    In Automatic Mode: Automatically trades both Standard 4h and Off-Time (1h/2h) cycles
-                       as long as Funding Rate is within the safe bound (-1.60% to -0.35%).
+    In Automatic Mode: Locks up to `auto_max_coins` (1, 2, or 3) across Standard 4h and Off-Time (1h/2h) cycles,
+                       strictly prioritizing Sweet Spot (-0.80% to -1.40%) first, then filling remaining
+                       slots from the Safe Range (-0.35% to -1.60%).
     In Manual Mode: User can select up to 3 candidates from any cycle.
     Radar Table: Displays top 10 candidates with (1h Off-Time) indicator for informational clarity.
     """
@@ -439,7 +441,8 @@ def find_top_negative_funding_candidates(
 
             return chosen_list, top_10
 
-        # 2. AUTOMATIC MODE: Uniform Safe Bound Selection (Trades both 4h and 1h cycles within -1.60% to -0.35%)
+        # 2. AUTOMATIC MODE: Up to `auto_max_coins` (1, 2, or 3) with Sweet-Spot (-0.80% to -1.40%) Priority
+        max_auto_targets = get_auto_max_coins()
         safe_batch = [
             c for c in soonest_batch
             if config.MAX_DANGER_FUNDING_RATE <= c["rate"] <= config.MIN_FUNDING_RATE
@@ -451,27 +454,35 @@ def find_top_negative_funding_candidates(
             if config.SWEET_SPOT_MIN <= c["rate"] <= config.SWEET_SPOT_MAX
         ]
 
-        chosen = None
-        candidates_to_filter = sweet_spot if sweet_spot else safe_batch
-        for c in candidates_to_filter:
+        chosen_auto_list: List[Dict[str, Any]] = []
+        selected_syms_set: set[str] = set()
+
+        # Priority 1: Fill slots from Sweet Spot (-0.80% to -1.40%) first
+        for c in sweet_spot:
+            if len(chosen_auto_list) >= max_auto_targets:
+                break
             ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
             if ok:
-                chosen = c
-                break
-            time.sleep(0.15)
+                chosen_auto_list.append(c)
+                selected_syms_set.add(c["symbol"])
+            else:
+                time.sleep(0.15)
 
-        # Fallback to remaining safe coins if top sweet-spot coin fails preflight
-        if not chosen and sweet_spot and safe_batch:
+        # Priority 2: Fill any remaining slots from the rest of Safe Range (-0.35% to -1.60%)
+        if len(chosen_auto_list) < max_auto_targets:
             for c in safe_batch:
-                if c in candidates_to_filter:
+                if len(chosen_auto_list) >= max_auto_targets:
+                    break
+                if c["symbol"] in selected_syms_set:
                     continue
                 ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
                 if ok:
-                    chosen = c
-                    break
-                time.sleep(0.15)
+                    chosen_auto_list.append(c)
+                    selected_syms_set.add(c["symbol"])
+                else:
+                    time.sleep(0.15)
 
-        return ([chosen] if chosen else []), top_10
+        return chosen_auto_list, top_10
 
     except Exception as e:
         add_ui_log(f"Scanner error: {e}")
