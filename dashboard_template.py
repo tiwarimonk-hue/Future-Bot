@@ -14,23 +14,246 @@ def get_dashboard_html() -> str:
 
 body {{ background-color: #0b0e11; color: #eaecef; padding: 14px; display: flex; justify-content: center; }}
 .container {{ width: 100%; max-width: 1260px; display: flex; flex-direction: column; gap: 14px; }}
-.header {{ background: #1e2329; padding: 16px; border-radius: 12px; border: 1px solid #2b313a; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }}
-.header h1 {{ font-size: 16px; color: #f0b90b; font-weight: 700; }}
-.badge {{ background: rgba(240, 185, 11, 0.15); color: #f0b90b; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }}
-.badge-mode {{ background: rgba(37, 99, 235, 0.2); color: #60a5fa; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1px solid rgba(96, 165, 250, 0.4); }}
-.badge-locked {{ background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1px solid rgba(239, 68, 68, 0.4); }}
 
-.btn-toggle {{ padding: 7px 16px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; border: none; transition: 0.2s; }}
-.btn-on {{ background: #0ecb81; color: #ffffff; }}
-.btn-off {{ background: #ef4444; color: #ffffff; }}
+/* PROFESSIONAL TRADING TERMINAL HEADER */
+.header {{
+    background: linear-gradient(180deg, #1e2329 0%, #181c22 100%);
+    padding: 16px 18px;
+    border-radius: 12px;
+    border: 1px solid #2b313a;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}}
+.header-top {{
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+}}
+.brand-block {{
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}}
+.header h1 {{
+    font-size: 17px;
+    color: #f0b90b;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}}
+.brand-dot {{
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #0ecb81;
+    box-shadow: 0 0 8px #0ecb81;
+    display: inline-block;
+}}
 
-.mode-container {{ display: flex; gap: 6px; align-items: center; background: #14181d; padding: 4px; border-radius: 10px; border: 1px solid #2b313a; }}
-.btn-mode {{ padding: 6px 14px; border-radius: 7px; font-size: 11px; font-weight: 700; cursor: pointer; border: none; transition: 0.2s; display: flex; align-items: center; gap: 4px; }}
-.btn-mode-auto-active {{ background: #0ecb81; color: #ffffff; box-shadow: 0 0 8px rgba(14, 203, 129, 0.35); }}
-.btn-mode-manual-active {{ background: #f0b90b; color: #0b0e11; box-shadow: 0 0 8px rgba(240, 185, 11, 0.35); font-weight: 800; }}
-.btn-mode-inactive {{ background: transparent; color: #848e9c; }}
-.btn-mode-inactive:hover {{ color: #eaecef; background: rgba(255, 255, 255, 0.05); }}
-.btn-mode:disabled {{ opacity: 0.4; cursor: not-allowed; }}
+/* UNIFORM HEIGHT CONTROL DECK */
+.controls-deck {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 10px;
+}}
+.btn-toggle {{
+    height: 58px;
+    min-width: 158px;
+    padding: 8px 20px;
+    border-radius: 10px;
+    font-size: 12.5px;
+    font-weight: 800;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 2px;
+    letter-spacing: 0.4px;
+}}
+.btn-toggle-sub {{
+    font-size: 9px;
+    font-weight: 700;
+    opacity: 0.85;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+}}
+.btn-on {{
+    background: linear-gradient(180deg, #10d889 0%, #0bb873 100%);
+    color: #062115;
+    border-color: #34eba1;
+    box-shadow: 0 3px 12px rgba(14, 203, 129, 0.28);
+}}
+.btn-on:hover {{ filter: brightness(1.05); }}
+.btn-off {{
+    background: linear-gradient(180deg, #f05252 0%, #dc2626 100%);
+    color: #ffffff;
+    border-color: #f87171;
+    box-shadow: 0 3px 12px rgba(239, 68, 68, 0.28);
+}}
+.btn-off:hover {{ filter: brightness(1.05); }}
+
+/* SEGMENTED MODE SWITCHER (COOL CYAN AUTO + 1/2/3 PILLS & AMBER MANUAL) */
+.mode-container {{
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    background: #12161b;
+    padding: 4px;
+    border-radius: 11px;
+    border: 1px solid #2b313a;
+    height: 58px;
+}}
+.mode-slot {{
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 152px;
+    height: 100%;
+    border-radius: 8px;
+    padding: 3px;
+    transition: all 0.2s ease;
+}}
+.mode-slot-auto-active {{
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+}}
+.mode-slot-manual-active {{
+    background: rgba(240, 185, 11, 0.14);
+    border: 1px solid rgba(240, 185, 11, 0.5);
+}}
+.mode-slot-inactive {{
+    background: transparent;
+    border: 1px solid transparent;
+}}
+
+.btn-mode {{
+    width: 100%;
+    flex: 1;
+    padding: 4px 14px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    font-weight: 800;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    letter-spacing: 0.3px;
+}}
+.btn-mode-auto-active {{
+    background: linear-gradient(180deg, #38bdf8 0%, #0ea5e9 100%);
+    color: #041e2c;
+    box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
+}}
+.btn-mode-manual-active {{
+    background: #f0b90b;
+    color: #0b0e11;
+    box-shadow: 0 2px 8px rgba(240, 185, 11, 0.3);
+}}
+.btn-mode-inactive {{
+    background: transparent;
+    color: #848e9c;
+}}
+.btn-mode-inactive:hover {{
+    color: #eaecef;
+    background: rgba(255, 255, 255, 0.05);
+}}
+.btn-mode:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+
+.auto-count-row {{
+    display: flex;
+    gap: 4px;
+    width: 100%;
+    margin-top: 3px;
+}}
+.btn-auto-cnt {{
+    flex: 1;
+    height: 18px;
+    line-height: 16px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 800;
+    cursor: pointer;
+    border: 1px solid #2b313a;
+    transition: all 0.15s ease;
+    text-align: center;
+    background: #181d24;
+    color: #848e9c;
+}}
+.btn-auto-cnt:hover {{
+    border-color: #38bdf8;
+    color: #eaecef;
+}}
+.btn-auto-cnt-active {{
+    background: #38bdf8;
+    color: #041e2c;
+    border-color: #38bdf8;
+    box-shadow: 0 0 6px rgba(56, 189, 248, 0.4);
+}}
+.btn-auto-cnt:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+
+.manual-sub-pill {{
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    font-size: 9.5px;
+    font-weight: 700;
+    color: #848e9c;
+    letter-spacing: 0.4px;
+    margin-top: 3px;
+}}
+
+/* HEADER BOTTOM STATUS STRIP */
+.header-status-bar {{
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid #262c35;
+}}
+.badge {{
+    background: rgba(240, 185, 11, 0.12);
+    color: #f0b90b;
+    border: 1px solid rgba(240, 185, 11, 0.3);
+    padding: 5px 12px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    font-weight: 700;
+}}
+.badge-mode {{
+    background: rgba(37, 99, 235, 0.16);
+    color: #60a5fa;
+    padding: 5px 12px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    font-weight: 800;
+    border: 1px solid rgba(96, 165, 250, 0.35);
+    letter-spacing: 0.3px;
+}}
+.badge-locked {{
+    background: rgba(239, 68, 68, 0.18);
+    color: #f87171;
+    padding: 5px 12px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    font-weight: 800;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    letter-spacing: 0.3px;
+}}
 
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }}
 .card {{ background: #1e2329; padding: 12px 14px; border-radius: 10px; border: 1px solid #2b313a; }}
@@ -59,12 +282,15 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .pnl-negative {{ color: #f87171 !important; font-weight: 800; font-size: 13px; text-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }}
 .pnl-neutral {{ color: #848e9c !important; font-size: 13px; }}
 
+/* LIMIT ORDER BOXES: GREEN = FILLED, BLUE = UNFILLED/CANCELED */
 .limit-rows-wrapper {{ display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 4px; }}
 .limit-row {{ display: flex; flex-wrap: wrap; gap: 10px; width: 100%; align-items: stretch; }}
 .limit-box {{ flex: 1 1 260px; max-width: 350px; padding: 10px 12px; border-radius: 8px; font-family: 'SFMono-Regular', Consolas, monospace; display: flex; flex-direction: column; gap: 6px; }}
+.limit-box-green {{ background: rgba(14, 203, 129, 0.12); border: 1px solid rgba(14, 203, 129, 0.60); border-left: 4px solid #0ecb81; color: #6ee7b7; box-shadow: 0 2px 8px rgba(14, 203, 129, 0.10); }}
 .limit-box-blue {{ background: rgba(59, 130, 246, 0.10); border: 1px solid rgba(59, 130, 246, 0.55); border-left: 4px solid #3b82f6; color: #93c5fd; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08); }}
 .limit-box-yellow {{ background: rgba(240, 185, 11, 0.10); border: 1px solid rgba(240, 185, 11, 0.55); border-left: 4px solid #f0b90b; color: #fcd34d; box-shadow: 0 2px 8px rgba(240, 185, 11, 0.08); }}
 .limit-box-header {{ font-size: 12px; font-weight: 800; padding-bottom: 5px; border-bottom: 1px solid rgba(255, 255, 255, 0.10); display: flex; justify-content: space-between; align-items: center; }}
+.limit-box-green .limit-box-header {{ color: #0ecb81; }}
 .limit-box-blue .limit-box-header {{ color: #60a5fa; }}
 .limit-box-yellow .limit-box-header {{ color: #f0b90b; }}
 .limit-box-metrics {{ font-size: 11px; color: #eaecef; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; }}
@@ -111,23 +337,48 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 .modal-actions {{ display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }}
 .btn-modal-cancel {{ background: #2b313a; color: #eaecef; border: none; padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; }}
 .btn-modal-ok {{ background: #0ecb81; color: #0b0e11; border: none; padding: 9px 22px; border-radius: 8px; font-size: 13px; font-weight: 800; cursor: pointer; }}
+
+@media (max-width: 640px) {{
+    .controls-deck {{ width: 100%; }}
+    .btn-toggle {{ flex: 1 1 100%; min-width: 100%; }}
+    .mode-container {{ flex: 1 1 100%; width: 100%; }}
+    .mode-slot {{ flex: 1; min-width: 0; }}
+}}
 </style>
 </head>
 <body>
 <div class="container">
 <div class="header">
-    <div>
-        <h1>Binance Tokyo Funding Sniper</h1>
-        <div class="sub-text" style="color: #848e9c;">Radar Top 10 • Multi-Coin Manual (Up to 3) • Automatic Mode • T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
-    </div>
-    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-        <button id="btn-trade-toggle" class="btn-toggle btn-on" onclick="toggleTrading()">TRADING: ON</button>
-        
-        <div class="mode-container">
-            <button id="btn-mode-auto" class="btn-mode btn-mode-auto-active" onclick="setModeAuto()">⚡ AUTOMATIC</button>
-            <button id="btn-mode-manual" class="btn-mode btn-mode-inactive" onclick="setModeManual()">🎯 MANUAL</button>
+    <div class="header-top">
+        <div class="brand-block">
+            <h1><span class="brand-dot"></span>Binance Tokyo Funding Sniper</h1>
+            <div class="sub-text" style="color: #848e9c;">Radar Top 10 • Multi-Coin Auto & Manual (Up to 3) • T-{config.ENTRY_BEFORE_SETTLE_MS}ms</div>
         </div>
 
+        <div class="controls-deck">
+            <button id="btn-trade-toggle" class="btn-toggle btn-on" onclick="toggleTrading()">
+                <span class="btn-toggle-sub">MASTER ENGINE</span>
+                <span id="btn-trade-label">● TRADING: ON</span>
+            </button>
+            
+            <div class="mode-container">
+                <div id="slot-mode-auto" class="mode-slot mode-slot-auto-active">
+                    <button id="btn-mode-auto" class="btn-mode btn-mode-auto-active" onclick="setModeAuto()">⚡ AUTOMATIC (1)</button>
+                    <div class="auto-count-row">
+                        <button type="button" id="btn-auto-cnt-1" class="btn-auto-cnt btn-auto-cnt-active" onclick="setAutoCount(1)" title="Lock up to 1 coin in Automatic Mode">1</button>
+                        <button type="button" id="btn-auto-cnt-2" class="btn-auto-cnt" onclick="setAutoCount(2)" title="Lock up to 2 coins in Automatic Mode">2</button>
+                        <button type="button" id="btn-auto-cnt-3" class="btn-auto-cnt" onclick="setAutoCount(3)" title="Lock up to 3 coins in Automatic Mode">3</button>
+                    </div>
+                </div>
+                <div id="slot-mode-manual" class="mode-slot mode-slot-inactive">
+                    <button id="btn-mode-manual" class="btn-mode btn-mode-inactive" onclick="setModeManual()">🎯 MANUAL</button>
+                    <div class="manual-sub-pill" id="manual-sub-hint">UP TO 3 COINS</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="header-status-bar">
         <div class="badge-mode" id="lock-badge">SELECTION: OPEN (>1m)</div>
         <div class="badge" id="ws-status">SCANNING</div>
     </div>
@@ -263,6 +514,7 @@ tr.sub-row {{ background: rgba(0, 0, 0, 0.25); border-bottom: 2px solid #2b313a;
 
 <script>
 let currentBaseMargin = {config.TRADE_MARGIN_USD};
+let currentAutoMaxCoins = 1;
 let isLocked = false;
 let showAllTemp = false;
 let showAllPerm = false;
@@ -319,6 +571,29 @@ async function submitMarginModal() {{
     }}
 }}
 
+async function setAutoCount(cnt) {{
+    if (isLocked) {{
+        alert("Selection is LOCKED because settlement is less than 1 minute away!");
+        return;
+    }}
+    try {{
+        const res = await fetch('/api/set-auto-count', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ count: cnt }})
+        }});
+        const data = await res.json();
+        if (!data.success) {{
+            alert(data.message || "Failed to set Automatic coin count.");
+        }} else {{
+            currentAutoMaxCoins = Number(data.auto_max_coins);
+            updateUI();
+        }}
+    }} catch(e) {{
+        alert("Network error while updating Automatic coin count.");
+    }}
+}}
+
 function formatDurationJs(sec) {{
     if (sec <= 0) return '0s (Settling...)';
     const h = Math.floor(sec / 3600);
@@ -329,13 +604,13 @@ function formatDurationJs(sec) {{
     return `${{s}}s`;
 }}
 
-function renderLimitBoxHtml(d, boxColorClass) {{
+function renderLimitBoxHtml(d, groupColorClass) {{
     if (d.status === "CANCELED") {{
         const cancelFired = d.cancel_fired || '--';
         const binanceCanceled = d.binance_canceled || '--';
         const latencyMs = (d.cancel_latency_ms !== undefined && d.cancel_latency_ms !== null) ? d.cancel_latency_ms : 0;
         return `
-            <div class="limit-box ${{boxColorClass}}" style="opacity: 0.90; border-style: dashed;">
+            <div class="limit-box limit-box-blue">
                 <div class="limit-box-header">
                     <span>${{d.level}}</span>
                     <span style="font-size: 10px; color: #f87171; font-weight: 800; background: rgba(239, 68, 68, 0.15); padding: 2px 6px; border-radius: 4px;">CANCELED</span>
@@ -353,6 +628,7 @@ function renderLimitBoxHtml(d, boxColorClass) {{
         `;
     }}
 
+    const filledBoxClass = (groupColorClass === 'limit-box-yellow') ? 'limit-box-yellow' : 'limit-box-green';
     const firstTime = d.first_time || d.time || '--';
     const lastTime = d.last_time || d.time || '--';
     const spanMs = (d.span_ms !== undefined && d.span_ms !== null) ? d.span_ms : 0;
@@ -360,10 +636,10 @@ function renderLimitBoxHtml(d, boxColorClass) {{
     const fillLabel = fillsCount > 1 ? `${{fillsCount}} Partial Fills` : `1 Single Fill`;
 
     return `
-        <div class="limit-box ${{boxColorClass}}">
+        <div class="limit-box ${{filledBoxClass}}">
             <div class="limit-box-header">
                 <span>${{d.level}}</span>
-                <span style="font-size: 10px; opacity: 0.85;">${{fillLabel}}</span>
+                <span style="font-size: 10px; background: rgba(14, 203, 129, 0.18); color: #0ecb81; padding: 2px 6px; border-radius: 4px;">FILLED • ${{fillLabel}}</span>
             </div>
             <div class="limit-box-metrics">
                 <span>Price: <strong style="color: #ffffff;">${{d.price}}</strong></span>
@@ -388,12 +664,13 @@ async function toggleTrading() {{
 
 function updateToggleBtn(enabled) {{
     const btn = document.getElementById('btn-trade-toggle');
+    const lbl = document.getElementById('btn-trade-label');
     if (enabled) {{
         btn.className = "btn-toggle btn-on";
-        btn.innerText = "TRADING: ON";
+        if (lbl) lbl.innerText = "● TRADING: ON";
     }} else {{
         btn.className = "btn-toggle btn-off";
-        btn.innerText = "TRADING: OFF";
+        if (lbl) lbl.innerText = "■ TRADING: OFF";
     }}
 }}
 
@@ -513,6 +790,9 @@ async function updateUI() {{
         if (data.base_margin_usd !== undefined && data.base_margin_usd !== null) {{
             currentBaseMargin = Number(data.base_margin_usd);
         }}
+        if (data.auto_max_coins !== undefined && data.auto_max_coins !== null) {{
+            currentAutoMaxCoins = Number(data.auto_max_coins);
+        }}
 
         document.getElementById('ws-status').innerText = data.status;
         document.getElementById('rate').innerText = data.funding_rate;
@@ -521,21 +801,49 @@ async function updateUI() {{
 
         const btnAuto = document.getElementById('btn-mode-auto');
         const btnManual = document.getElementById('btn-mode-manual');
+        const slotAuto = document.getElementById('slot-mode-auto');
+        const slotManual = document.getElementById('slot-mode-manual');
+        const manualHint = document.getElementById('manual-sub-hint');
 
         if (btnAuto && btnManual) {{
             btnAuto.disabled = isLocked;
             btnManual.disabled = isLocked;
 
             if (currentManualMode) {{
+                if (slotAuto) slotAuto.className = "mode-slot mode-slot-inactive";
+                if (slotManual) slotManual.className = "mode-slot mode-slot-manual-active";
                 btnAuto.className = "btn-mode btn-mode-inactive";
+                btnAuto.innerText = "⚡ AUTOMATIC";
                 btnManual.className = "btn-mode btn-mode-manual-active";
                 btnManual.innerText = `🎯 MANUAL (${{currentManualList.length}}/3)`;
+                if (manualHint) {{
+                    manualHint.innerText = `${{currentManualList.length}} OF 3 SELECTED`;
+                    manualHint.style.color = "#f0b90b";
+                }}
             }} else {{
+                if (slotAuto) slotAuto.className = "mode-slot mode-slot-auto-active";
+                if (slotManual) slotManual.className = "mode-slot mode-slot-inactive";
                 btnAuto.className = "btn-mode btn-mode-auto-active";
+                btnAuto.innerText = `⚡ AUTOMATIC (${{currentAutoMaxCoins}})`;
                 btnManual.className = "btn-mode btn-mode-inactive";
                 btnManual.innerText = "🎯 MANUAL";
+                if (manualHint) {{
+                    manualHint.innerText = "UP TO 3 COINS";
+                    manualHint.style.color = "#848e9c";
+                }}
             }}
         }}
+
+        [1, 2, 3].forEach(n => {{
+            const cntBtn = document.getElementById(`btn-auto-cnt-${{n}}`);
+            if (cntBtn) {{
+                cntBtn.disabled = isLocked;
+                cntBtn.className = (currentAutoMaxCoins === n) ? "btn-auto-cnt btn-auto-cnt-active" : "btn-auto-cnt";
+            }}
+        }});
+
+        const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--") && !data.target_symbol.includes("IDLE"));
+        const armedAutoList = hasValidTarget ? data.target_symbol.split(',').map(s => s.trim()).filter(Boolean) : [];
 
         if (currentManualMode) {{
             if (currentManualList.length === 0) {{
@@ -551,7 +859,12 @@ async function updateUI() {{
         }} else {{
             document.getElementById('coin').innerText = data.target_symbol;
             document.getElementById('coin').style.color = "#f0b90b";
-            document.getElementById('margin-disp').innerText = `$${{currentBaseMargin.toFixed(2)}} USDT`;
+            if (armedAutoList.length > 1) {{
+                const totalMargin = (armedAutoList.length * currentBaseMargin).toFixed(2);
+                document.getElementById('margin-disp').innerText = `$${{totalMargin}} USDT (${{armedAutoList.length}}x $${{currentBaseMargin.toFixed(2)}})`;
+            }} else {{
+                document.getElementById('margin-disp').innerText = `$${{currentBaseMargin.toFixed(2)}} USDT (Max ${{currentAutoMaxCoins}})`;
+            }}
         }}
 
         const lockBadge = document.getElementById('lock-badge');
@@ -564,7 +877,7 @@ async function updateUI() {{
             lockBadge.innerText = "SELECTION: OPEN (>1m)";
             document.getElementById('lock-warning').innerText = currentManualMode ? 
                 `Manual Mode (${{currentManualList.length}}/3 Selected • Click to Toggle)` : 
-                "Automatic Mode • Click any row to Switch to Manual";
+                `Automatic Mode (Up to ${{currentAutoMaxCoins}} Coin${{currentAutoMaxCoins > 1 ? 's' : ''}} • Sweet-Spot Priority)`;
         }}
 
         if (data.target_settlement_ms && data.target_settlement_ms > 0) {{
@@ -594,10 +907,12 @@ async function updateUI() {{
                         activeTagHtml = `<span class="manual-tag">SELECTED #${{mIdx + 1}}</span>`;
                     }}
                 }} else {{
-                    const hasValidTarget = (data.target_symbol && !data.target_symbol.includes("Scanning") && !data.target_symbol.includes("--"));
-                    if (hasValidTarget && (c.symbol === data.target_symbol)) {{
+                    const aIdx = armedAutoList.indexOf(c.symbol);
+                    if (aIdx !== -1) {{
                         isSelected = true;
-                        activeTagHtml = '<span class="active-tag">ARMED</span>';
+                        activeTagHtml = armedAutoList.length > 1
+                            ? `<span class="active-tag">ARMED #${{aIdx + 1}}</span>`
+                            : '<span class="active-tag">ARMED</span>';
                     }}
                 }}
 
@@ -705,7 +1020,7 @@ async function updateUI() {{
 
                     let rowsHtml = '';
                     if (shallowHits.length > 0) {{
-                        rowsHtml += `<div class="limit-row">${{shallowHits.map(d => renderLimitBoxHtml(d, 'limit-box-blue')).join('')}}</div>`;
+                        rowsHtml += `<div class="limit-row">${{shallowHits.map(d => renderLimitBoxHtml(d, 'limit-box-green')).join('')}}</div>`;
                     }}
                     if (dcaDeepHits.length > 0) {{
                         rowsHtml += `<div class="limit-row">${{dcaDeepHits.map(d => renderLimitBoxHtml(d, 'limit-box-yellow')).join('')}}</div>`;
