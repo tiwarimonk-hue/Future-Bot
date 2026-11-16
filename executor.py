@@ -557,38 +557,55 @@ def execute_market_exit_3layer(
     reason_label: str
 ) -> tuple[bool, str, str]:
     now_exit_dt = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
+    retry_delay_sec = config.SL_EXIT_RETRY_DELAY_MS / 1000.0
+    t_start = time.perf_counter()
 
+    # ATTEMPT #1 (0ms): Order WebSocket Market Sell (reduceOnly=True)
     req_id_1 = f"exit-ws1-{uuid.uuid4().hex[:6]}"
-    add_ui_log(f"[{reason_label} | ATTEMPT #1 (WS)] Fired at {now_exit_dt} IST | Qty: {qty_str}")
+    add_ui_log(f"[{reason_label} | ATTEMPT #1 (WS @ 0ms)] Fired at {now_exit_dt} IST | Qty: {qty_str} (reduceOnly=True)")
     res1 = ws_pipeline.place_order_ws(
         symbol=symbol,
         side="SELL",
         order_type="MARKET",
         quantity=qty_str,
         client_order_id=req_id_1,
-        timeout=0.5,
+        timeout=retry_delay_sec,
         reduce_only=True
     )
-    if res1.get("status") == 200 or "orderId" in res1.get("result", {}):
-        add_ui_log(f"[{reason_label} | ATTEMPT #1 CONFIRMED] Position closed on {symbol} via WS API!")
+    err1 = res1.get("error", {}) if isinstance(res1.get("error"), dict) else {}
+    if res1.get("status") == 200 or "orderId" in res1.get("result", {}) or err1.get("code") == -2022:
+        add_ui_log(f"[{reason_label} | ATTEMPT #1 CONFIRMED] Position on {symbol} closed/flat via WS API!")
         return True, now_exit_dt, "WS_ATTEMPT_1"
 
+    # Wait until exact +50ms mark before Attempt #2
+    rem_1 = retry_delay_sec - (time.perf_counter() - t_start)
+    if rem_1 > 0:
+        time.sleep(rem_1)
+
+    # ATTEMPT #2 (+50ms): Order WebSocket Backup Market Sell (reduceOnly=True)
     req_id_2 = f"exit-ws2-{uuid.uuid4().hex[:6]}"
-    add_ui_log(f"[{reason_label} | ATTEMPT #2 (WS RETRY)] Retrying on {symbol} via WS API...")
+    add_ui_log(f"[{reason_label} | ATTEMPT #2 (WS @ +50ms)] Firing backup WS Market Sell on {symbol} | Qty: {qty_str}...")
     res2 = ws_pipeline.place_order_ws(
         symbol=symbol,
         side="SELL",
         order_type="MARKET",
         quantity=qty_str,
         client_order_id=req_id_2,
-        timeout=0.5,
+        timeout=retry_delay_sec,
         reduce_only=True
     )
-    if res2.get("status") == 200 or "orderId" in res2.get("result", {}):
-        add_ui_log(f"[{reason_label} | ATTEMPT #2 CONFIRMED] Position closed on {symbol} on 2nd WS attempt!")
+    err2 = res2.get("error", {}) if isinstance(res2.get("error"), dict) else {}
+    if res2.get("status") == 200 or "orderId" in res2.get("result", {}) or err2.get("code") == -2022:
+        add_ui_log(f"[{reason_label} | ATTEMPT #2 CONFIRMED] Position on {symbol} closed/flat on 2nd WS attempt!")
         return True, now_exit_dt, "WS_ATTEMPT_2"
 
-    add_ui_log(f"[{reason_label} | ATTEMPT #3 (REST API)] Both WS attempts rejected on {symbol}! Firing instant REST Market Sell...")
+    # Wait until exact +100ms mark before Attempt #3
+    rem_2 = (retry_delay_sec * 2.0) - (time.perf_counter() - t_start)
+    if rem_2 > 0:
+        time.sleep(rem_2)
+
+    # ATTEMPT #3 (+100ms): Pre-Warmed HTTP REST API Fallback (reduceOnly=true)
+    add_ui_log(f"[{reason_label} | ATTEMPT #3 (WARM REST API @ +100ms)] Firing instant REST Market Sell on {symbol}...")
     try:
         r = binance_rest_post("/fapi/v1/order", {
             "symbol": symbol,
@@ -597,8 +614,8 @@ def execute_market_exit_3layer(
             "quantity": qty_str,
             "reduceOnly": "true"
         })
-        if "orderId" in r:
-            add_ui_log(f"[{reason_label} | REST CONFIRMED] Position on {symbol} 100% closed via REST API!")
+        if "orderId" in r or r.get("code") == -2022:
+            add_ui_log(f"[{reason_label} | REST CONFIRMED] Position on {symbol} 100% closed/flat via Warm REST API!")
             return True, now_exit_dt, "REST_FALLBACK"
     except Exception as e:
         add_ui_log(f"REST Market Sell Exception on {symbol}: {e}")
