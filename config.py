@@ -36,6 +36,8 @@ SHALLOW_LIMIT_RATIOS = (0.20, 0.40, 0.60, 0.80)
 # Stop-Loss Configuration (150% of |FR| below Anchor Price, with strict 0.60% Minimum Floor)
 SL_FUNDING_MULTIPLIER = 1.50           # Stop-Loss distance = 150% of |FR| below Anchor Price
 MIN_SL_DROP_RATIO = 0.0060             # Minimum 0.60% floor below Anchor Price (prevents premature SL on low FR)
+SL_GRACE_AFTER_SETTLE_MS = 1200        # T+0ms to T+1200ms: Post-settlement recovery grace window before SL activates
+SL_EXIT_RETRY_DELAY_MS = 50            # 50ms spacing between Exit Attempt #1 (WS), #2 (WS), and #3 (Warm REST)
 
 # Standard Reference Timing for Dashboard Tagging (IST)
 STANDARD_SETTLEMENT_HOURS_IST = (1, 5, 9, 13, 17, 21)
@@ -63,8 +65,9 @@ SHALLOW_CANCEL_LEAD_MIN_MS = 0.5       # Minimum clamped 1-way network lead
 SHALLOW_CANCEL_LEAD_MAX_MS = 25.0      # Maximum clamped 1-way network lead (supports full compensation)
 SHALLOW_CANCEL_LEAD_DEFAULT_MS = 1.2   # Safe fallback lead if ping not yet measured
 
-CANCEL_ORDERS_AFTER_SETTLE_MS = 6000          # T+6s: Cancel any remaining open orders
-EXIT_AFTER_SETTLE_MS = 7000                   # T+7s: Scheduled 100% Market Exit
+CANCEL_ORDERS_AFTER_SETTLE_MS = 5000          # T+5s (5000ms): Cancel any remaining open orders
+SL_WATCHDOG_END_AFTER_SETTLE_MS = 5980        # T+5980ms: Stop-Loss watchdog cutoff (leaves 20ms settling buffer before T+6000ms exit)
+EXIT_AFTER_SETTLE_MS = 6000                   # T+6s (6000ms): Scheduled 100% Market Exit
 EMERGENCY_SWEEP_AFTER_SETTLE_MS = 9000        # T+9s: Hard Emergency Sweep & Safety Net #1
 POST_TRADE_AUDIT_AFTER_SETTLE_MS = 15000      # T+15s: Official post-trade reconciliation & PnL audit (Eliminates 0.5s cache lag)
 SECOND_EMERGENCY_SWEEP_AFTER_SETTLE_MS = 20000 # T+20s: Hard Emergency Sweep & Safety Net #2
