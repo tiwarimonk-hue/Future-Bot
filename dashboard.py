@@ -106,6 +106,8 @@ def unblock_coin(symbol: str, block_type: str = "") -> tuple[bool, str]:
         return False, f"{symbol} not found in block list"
 
 
+_DEFAULT_BASE_MARGIN = float(config.TRADE_MARGIN_USD)
+
 dashboard_data = {
     "target_symbol": "Scanning...",
     "funding_rate": "0.00%",
@@ -115,8 +117,9 @@ dashboard_data = {
     "target_settlement_ms": 0,
     "target_settlement": "--:--:-- IST",
     "clock_offset_ms": 0.0,
-    "base_margin_usd": float(config.TRADE_MARGIN_USD),
-    "margin_usd": f"${config.TRADE_MARGIN_USD:.2f} USDT",
+    "base_margin_usd": _DEFAULT_BASE_MARGIN,
+    "slot_margins": [_DEFAULT_BASE_MARGIN, _DEFAULT_BASE_MARGIN, _DEFAULT_BASE_MARGIN],
+    "margin_usd": f"${_DEFAULT_BASE_MARGIN:.2f} USDT",
     "trades": trade_history,
     "trading_enabled": True,
     "auto_max_coins": 1,
@@ -129,10 +132,23 @@ dashboard_data = {
 }
 
 
-def get_active_base_margin_usd() -> float:
+def get_slot_margin_usd(slot_index: int = 0) -> float:
     with data_lock:
-        val = float(dashboard_data.get("base_margin_usd", config.TRADE_MARGIN_USD))
+        slots = dashboard_data.get("slot_margins")
+        if isinstance(slots, list) and len(slots) >= 3:
+            idx = max(0, min(2, int(slot_index)))
+            val = float(slots[idx])
+        else:
+            val = float(dashboard_data.get("base_margin_usd", config.TRADE_MARGIN_USD))
         return max(0.30, round(val, 2))
+
+
+def get_all_slot_margins_usd() -> list[float]:
+    return [get_slot_margin_usd(0), get_slot_margin_usd(1), get_slot_margin_usd(2)]
+
+
+def get_active_base_margin_usd() -> float:
+    return get_slot_margin_usd(0)
 
 
 def get_auto_max_coins() -> int:
@@ -189,19 +205,25 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/set-margin":
             try:
                 payload = json.loads(body)
-                raw_val = float(payload.get("margin", 0.0))
-                if math.isnan(raw_val) or math.isinf(raw_val) or raw_val < 0.30:
-                    self.send_response(400)
-                    self.send_header("Content-type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({
-                        "success": False,
-                        "message": "Minimum Base Margin is $0.30 USDT (required for $5.00 Binance min notional at 20x)."
-                    }).encode("utf-8"))
-                    return
+                if "slots" in payload and isinstance(payload["slots"], list) and len(payload["slots"]) == 3:
+                    raw_slots = [float(x) for x in payload["slots"]]
+                else:
+                    single_val = float(payload.get("margin", 0.0))
+                    raw_slots = [single_val, single_val, single_val]
 
-                new_margin = round(raw_val, 2)
+                for idx, val in enumerate(raw_slots, start=1):
+                    if math.isnan(val) or math.isinf(val) or val < 0.30:
+                        self.send_response(400)
+                        self.send_header("Content-type", "application/json")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "success": False,
+                            "message": f"Slot #{idx} margin must be at least $0.30 USDT (required for $5.00 Binance min notional at 20x)."
+                        }).encode("utf-8"))
+                        return
+
+                clean_slots = [round(x, 2) for x in raw_slots]
                 with data_lock:
                     if dashboard_data["selection_locked"]:
                         self.send_response(403)
@@ -214,16 +236,24 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                         }).encode("utf-8"))
                         return
 
-                    dashboard_data["base_margin_usd"] = new_margin
-                    dashboard_data["margin_usd"] = f"${new_margin:.2f} USDT"
+                    dashboard_data["slot_margins"] = clean_slots
+                    dashboard_data["base_margin_usd"] = clean_slots[0]
+                    dashboard_data["margin_usd"] = f"${clean_slots[0]:.2f} / ${clean_slots[1]:.2f} / ${clean_slots[2]:.2f} USDT"
                     dashboard_data["force_rescan"] = True
 
-                add_ui_log(f"💰 [BASE MARGIN UPDATED] Active Base Margin set to ${new_margin:.2f} USDT per order.")
+                add_ui_log(
+                    f"💰 [SLOT MARGINS UPDATED] #1: ${clean_slots[0]:.2f} | "
+                    f"#2: ${clean_slots[1]:.2f} | #3: ${clean_slots[2]:.2f} USDT per order."
+                )
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "base_margin_usd": new_margin}).encode("utf-8"))
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "slot_margins": clean_slots,
+                    "base_margin_usd": clean_slots[0]
+                }).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(400)
@@ -363,7 +393,7 @@ class FundingDashboardHandler(BaseHTTPRequestHandler):
                             return
 
                         selected_list.append(selected_sym)
-                        action_msg = f"Selected {selected_sym}. Total selected: {len(selected_list)}/3."
+                        action_msg = f"Selected {selected_sym} as Slot #{len(selected_list)}. Total selected: {len(selected_list)}/3."
 
                     dashboard_data["force_rescan"] = True
 
