@@ -49,8 +49,9 @@ SCHEDULED_SCAN_MINUTES = (5, 20, 35, 50)
 # Timeline Offsets (Milliseconds before Settlement T)
 RESCAN_BEFORE_SETTLE_MS = 20000        # T-20s: Fresh market coin lock
 GC_PURGE_BEFORE_SETTLE_MS = 10000      # T-10s: Purge and pause GC (Dedicated CPU)
-WS_WARMUP_BEFORE_SETTLE_MS = 8000      # T-8s: Fresh TLS Handshake for Order WebSocket
-TCP_WARMUP_BEFORE_SETTLE_MS = 4000     # T-4s: Order WebSocket Backup Ping Warm-Up
+WS_WARMUP_BEFORE_SETTLE_MS = 8000      # T-8s: Attempt #1 Fresh TLS Handshake for Order WebSocket
+WS_RETRY_2_BEFORE_SETTLE_MS = 6000     # T-6s: Attempt #2 Order WebSocket Reconnect (Bypassed if already ready)
+TCP_WARMUP_BEFORE_SETTLE_MS = 4000     # T-4s: Final Attempt #3 (if needed) + Order WebSocket Backup Ping Warm-Up
 RECHECK_BEFORE_SETTLE_MS = 2500        # T-2.5s (2500ms): Live rate recheck & Backup Snapshot Anchor
 MULTI_PING_BEFORE_SETTLE_MS = 500      # T-500ms: 3-Ping Rapid WS Burst for Fresh Min-RTT Lock
 
