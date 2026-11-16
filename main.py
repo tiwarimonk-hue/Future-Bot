@@ -6,7 +6,8 @@ import config
 from binance_ws import BinanceFastLaneWS
 from dashboard import (
     IST, data_lock, dashboard_data, add_ui_log,
-    set_dashboard_status, run_web_server, load_blocked_coins
+    set_dashboard_status, run_web_server, load_blocked_coins,
+    get_slot_margin_usd
 )
 from scanner import (
     sync_binance_clock, get_synced_time_ms, format_duration,
@@ -117,11 +118,14 @@ def run_dump_dip_engine() -> None:
         ws_pipeline.subscribe_tickers(active_target_syms)
 
         symbols_title, rates_summary = update_dashboard_armed_state(chosen_candidates, is_manual_mode, settle_epoch, prefix="ARMED")
-        first_qty_str, first_lev, _, _, _ = calculate_order_specs(chosen_candidates[0]["symbol"], chosen_candidates[0]["price"])
+        first_slot = int(chosen_candidates[0].get("slot_index", 0))
+        first_qty_str, first_lev, _, _, _ = calculate_order_specs(
+            chosen_candidates[0]["symbol"], chosen_candidates[0]["price"], slot_index=first_slot
+        )
 
         print("\n" + "=" * 70, flush=True)
         print(f"🎯 TARGET LOCKED ({'MANUAL' if is_manual_mode else 'AUTO'}): {symbols_title} | Rates: {rates_summary} | Settle: {settle_dt.strftime('%H:%M:%S IST')}", flush=True)
-        print(f"Strategy: {get_strategy_label(chosen_candidates[0]['rate'])} | Lev: {first_lev}x", flush=True)
+        print(f"Strategy: {get_strategy_label(chosen_candidates[0]['rate'], get_slot_margin_usd(first_slot))} | Lev: {first_lev}x", flush=True)
         print("=" * 70, flush=True)
 
         last_logged_sec = -1
