@@ -10,7 +10,7 @@ import config
 from dashboard import (
     dashboard_data, data_lock, add_ui_log,
     load_blocked_coins, get_active_base_margin_usd,
-    get_auto_max_coins
+    get_slot_margin_usd, get_auto_max_coins
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -234,7 +234,7 @@ def get_symbol_max_leverage(symbol: str) -> int:
     return int(config.MAX_LEVERAGE_CAP)
 
 
-def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[bool, str]:
+def verify_binance_symbol_preflight(symbol: str, mark_price: float, slot_index: int = 0) -> tuple[bool, str]:
     rules = cached_exchange_rules.get(symbol)
     if not rules:
         return False, "Rules not cached"
@@ -242,18 +242,21 @@ def verify_binance_symbol_preflight(symbol: str, mark_price: float) -> tuple[boo
     if rules.get("status") != "TRADING" or rules.get("contract_type") != "PERPETUAL":
         return False, f"Not trading perpetual ({rules.get('status')}/{rules.get('contract_type')})"
 
-    active_margin = get_active_base_margin_usd()
+    slot_margin = get_slot_margin_usd(slot_index)
     coin_max_lev = get_symbol_max_leverage(symbol)
     effective_lev = min(coin_max_lev, int(config.MAX_LEVERAGE_CAP))
-    purchasing_power = active_margin * effective_lev
+    purchasing_power = slot_margin * effective_lev
 
     if purchasing_power < config.BINANCE_MIN_NOTIONAL:
-        return False, f"Purchasing power ({purchasing_power:.2f} USDT @ ${active_margin:.2f} x {effective_lev}x) < Min Notional ({config.BINANCE_MIN_NOTIONAL} USDT)"
+        return False, (
+            f"Slot #{slot_index + 1} purchasing power ({purchasing_power:.2f} USDT @ "
+            f"${slot_margin:.2f} x {effective_lev}x) < Min Notional ({config.BINANCE_MIN_NOTIONAL} USDT)"
+        )
 
     min_qty = rules["min_qty"]
     min_lot_cost = min_qty * mark_price
     if min_lot_cost > purchasing_power:
-        return False, f"1 Lot cost ({min_lot_cost:.2f} USDT) > max purchasing power ({purchasing_power:.2f} USDT)"
+        return False, f"1 Lot cost ({min_lot_cost:.2f} USDT) > Slot #{slot_index + 1} max purchasing power ({purchasing_power:.2f} USDT)"
 
     if symbol in configured_symbols:
         return True, "Pre-flight verified (cached)"
@@ -299,8 +302,8 @@ def find_top_negative_funding_candidates(
     Returns (chosen_targets_list, top_10_radar_list).
     In Automatic Mode: Locks up to `auto_max_coins` (1, 2, or 3) across Standard 4h and Off-Time (1h/2h) cycles,
                        strictly prioritizing Sweet Spot (-0.80% to -1.40%) first, then filling remaining
-                       slots from the Safe Range (-0.35% to -1.60%).
-    In Manual Mode: User can select up to 3 candidates from any cycle.
+                       slots from the Safe Range (-0.35% to -1.60%), verifying each against its Slot Margin (#1/#2/#3).
+    In Manual Mode: User can select up to 3 candidates from any cycle, each verified against its Slot Margin (#1/#2/#3).
     Radar Table: Displays top 10 candidates with (1h Off-Time) indicator for informational clarity.
     """
     try:
@@ -384,7 +387,7 @@ def find_top_negative_funding_candidates(
         soonest_batch.sort(key=lambda x: x["rate"])
         top_10 = soonest_batch[:10]
 
-        # 1. MANUAL OVERRIDE MODE (User can select any coin, standard or off-time)
+        # 1. MANUAL OVERRIDE MODE (User can select up to 3 coins, each mapped to Slot #1, #2, #3)
         if manual_mode:
             clean_preferred = [s.strip().upper() for s in (preferred_symbols or []) if s.strip()]
             if not clean_preferred:
@@ -392,21 +395,24 @@ def find_top_negative_funding_candidates(
                 return [], top_10
 
             chosen_list = []
-            for sym in clean_preferred[:3]:
+            for slot_idx, sym in enumerate(clean_preferred[:3]):
                 if sym in temp_blocked_set or sym in perm_blocked_set:
                     add_ui_log(f"⚠️ [PREFERRED SYMBOL IGNORED] {sym} is in block list. Skipping.")
                     continue
 
                 match = next((c for c in soonest_batch if c["symbol"] == sym), None)
                 if match and match["rate"] < 0.0 and not match.get("is_temp_blocked", False):
-                    ok, msg = verify_binance_symbol_preflight(match["symbol"], match["price"])
+                    ok, msg = verify_binance_symbol_preflight(match["symbol"], match["price"], slot_index=slot_idx)
                     if ok:
-                        chosen_list.append(match)
+                        item_copy = dict(match)
+                        item_copy["slot_index"] = slot_idx
+                        item_copy["slot_margin"] = get_slot_margin_usd(slot_idx)
+                        chosen_list.append(item_copy)
                         if not any(c["symbol"] == sym for c in top_10):
-                            top_10.insert(0, match)
+                            top_10.insert(0, item_copy)
                             top_10 = top_10[:10]
                     else:
-                        add_ui_log(f"⚠️ [MANUAL PREFLIGHT REJECT] {sym}: {msg}")
+                        add_ui_log(f"⚠️ [MANUAL PREFLIGHT REJECT (Slot #{slot_idx + 1})] {sym}: {msg}")
                 else:
                     # Fallback check if coin is in tickers and matches settlement window
                     fallback_t = next((t for t in tickers if t.get("symbol") == sym), None)
@@ -416,7 +422,7 @@ def find_top_negative_funding_candidates(
                         f_settle = int(fallback_t.get("nextFundingTime", 0))
                         ref_settle = target_settle_ms if target_settle_ms is not None else soonest_settle_time
                         if f_rate < 0.0 and f_price > 0 and abs(f_settle - ref_settle) < 60000:
-                            ok, msg = verify_binance_symbol_preflight(sym, f_price)
+                            ok, msg = verify_binance_symbol_preflight(sym, f_price, slot_index=slot_idx)
                             if ok:
                                 is_std = is_standard_settlement_time(f_settle)
                                 raw_t = datetime.fromtimestamp(f_settle / 1000, tz=IST).strftime("%H:%M:%S IST")
@@ -430,14 +436,16 @@ def find_top_negative_funding_candidates(
                                     "is_standard_settle": is_std,
                                     "volume": cached_24h_volumes.get(sym, 0.0),
                                     "vol_str": format_volume(cached_24h_volumes.get(sym, 0.0)),
-                                    "is_temp_blocked": False
+                                    "is_temp_blocked": False,
+                                    "slot_index": slot_idx,
+                                    "slot_margin": get_slot_margin_usd(slot_idx)
                                 }
                                 chosen_list.append(item_obj)
                                 if not any(c["symbol"] == sym for c in top_10):
                                     top_10.insert(0, item_obj)
                                     top_10 = top_10[:10]
                             else:
-                                add_ui_log(f"⚠️ [MANUAL PREFLIGHT REJECT] {sym}: {msg}")
+                                add_ui_log(f"⚠️ [MANUAL PREFLIGHT REJECT (Slot #{slot_idx + 1})] {sym}: {msg}")
 
             return chosen_list, top_10
 
@@ -461,9 +469,13 @@ def find_top_negative_funding_candidates(
         for c in sweet_spot:
             if len(chosen_auto_list) >= max_auto_targets:
                 break
-            ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
+            next_slot_idx = len(chosen_auto_list)
+            ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"], slot_index=next_slot_idx)
             if ok:
-                chosen_auto_list.append(c)
+                item_copy = dict(c)
+                item_copy["slot_index"] = next_slot_idx
+                item_copy["slot_margin"] = get_slot_margin_usd(next_slot_idx)
+                chosen_auto_list.append(item_copy)
                 selected_syms_set.add(c["symbol"])
             else:
                 time.sleep(0.15)
@@ -475,9 +487,13 @@ def find_top_negative_funding_candidates(
                     break
                 if c["symbol"] in selected_syms_set:
                     continue
-                ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"])
+                next_slot_idx = len(chosen_auto_list)
+                ok, _ = verify_binance_symbol_preflight(c["symbol"], c["price"], slot_index=next_slot_idx)
                 if ok:
-                    chosen_auto_list.append(c)
+                    item_copy = dict(c)
+                    item_copy["slot_index"] = next_slot_idx
+                    item_copy["slot_margin"] = get_slot_margin_usd(next_slot_idx)
+                    chosen_auto_list.append(item_`c`)
                     selected_syms_set.add(c["symbol"])
                 else:
                     time.sleep(0.15)
@@ -489,7 +505,7 @@ def find_top_negative_funding_candidates(
         return [], []
 
 
-def calculate_order_specs(symbol: str, price: float):
+def calculate_order_specs(symbol: str, price: float, slot_index: int = 0):
     max_leverage_cap = int(config.MAX_LEVERAGE_CAP)
     coin_max_lev = get_symbol_max_leverage(symbol)
     applied_leverage = min(max_leverage_cap, coin_max_lev)
@@ -500,8 +516,8 @@ def calculate_order_specs(symbol: str, price: float):
     qty_step = rules.get("qty_step", 1.0)
     min_qty = rules.get("min_qty", 1.0)
 
-    active_margin = get_active_base_margin_usd()
-    total_notional_usd = max(config.BINANCE_MIN_NOTIONAL, active_margin * applied_leverage)
+    slot_margin = get_slot_margin_usd(slot_index)
+    total_notional_usd = max(config.BINANCE_MIN_NOTIONAL, slot_margin * applied_leverage)
     raw_qty = max(min_qty, (total_notional_usd / price)) if price > 0 else min_qty
     qty_str = format_step(raw_qty, qty_step)
     if float(qty_str) < min_qty:
