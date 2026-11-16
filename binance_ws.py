@@ -297,7 +297,10 @@ class BinanceFastLaneWS:
         self.log_fn(f"Binance User WS Error: {error}")
 
     def on_order_open(self, ws: Any) -> None:
-        self.order_ws_ready = True
+        with self.ws_lock:
+            if self.order_ws is not None and ws is not self.order_ws:
+                return
+            self.order_ws_ready = True
         self.check_overall_ready()
         self.log_fn("Binance Order Fast-Lane WebSocket Connected & Armed.")
 
@@ -346,11 +349,17 @@ class BinanceFastLaneWS:
             pass
 
     def on_order_close(self, ws: Any, close_code: Any, close_msg: Any) -> None:
-        self.order_ws_ready = False
+        with self.ws_lock:
+            if self.order_ws is not None and ws is not self.order_ws:
+                return
+            self.order_ws_ready = False
         self.log_fn(f"Order WS Disconnected: {close_msg}")
 
     def on_order_error(self, ws: Any, error: Any) -> None:
-        self.order_ws_ready = False
+        with self.ws_lock:
+            if self.order_ws is not None and ws is not self.order_ws:
+                return
+            self.order_ws_ready = False
         self.log_fn(f"Order WS Error: {error}")
 
     def check_overall_ready(self) -> None:
@@ -359,11 +368,23 @@ class BinanceFastLaneWS:
             self.status_fn("BINANCE TOKYO WS (READY)")
 
     def reconnect_order_ws(self) -> None:
+        """
+        0ms Force-Cut: Purane Order WebSocket ke raw TCP socket ko turant kaat deta hai
+        taaki Binance ke close-frame reply ka intezar kiye bina naya connection turant ban sake.
+        """
         with self.ws_lock:
             self.order_ws_ready = False
-        if self.order_ws:
+            old_ws = self.order_ws
+            self.order_ws = None
+
+        if old_ws:
             try:
-                self.order_ws.close()
+                if getattr(old_ws, "sock", None):
+                    old_ws.sock.close()
+            except Exception:
+                pass
+            try:
+                old_ws.close()
             except Exception:
                 pass
 
@@ -887,17 +908,19 @@ class BinanceFastLaneWS:
         def order_ws_runner():
             while True:
                 try:
-                    self.order_ws = websocket.WebSocketApp(
+                    local_ws = websocket.WebSocketApp(
                         config.BINANCE_WS_API_URL,
                         on_open=self.on_order_open,
                         on_message=self.on_order_message,
                         on_close=self.on_order_close,
                         on_error=self.on_order_error
                     )
-                    self.order_ws.run_forever(ping_interval=20, ping_timeout=10)
+                    with self.ws_lock:
+                        self.order_ws = local_ws
+                    local_ws.run_forever(ping_interval=15, ping_timeout=2)
                 except Exception as e:
                     self.log_fn(f"Order WS Connection failure: {e}")
-                time.sleep(0.2)
+                time.sleep(0.05)
 
         threading.Thread(target=user_ws_runner, daemon=True).start()
         threading.Thread(target=order_ws_runner, daemon=True).start()
