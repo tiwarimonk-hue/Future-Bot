@@ -80,7 +80,7 @@ def run_settlement_cycle(
     Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s -> T-6s -> T-4s Force-Cut WS Reconnect & Ping) ->
     Phase 3 (T-2.5s Snapshot via Shared executor.session / T-500ms 3-Ping Burst) ->
     Phase 4 (T-50ms Pure WS 4-Shallow Limit Burst using Slot #1/#2/#3 Margins) ->
-    Phase 5 (3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms + T+5000ms Open-Order Purge + T+1200ms..T+5980ms @aggTrade Close-All SL Watchdog) ->
+    Phase 5 (3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms + T+5000ms Open-Order Purge + T+1200ms..T+5980ms Dual LTP + BestBid Close-All SL Watchdog) ->
     Phase 6 (Exact T+6000ms Harvest Exit) -> Phase 6B (T+9s Safety Sweep #1) ->
     Phase 7 (T+15s Ledger Audit & Smart Merge) -> Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
     """
@@ -231,6 +231,8 @@ def run_settlement_cycle(
                 "sl_price": 0.0,
                 "sl_target_str": "--",
                 "sl_triggered": False,
+                "min_ltp_in_window": 0.0,
+                "min_bid_in_window": 0.0,
                 "entry_dispatch_time": "",
                 "exit_send_time": "",
                 "exit_reason": "",
@@ -418,21 +420,21 @@ def run_settlement_cycle(
             )
             add_ui_log(
                 f"🛡️ [STOP LOSS ARMED ({sym})] Floor: {meta['sl_target_str']} USDT "
-                f"(-{float(sl_drop_dec) * 100:.3f}% from Anchor | Active T+{config.SL_GRACE_AFTER_SETTLE_MS}ms..T+{config.SL_WATCHDOG_END_AFTER_SETTLE_MS}ms on @aggTrade LTP)"
+                f"(-{float(sl_drop_dec) * 100:.3f}% from Anchor | Active T+{config.SL_GRACE_AFTER_SETTLE_MS}ms..T+{config.SL_WATCHDOG_END_AFTER_SETTLE_MS}ms on Dual LTP + BestBid)"
             )
 
         # Flush all Limit Orders across all active coins in 1 single socket lock (<0.5ms)
         executor.execute_multi_symbol_limit_burst_ws(ws_pipeline, multi_burst_frames)
 
-        # Phase 5: 3-Strike Shallow Cancel (T+235ms / T+250ms / T+270ms) + T+5000ms Open-Order Purge + T+1200ms..T+5980ms @aggTrade Close-All SL Watchdog
+        # Phase 5: 3-Strike Shallow Cancel (T+235ms / T+250ms / T+270ms) + T+5000ms Open-Order Purge + T+1200ms..T+5980ms Dual LTP + BestBid Close-All SL Watchdog
         shallow_cancel_1_fired = False
         shallow_cancel_2_fired = False
         shallow_cancel_3_fired = False
         cancel_5s_fired = False
 
-        def trigger_sl_sequence(target_symbol: str, meta: dict, real_ltp: float) -> None:
-            meta["exit_price_detected"] = real_ltp
-            meta["exit_reason"] = f"REAL-TRADE SL HIT (LTP: {real_ltp} <= SL: {meta['sl_target_str']})"
+        def trigger_sl_sequence(target_symbol: str, meta: dict, trigger_src: str, trigger_price: float) -> None:
+            meta["exit_price_detected"] = trigger_price
+            meta["exit_reason"] = f"DUAL-SL HIT [{trigger_src}] ({trigger_price} <= SL: {meta['sl_target_str']})"
             meta["exit_status"] = "STOP LOSS EXECUTED (MAX LOSS SHIELD)"
             add_ui_log(f"🚨 [{target_symbol} | {meta['exit_reason']}] Triggering Close-All Stop Loss (0ms -> +50ms -> +100ms)...")
 
@@ -508,25 +510,49 @@ def run_settlement_cycle(
                             daemon=True
                         ).start()
 
-            # Stop-Loss Watchdog: Paused from T+0ms to T+1200ms (Recovery Shield); Active from T+1200ms to T+5980ms on @aggTrade LTP only
+            # Dual-Trigger Stop-Loss Watchdog: Paused from T+0ms to T+1200ms (Recovery Shield); Active from T+1200ms to T+5980ms on @aggTrade LTP + @bookTicker BestBid
             if now_loop_ms >= t_sl_active_start:
                 for sym, meta in targets_meta.items():
                     if meta["sl_triggered"]:
                         continue
 
-                    real_market_trade_price = ws_pipeline.get_last_traded_price(sym)
-                    if 0.0 < real_market_trade_price <= meta["sl_price"] and meta["sl_price"] > 0:
-                        meta["sl_triggered"] = True
-                        threading.Thread(
-                            target=trigger_sl_sequence,
-                            args=(sym, meta, real_market_trade_price),
-                            daemon=True
-                        ).start()
+                    real_ltp = ws_pipeline.get_last_traded_price(sym)
+                    real_bid = ws_pipeline.get_best_bid_price(sym)
+
+                    if real_ltp > 0.0 and (meta["min_ltp_in_window"] == 0.0 or real_ltp < meta["min_ltp_in_window"]):
+                        meta["min_ltp_in_window"] = real_ltp
+                    if real_bid > 0.0 and (meta["min_bid_in_window"] == 0.0 or real_bid < meta["min_bid_in_window"]):
+                        meta["min_bid_in_window"] = real_bid
+
+                    if meta["sl_price"] > 0:
+                        if 0.0 < real_ltp <= meta["sl_price"]:
+                            meta["sl_triggered"] = True
+                            threading.Thread(
+                                target=trigger_sl_sequence,
+                                args=(sym, meta, "AGG_TRADE_LTP", real_ltp),
+                                daemon=True
+                            ).start()
+                        elif 0.0 < real_bid <= meta["sl_price"]:
+                            meta["sl_triggered"] = True
+                            threading.Thread(
+                                target=trigger_sl_sequence,
+                                args=(sym, meta, "BOOK_BEST_BID", real_bid),
+                                daemon=True
+                            ).start()
 
             if all(m["sl_triggered"] for m in targets_meta.values()):
                 break
 
             time.sleep(0.001)
+
+        # Log SL Window Min-Price Telemetry (T+1200ms..T+5980ms) for exact verification
+        for sym, meta in targets_meta.items():
+            min_ltp_str = f"{meta['min_ltp_in_window']:.8f}".rstrip("0").rstrip(".") if meta["min_ltp_in_window"] > 0 else "--"
+            min_bid_str = f"{meta['min_bid_in_window']:.8f}".rstrip("0").rstrip(".") if meta["min_bid_in_window"] > 0 else "--"
+            add_ui_log(
+                f"📉 [SL WINDOW TELEMETRY ({sym}) T+{config.SL_GRACE_AFTER_SETTLE_MS}ms..T+{config.SL_WATCHDOG_END_AFTER_SETTLE_MS}ms] "
+                f"SL Floor: {meta['sl_target_str']} | Min LTP: {min_ltp_str} | Min BestBid: {min_bid_str} | SL Hit: {meta['sl_triggered']}"
+            )
 
         # Phase 6: Normal Settlement Exit at exact T+6000ms (after 20ms settling window from T+5980ms)
         remaining_active_metas = [m for m in targets_meta.values() if not m["sl_triggered"]]
