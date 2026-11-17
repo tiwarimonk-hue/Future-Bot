@@ -52,7 +52,7 @@ class BinanceFastLaneWS:
         self.listen_key: str = ""
         self.user_ws: Optional[websocket.WebSocketApp] = None
         self.order_ws: Optional[websocket.WebSocketApp] = None
-        self.public_ws: Optional[websocket.WebSocketApp] = None
+        self.public_ws_map: dict[str, websocket.WebSocketApp] = {}
 
         self.user_ws_ready = False
         self.order_ws_ready = False
@@ -62,6 +62,7 @@ class BinanceFastLaneWS:
         self.order_registry: dict[str, dict[str, Any]] = {}
         self.live_prices: dict[str, float] = {}
         self.last_traded_prices: dict[str, float] = {}
+        self.best_bid_prices: dict[str, float] = {}
         self.current_subscribed_symbols: list[str] = []
 
         self.pending_order_events: dict[str, threading.Event] = {}
@@ -100,6 +101,7 @@ class BinanceFastLaneWS:
             self.filled_quantities.pop(symbol, None)
             self.total_buy_cost.pop(symbol, None)
             self.last_traded_prices.pop(symbol, None)
+            self.best_bid_prices.pop(symbol, None)
             self.dca_hits.pop(symbol, None)
             self.long_filled_symbols.discard(symbol)
             self.position_closed_symbols.discard(symbol)
@@ -771,76 +773,105 @@ class BinanceFastLaneWS:
         return res
 
     def on_public_message(self, ws: Any, message: str) -> None:
+        """
+        Lock-free per-symbol atomic updates from each coin's dedicated Public WebSocket thread.
+        """
         try:
             data = json.loads(message)
             stream = data.get("stream", "")
             payload = data.get("data", data)
             sym = payload.get("s", "")
+            if not sym:
+                return
 
             if "aggTrade" in stream or payload.get("e") == "aggTrade":
                 price = float(payload.get("p", 0.0))
-                if sym and price > 0:
-                    with self.ws_lock:
-                        self.live_prices[sym] = price
-                        self.last_traded_prices[sym] = price
+                if price > 0:
+                    self.live_prices[sym] = price
+                    self.last_traded_prices[sym] = price
             elif "bookTicker" in stream or ("b" in payload and "a" in payload):
                 best_bid = float(payload.get("b", 0.0))
-                if sym and best_bid > 0:
-                    with self.ws_lock:
-                        self.live_prices[sym] = best_bid
+                if best_bid > 0:
+                    self.live_prices[sym] = best_bid
+                    self.best_bid_prices[sym] = best_bid
         except Exception:
             pass
 
     def subscribe_tickers(self, symbols: Sequence[str]) -> None:
+        """
+        Har coin ke liye uska apna alag (Dedicated) Public WebSocket thread kholta hai
+        taaki ek coin ke bhari tick traffic se dusre coin ka price update 1ms bhi delay na ho.
+        """
         clean_symbols = sorted(list({s.strip().upper() for s in symbols if s.strip()}))
-        if clean_symbols == self.current_subscribed_symbols:
-            return
-
-        if self.public_ws:
-            try:
-                self.public_ws.close()
-            except Exception:
-                pass
-
         with self.ws_lock:
-            self.live_prices.clear()
-            self.last_traded_prices.clear()
+            if clean_symbols == self.current_subscribed_symbols:
+                return
+            old_symbols = set(self.current_subscribed_symbols)
+            new_symbols = set(clean_symbols)
             self.current_subscribed_symbols = clean_symbols
 
-        if not clean_symbols:
-            return
+            removed = old_symbols - new_symbols
+            added = new_symbols - old_symbols
 
-        def runner(target_list: list[str]):
-            stream_parts = []
-            for sym in target_list:
-                low = sym.lower()
-                stream_parts.append(f"{low}@aggTrade")
-                stream_parts.append(f"{low}@bookTicker")
-            stream_url = f"{config.BINANCE_WS_URL}/stream?streams={'/'.join(stream_parts)}"
+            for sym in removed:
+                self.live_prices.pop(sym, None)
+                self.last_traded_prices.pop(sym, None)
+                self.best_bid_prices.pop(sym, None)
+                old_ws = self.public_ws_map.pop(sym, None)
+                if old_ws:
+                    try:
+                        if getattr(old_ws, "sock", None):
+                            old_ws.sock.close()
+                    except Exception:
+                        pass
+                    try:
+                        old_ws.close()
+                    except Exception:
+                        pass
 
-            while self.current_subscribed_symbols == target_list:
-                try:
-                    self.public_ws = websocket.WebSocketApp(
-                        stream_url,
-                        on_message=self.on_public_message
-                    )
-                    self.public_ws.run_forever(ping_interval=10, ping_timeout=5)
-                except Exception:
-                    pass
-                time.sleep(1)
+        for sym in sorted(added):
+            def runner(target_sym: str):
+                low = target_sym.lower()
+                stream_url = f"{config.BINANCE_WS_URL}/stream?streams={low}@aggTrade/{low}@bookTicker"
+                while True:
+                    with self.ws_lock:
+                        if target_sym not in self.current_subscribed_symbols:
+                            break
+                    try:
+                        local_pub_ws = websocket.WebSocketApp(
+                            stream_url,
+                            on_message=self.on_public_message
+                        )
+                        with self.ws_lock:
+                            if target_sym not in self.current_subscribed_symbols:
+                                break
+                            self.public_ws_map[target_sym] = local_pub_ws
+                        local_pub_ws.run_forever(ping_interval=10, ping_timeout=5)
+                    except Exception:
+                        pass
+                    with self.ws_lock:
+                        if target_sym not in self.current_subscribed_symbols:
+                            self.public_ws_map.pop(target_sym, None)
+                            break
+                    time.sleep(0.5)
 
-        threading.Thread(target=runner, args=(clean_symbols,), daemon=True).start()
+            threading.Thread(target=runner, args=(sym,), daemon=True).start()
 
     def subscribe_ticker(self, symbol: str) -> None:
         self.subscribe_tickers([symbol])
 
     def get_live_price(self, symbol: str) -> float:
-        with self.ws_lock:
-            return self.live_prices.get(symbol) or self.last_traded_prices.get(symbol, 0.0)
+        return (
+            self.live_prices.get(symbol)
+            or self.best_bid_prices.get(symbol)
+            or self.last_traded_prices.get(symbol, 0.0)
+        )
 
     def get_last_traded_price(self, symbol: str) -> float:
-        with self.ws_lock:
-            return self.last_traded_prices.get(symbol, 0.0)
+        return self.last_traded_prices.get(symbol, 0.0)
+
+    def get_best_bid_price(self, symbol: str) -> float:
+        return self.best_bid_prices.get(symbol, 0.0)
 
     def is_long_filled(self, symbol: str) -> bool:
         with self.ws_lock:
