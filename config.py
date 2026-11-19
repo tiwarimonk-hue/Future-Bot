@@ -18,7 +18,7 @@ BINANCE_WS_API_URL = "wss://ws-fapi.binance.com/ws-fapi/v1"
 
 # Margin & Dynamic Leverage Configuration ($1.50 USDT Base Margin @ 20x)
 TRADE_MARGIN_USD = 1.50                # Scanner preflight & UI base margin reference ($1.50 USDT)
-LIMIT_ORDER_MARGIN_USD = 1.50          # 4 Shallow limit orders ke liye fixed $1.50 USDT margin each
+LIMIT_ORDER_MARGIN_USD = 1.50          # 3 Shallow limit orders ke liye fixed $1.50 USDT margin each
 MAX_LEVERAGE_CAP = 20.0                # 20x hard cap ceiling ($1.50 * 20 = $30.0 USDT > $5.0 min notional)
 BINANCE_MIN_NOTIONAL = 5.0             # Binance Futures minimum notional safety threshold
 
@@ -30,8 +30,8 @@ MAX_DANGER_FUNDING_RATE = -0.0160      # Maximum -1.60% hard risk ceiling (Safe 
 SWEET_SPOT_MIN = -0.0140               # -1.40% (Updated Priority Bound)
 SWEET_SPOT_MAX = -0.0080               # -0.80%
 
-# 4 Shallow Limit Orders (20%, 40%, 60%, 80% of |FR| @ $1.50 USDT each; No DCA Orders)
-SHALLOW_LIMIT_RATIOS = (0.20, 0.40, 0.60, 0.80)
+# 3 Shallow Limit Orders (20%, 40%, 60% of |FR| @ Slot Margin each; No 80% / No DCA Orders)
+SHALLOW_LIMIT_RATIOS = (0.20, 0.40, 0.60)
 
 # Stop-Loss Configuration (150% of |FR| below Anchor Price, with strict 0.60% Minimum Floor)
 SL_FUNDING_MULTIPLIER = 1.50           # Stop-Loss distance = 150% of |FR| below Anchor Price
