@@ -21,7 +21,7 @@ import executor
 
 def get_strategy_label(rate_val: float, margin_usd: float | None = None) -> str:
     m_val = margin_usd if margin_usd is not None else get_active_base_margin_usd()
-    return f"4 SHALLOW LIMITS (20/40/60/80% FR @ ${m_val:.2f}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
+    return f"3 SHALLOW LIMITS (20/40/60% FR @ ${m_val:.2f}) [T-{config.ENTRY_BEFORE_SETTLE_MS}ms]"
 
 
 def evaluate_sl_specs(current_rate: float, margin_usd: float | None = None) -> tuple[float, str]:
@@ -30,7 +30,7 @@ def evaluate_sl_specs(current_rate: float, margin_usd: float | None = None) -> t
     abs_r = abs(float(current_rate))
     sl_r = max(config.MIN_SL_DROP_RATIO, round(abs_r * config.SL_FUNDING_MULTIPLIER, 6))
     lbl = (
-        f"4 Shallow (20/40/60/80% FR @ ${m_val:.2f}), "
+        f"3 Shallow (20/40/60% FR @ ${m_val:.2f}), "
         f"SL (-{sl_r * 100:.3f}% from Anchor | T+{config.SL_GRACE_AFTER_SETTLE_MS}ms Shield)"
     )
     return sl_r, lbl
@@ -79,7 +79,7 @@ def run_settlement_cycle(
     Executes the complete high-precision settlement cycle from T-20s to T+20s:
     Phase 1 (T-20s) -> Phase 2 (T-10s GC / T-8s -> T-6s -> T-4s Force-Cut WS Reconnect & Ping) ->
     Phase 3 (T-2.5s Snapshot via Shared executor.session / T-500ms 3-Ping Burst) ->
-    Phase 4 (T-50ms Pure WS 4-Shallow Limit Burst using Slot #1/#2/#3 Margins) ->
+    Phase 4 (T-50ms Pure WS 3-Shallow Limit Burst using Slot #1/#2/#3 Margins) ->
     Phase 5 (3-Strike Shallow Cancel: T+235ms / T+250ms / T+270ms + T+5000ms Open-Order Purge + T+1200ms..T+5980ms Dual LTP + BestBid Close-All SL Watchdog) ->
     Phase 6 (Exact T+6000ms Harvest Exit) -> Phase 6B (T+9s Safety Sweep #1) ->
     Phase 7 (T+15s Ledger Audit & Smart Merge) -> Phase 8 (T+20s Safety Sweep #2) -> Finally Sweep.
@@ -198,11 +198,10 @@ def run_settlement_cycle(
 
             shallow_notional = max(5.5, coin_margin_usd * applied_lev)
 
-            # Unique non-colliding order ID format for 4 Shallow Orders (20%, 40%, 60%, 80% FR)
+            # Unique non-colliding order ID format for 3 Shallow Orders (20%, 40%, 60% FR)
             cid_s1 = f"s1-c{c_idx}-{clean_sym}-{epoch_tag}"
             cid_s2 = f"s2-c{c_idx}-{clean_sym}-{epoch_tag}"
             cid_s3 = f"s3-c{c_idx}-{clean_sym}-{epoch_tag}"
-            cid_s4 = f"s4-c{c_idx}-{clean_sym}-{epoch_tag}"
 
             targets_meta[sym] = {
                 "symbol": sym,
@@ -223,9 +222,9 @@ def run_settlement_cycle(
                 "sl_ratio": sl_ratio,
                 "cond_label": cond_label,
                 "shallow_notional": shallow_notional,
-                "shallow_cids": [cid_s1, cid_s2, cid_s3, cid_s4],
-                "all_cids": [cid_s1, cid_s2, cid_s3, cid_s4],
-                "cids": (cid_s1, cid_s2, cid_s3, cid_s4),
+                "shallow_cids": [cid_s1, cid_s2, cid_s3],
+                "all_cids": [cid_s1, cid_s2, cid_s3],
+                "cids": (cid_s1, cid_s2, cid_s3),
                 "planned_shallow_map": {},
                 "planned_dca_map": {},
                 "sl_price": 0.0,
@@ -354,7 +353,7 @@ def run_settlement_cycle(
             f"Cancel Strikes: T+{t_cancel_shallow_1 - settle_epoch:.1f}ms / T+{t_cancel_shallow_2 - settle_epoch:.1f}ms / T+{t_cancel_shallow_3 - settle_epoch:.1f}ms"
         )
 
-        # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED 4-SHALLOW LIMIT BURST (100% WEBSOCKET)
+        # Phase 4 (Lead-Compensated T-50ms): SINGLE-SHOT ORDERED 3-SHALLOW LIMIT BURST (100% WEBSOCKET)
         precision_wait_until(t_limit_burst)
         cycle_order_start_ms = int(get_synced_time_ms()) - 1000
         entry_dispatch_time = datetime.now(IST).strftime("%H:%M:%S.%f")[:-3]
@@ -375,13 +374,12 @@ def run_settlement_cycle(
 
             dec_anchor = Decimal(str(anchor_price))
             abs_rate_dec = Decimal(str(abs(float(meta["rate"]))))
-            cid_s1, cid_s2, cid_s3, cid_s4 = meta["cids"]
+            cid_s1, cid_s2, cid_s3 = meta["cids"]
 
             shallow_specs = [
                 (cid_s1, config.SHALLOW_LIMIT_RATIOS[0], "Shallow Limit #1 (20% FR)", 1),
                 (cid_s2, config.SHALLOW_LIMIT_RATIOS[1], "Shallow Limit #2 (40% FR)", 2),
                 (cid_s3, config.SHALLOW_LIMIT_RATIOS[2], "Shallow Limit #3 (60% FR)", 3),
-                (cid_s4, config.SHALLOW_LIMIT_RATIOS[3], "Shallow Limit #4 (80% FR)", 4),
             ]
 
             coin_orders_count = 0
@@ -649,7 +647,7 @@ def run_settlement_cycle(
 
             dca_hits_list = list(combined_hits_by_idx.values())
 
-            # Row 1 Reservation: Ensure all 4 Shallow Order boxes ALWAYS appear in Row 1 (Blue)
+            # Row 1 Reservation: Ensure all 3 Shallow Order boxes ALWAYS appear in Row 1 (Blue)
             filled_shallow_indices = {h.get("sort_idx") for h in dca_hits_list if h.get("group") == "shallow"}
             for cid_s, p_info in meta["planned_shallow_map"].items():
                 s_idx = p_info["sort_idx"]
@@ -675,7 +673,7 @@ def run_settlement_cycle(
                         "cancel_latency_ms": lat
                     })
 
-            # Re-sort dca_hits_list so Shallow #1 -> #2 -> #3 -> #4 are in strict order
+            # Re-sort dca_hits_list so Shallow #1 -> #2 -> #3 are in strict order
             dca_hits_list.sort(key=lambda x: (x.get("sort_idx", 99), x.get("first_ms", 0)))
 
             if final_avg_entry > 0:
