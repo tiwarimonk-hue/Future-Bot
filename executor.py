@@ -355,7 +355,7 @@ def fetch_post_trade_reconciliation(
                 tags_joined = ", ".join(ordered_tags)
                 funding_orders_summary = f"{ord_cnt} Order{'s' if ord_cnt > 1 else ''} (~${disp_usd:.2f}) | {tags_joined}"
             elif math_funded_usd > 0:
-                est_cnt = max(1, min(4, round(math_funded_usd / max(1.0, unit_notional_usd))))
+                est_cnt = max(1, min(3, round(math_funded_usd / max(1.0, unit_notional_usd))))
                 funding_orders_summary = f"~{est_cnt} Order{'s' if est_cnt > 1 else ''} (~${math_funded_usd:.2f}) | Snapshot Fill"
             else:
                 funding_orders_summary = "1+ Order | Credited"
