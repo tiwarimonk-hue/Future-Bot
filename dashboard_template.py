@@ -86,7 +86,7 @@ def get_dashboard_html() -> str:
             <span>💰 Base Margin Control</span>
             <span style="font-size: 11px; color: #848e9c; font-weight: 600;">Min: $0.30 USDT</span>
         </div>
-        <div class="modal-sub">Har ek Shallow Limit Order (20%, 40%, 60%, 80% FR) par uske slot (#1, #2, #3) ka margin lagega.</div>
+        <div class="modal-sub">Har ek Shallow Limit Order (20%, 40%, 60% FR) par uske slot (#1, #2, #3) ka margin lagega.</div>
 
         <!-- PART 1: DEFAULT (ALL 3 SLOTS) -->
         <div class="default-panel">
